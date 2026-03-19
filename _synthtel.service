@@ -1,0 +1,19 @@
+[Unit]
+Description=SynthTel Email Server
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/synthtel
+ExecStart=/usr/bin/python3 /opt/synthtel/core/server.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+Environment=SYNTHTEL_DB=/opt/synthtel/synthtel.db
+Environment=SYNTHTEL_LOG=/opt/synthtel/synthtel.log
+[Install]
+WantedBy=multi-user.target
