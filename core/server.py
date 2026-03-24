@@ -1538,41 +1538,42 @@ if(code && window.opener){{
             try:
                 data = self._read_body()
                 uid  = sess["user_id"]
-                db   = get_db()
-                rdps     = data.get("rdps", [])
-                proxies  = data.get("proxies", [])
-                assign   = data.get("assignments", {})
-                # Upsert RDPs
-                for r in rdps:
-                    db.execute("""
-                        INSERT INTO isp_rdps(user_id,client_id,label,host,ssh_port,usr,pass,os,status,data)
-                        VALUES(?,?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(user_id,client_id) DO UPDATE SET
-                            label=excluded.label, host=excluded.host,
-                            ssh_port=excluded.ssh_port, usr=excluded.usr,
-                            pass=excluded.pass, status=excluded.status, data=excluded.data
-                    """, (uid, str(r.get("id","")), r.get("label",""), r.get("host",""),
-                          str(r.get("sshPort","22")), r.get("user",""), r.get("pass",""),
-                          r.get("os","windows"), r.get("status","undeployed"), json.dumps(r)))
-                # Upsert proxies
-                for px in proxies:
-                    db.execute("""
-                        INSERT INTO isp_proxies(user_id,client_id,label,host,port,usr,pass,type,isp_smtp_host,isp_smtp_port,from_domain,status,data)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(user_id,client_id) DO UPDATE SET
-                            label=excluded.label, host=excluded.host,
-                            isp_smtp_host=excluded.isp_smtp_host,
-                            isp_smtp_port=excluded.isp_smtp_port, data=excluded.data
-                    """, (uid, str(px.get("id","")), px.get("label",""), px.get("host",""),
-                          str(px.get("port","17521")), px.get("user",""), px.get("pass",""),
-                          px.get("type","socks5"), px.get("ispSmtpHost",""), str(px.get("ispSmtpPort","25")),
-                          px.get("fromDomain",""), px.get("status","untested"), json.dumps(px)))
-                # Upsert assignments
-                for rdp_id, proxy_id in assign.items():
-                    db.execute("""INSERT INTO isp_assignments(user_id,rdp_client_id,proxy_client_id)
-                        VALUES(?,?,?) ON CONFLICT(user_id,rdp_client_id) DO UPDATE SET proxy_client_id=excluded.proxy_client_id
-                    """, (uid, str(rdp_id), str(proxy_id)))
-                db.commit()
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    rdps     = data.get("rdps", [])
+                    proxies  = data.get("proxies", [])
+                    assign   = data.get("assignments", {})
+                    # Upsert RDPs
+                    for r in rdps:
+                        conn.execute("""
+                            INSERT INTO isp_rdps(user_id,client_id,label,host,ssh_port,usr,pass,os,status,data)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(user_id,client_id) DO UPDATE SET
+                                label=excluded.label, host=excluded.host,
+                                ssh_port=excluded.ssh_port, usr=excluded.usr,
+                                pass=excluded.pass, status=excluded.status, data=excluded.data
+                        """, (uid, str(r.get("id","")), r.get("label",""), r.get("host",""),
+                              str(r.get("sshPort","22")), r.get("user",""), r.get("pass",""),
+                              r.get("os","windows"), r.get("status","undeployed"), json.dumps(r)))
+                    # Upsert proxies
+                    for px in proxies:
+                        conn.execute("""
+                            INSERT INTO isp_proxies(user_id,client_id,label,host,port,usr,pass,type,isp_smtp_host,isp_smtp_port,from_domain,status,data)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(user_id,client_id) DO UPDATE SET
+                                label=excluded.label, host=excluded.host,
+                                isp_smtp_host=excluded.isp_smtp_host,
+                                isp_smtp_port=excluded.isp_smtp_port, data=excluded.data
+                        """, (uid, str(px.get("id","")), px.get("label",""), px.get("host",""),
+                              str(px.get("port","17521")), px.get("user",""), px.get("pass",""),
+                              px.get("type","socks5"), px.get("ispSmtpHost",""), str(px.get("ispSmtpPort","25")),
+                              px.get("fromDomain",""), px.get("status","untested"), json.dumps(px)))
+                    # Upsert assignments
+                    for rdp_id, proxy_id in assign.items():
+                        conn.execute("""INSERT INTO isp_assignments(user_id,rdp_client_id,proxy_client_id)
+                            VALUES(?,?,?) ON CONFLICT(user_id,rdp_client_id) DO UPDATE SET proxy_client_id=excluded.proxy_client_id
+                        """, (uid, str(rdp_id), str(proxy_id)))
+                    conn.commit(); conn.close()
                 self._json(200, {"ok": True, "rdps": len(rdps), "proxies": len(proxies), "assignments": len(assign)})
             except Exception as e:
                 self._json(500, {"error": str(e)})
@@ -1581,15 +1582,17 @@ if(code && window.opener){{
             # Get ISP tunnels for current user from DB
             if not (sess := self._auth()): return
             uid = sess["user_id"]
-            db  = get_db()
-            rows = db.execute("""
-                SELECT r.client_id, r.label, r.host, r.status,
-                       p.client_id as px_id, p.isp_smtp_host, p.isp_smtp_port, p.data as px_data
-                FROM isp_rdps r
-                JOIN isp_assignments a ON a.rdp_client_id = r.client_id AND a.user_id = r.user_id
-                JOIN isp_proxies p ON p.client_id = a.proxy_client_id AND p.user_id = r.user_id
-                WHERE r.user_id = ?
-            """, (uid,)).fetchall()
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                rows = conn.execute("""
+                    SELECT r.client_id, r.label, r.host, r.status,
+                           p.client_id as px_id, p.isp_smtp_host, p.isp_smtp_port, p.data as px_data
+                    FROM isp_rdps r
+                    JOIN isp_assignments a ON a.rdp_client_id = r.client_id AND a.user_id = r.user_id
+                    JOIN isp_proxies p ON p.client_id = a.proxy_client_id AND p.user_id = r.user_id
+                    WHERE r.user_id = ?
+                """, (uid,)).fetchall()
+                conn.close()
             tunnels = []
             for row in rows:
                 tunnels.append({
@@ -2761,7 +2764,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            from b2b_manager import build_oauth_url
+            from core.b2b_manager import build_oauth_url
             # Use pre-configured creds if caller didn't supply them
             client_id     = data.get("client_id", "").strip() or _AZURE_CLIENT_ID
             client_secret = data.get("client_secret", "").strip() or _AZURE_CLIENT_SECRET
@@ -2789,7 +2792,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            from b2b_manager import exchange_oauth_code, login_token
+            from core.b2b_manager import exchange_oauth_code, login_token
             client_id     = data.get("client_id", "").strip() or _AZURE_CLIENT_ID
             client_secret = data.get("client_secret", "").strip() or _AZURE_CLIENT_SECRET
             redirect_uri  = data.get("redirect_uri", "").strip()
@@ -2812,7 +2815,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 auth  = login_token(email, token, b2b._s)
                 if auth.get("ok"):
                     b2b._s["ms_refresh_token"] = result.get("refresh_token")
-                    self._json(200, {**auth, "session": sess["token"]})
+                    self._json(200, {**auth, "session": self._token()})
                 else:
                     self._json(200, auth)
             else:
@@ -2863,7 +2866,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                     try:
                         import msal as _msal_new
                         import importlib, sys
-                        import b2b_manager as _b2b_mod
+                        import core.b2b_manager as _b2b_mod
                         _b2b_mod._msal = _msal_new
                         _b2b_mod._HAS_MSAL = True
                         self._json(200, {"ok": True, "message": "MSAL installed successfully — Device Code is ready!"})
@@ -2901,7 +2904,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 custom_tenant    = data.get("tenant_id", "").strip(),
             )
             if result is None:
-                from b2b_manager import _MSAL_ERR
+                from core.b2b_manager import _MSAL_ERR
                 self._json(200, {"error": "msal_not_installed",
                                  "message": f"MSAL unavailable: {_MSAL_ERR or 'unknown error'}. Clicking Install will fix this."})
             else:
@@ -4399,10 +4402,12 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 "📢 <b>Message from Admin</b>\n\n" + msg)
             self._json(200, {"status": "ok"})
 
-        elif p == "/api/logs":
+        elif p.startswith("/api/logs"):
             if not (sess := self._auth()): return
             try:
-                lines = int(self.params.get("lines", [100])[0])
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                lines = int(qs.get("lines", [100])[0])
                 lines = min(lines, 500)
             except Exception:
                 lines = 100
@@ -4414,8 +4419,10 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 tail = f"[Log file not found or unreadable: {e}]"
             self._json(200, {"log": tail, "path": LOG_PATH})
 
-        elif p == "/api/debug-log":
-            clear = self.params.get("clear", ["0"])[0] == "1"
+        elif p.startswith("/api/debug-log"):
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            clear = qs.get("clear", ["0"])[0] == "1"
             with _dbg_lock:
                 entries = list(_DEBUG_BUF)
                 if clear: _DEBUG_BUF.clear()
