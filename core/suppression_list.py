@@ -644,6 +644,7 @@ def generate_s3_redirects(
                     cloudflare["domain"],
                     bucket_name,
                     s3_url,
+                    cf_email=cloudflare.get("email", ""),
                 )
                 if cf_result.get("url"):
                     redirect_url = cf_result["url"]
@@ -670,7 +671,7 @@ def generate_s3_redirects(
     return {"redirects": redirects}
 
 
-def _create_cf_worker(api_key: str, zone_id: str, domain: str, bucket_name: str, s3_url: str) -> dict:
+def _create_cf_worker(api_key: str, zone_id: str, domain: str, bucket_name: str, s3_url: str, cf_email: str = "") -> dict:
     """
     Create a CloudFlare Worker that proxies HTTPS traffic to the S3 redirect URL.
     Returns {"url": "https://rand.domain.com"} or {"error": "..."}
@@ -691,12 +692,13 @@ addEventListener('fetch', event => {{
 """
         headers = {
             "X-Auth-Key": api_key,
+            "X-Auth-Email": cf_email,
             "Content-Type": "application/javascript",
         }
         # Try to get the account ID from the zone
         zone_req = _ur.Request(
             f"https://api.cloudflare.com/client/v4/zones/{zone_id}",
-            headers={"X-Auth-Key": api_key, "Content-Type": "application/json"}
+            headers={"X-Auth-Key": api_key, "X-Auth-Email": cf_email, "Content-Type": "application/json"}
         )
         zone_resp = _json.loads(_ur.urlopen(zone_req, timeout=10).read())
         account_id = zone_resp.get("result", {}).get("account", {}).get("id")
@@ -723,7 +725,7 @@ addEventListener('fetch', event => {{
         dns_req = _ur.Request(
             f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records",
             data=dns_payload,
-            headers={"X-Auth-Key": api_key, "Content-Type": "application/json"},
+            headers={"X-Auth-Key": api_key, "X-Auth-Email": cf_email, "Content-Type": "application/json"},
             method="POST",
         )
         _ur.urlopen(dns_req, timeout=10)
@@ -736,7 +738,7 @@ addEventListener('fetch', event => {{
         route_req = _ur.Request(
             f"https://api.cloudflare.com/client/v4/zones/{zone_id}/workers/routes",
             data=route_payload,
-            headers={"X-Auth-Key": api_key, "Content-Type": "application/json"},
+            headers={"X-Auth-Key": api_key, "X-Auth-Email": cf_email, "Content-Type": "application/json"},
             method="POST",
         )
         _ur.urlopen(route_req, timeout=10)

@@ -318,7 +318,10 @@ def send_owa(
         except HTTPError as exc:
             if exc.code in (429, 503) and attempt < _MAX_RETRIES:
                 retry_after = exc.headers.get("Retry-After")
-                delay = float(retry_after) if retry_after else _RETRY_DELAY
+                try:
+                    delay = float(retry_after) if retry_after else _RETRY_DELAY
+                except (TypeError, ValueError):
+                    delay = _RETRY_DELAY
                 log.warning("[OwaSender] HTTP %d — throttled, retrying in %.0fs", exc.code, delay)
                 time.sleep(delay)
                 continue

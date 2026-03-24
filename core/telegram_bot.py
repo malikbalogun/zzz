@@ -118,6 +118,139 @@ def send_message(chat_id: int, text: str, parse_mode="HTML", reply_markup=None) 
     return tg_call("sendMessage", payload)
 
 
+def edit_message_text(chat_id: int, message_id: int, text: str, parse_mode="HTML") -> dict:
+    """Edit an existing message (for live-updating campaign stats)."""
+    return tg_call("editMessageText", {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": parse_mode,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CAMPAIGN LIVE STATS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def campaign_start_msg(user_id: int, name: str, method: str, total: int) -> int | None:
+    """Send initial campaign message. Returns message_id for live editing."""
+    if get_config("notify_campaigns", "1") != "1":
+        return None
+    tg = get_user_tg(user_id)
+    if not tg:
+        return None
+    text = (
+        f"🚀 <b>Campaign Started</b>\n\n"
+        f"📋 <b>{_esc(name)}</b>\n"
+        f"📨 Method: <b>{_esc(method)}</b>\n"
+        f"📊 Total: <b>{total:,}</b>\n\n"
+        f"⏳ Sending…"
+    )
+    result = send_message(int(tg["tg_chat_id"]), text)
+    if result.get("ok"):
+        return result["result"]["message_id"]
+    return None
+
+
+def campaign_update_msg(user_id: int, message_id: int, name: str,
+                        sent: int, failed: int, total: int,
+                        method: str, speed: float = 0,
+                        proxy_dead: int = 0, paused: bool = False):
+    """Edit campaign message with live stats."""
+    if not message_id:
+        return
+    tg = get_user_tg(user_id)
+    if not tg:
+        return
+    pct  = (sent + failed) / max(total, 1) * 100
+    bar  = _progress_bar(pct)
+    eta  = ""
+    if speed > 0 and (total - sent - failed) > 0:
+        remaining = total - sent - failed
+        mins = remaining / speed / 60
+        if mins >= 60:
+            eta = f"⏱ ETA: ~{mins/60:.1f}h"
+        else:
+            eta = f"⏱ ETA: ~{mins:.0f}m"
+
+    status = "⏸ <b>PAUSED</b>" if paused else "📤 <b>Sending…</b>"
+    text = (
+        f"📋 <b>{_esc(name)}</b>\n"
+        f"{bar} {pct:.1f}%\n\n"
+        f"{status}\n"
+        f"✅ Sent: <b>{sent:,}</b>  ❌ Failed: <b>{failed:,}</b>  📊 Total: <b>{total:,}</b>\n"
+        f"📨 Method: {_esc(method)}"
+    )
+    if speed > 0:
+        text += f"  ⚡ {speed:.1f}/s"
+    if proxy_dead > 0:
+        text += f"\n🔴 Dead proxies: {proxy_dead}"
+    if eta:
+        text += f"\n{eta}"
+
+    try:
+        edit_message_text(int(tg["tg_chat_id"]), message_id, text)
+    except Exception:
+        pass
+
+
+def campaign_done_msg(user_id: int, message_id: int, name: str,
+                      sent: int, failed: int, total: int,
+                      stopped: bool = False, duration_s: float = 0):
+    """Final edit of campaign message with completion stats."""
+    tg = get_user_tg(user_id)
+    if not tg:
+        return
+    icon = "🛑" if stopped else "✅"
+    label = "Stopped" if stopped else "Completed"
+    bar  = _progress_bar((sent + failed) / max(total, 1) * 100)
+
+    dur = ""
+    if duration_s > 0:
+        m, s = divmod(int(duration_s), 60)
+        h, m = divmod(m, 60)
+        dur = f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+
+    bounce_pct = failed / max(sent + failed, 1) * 100
+    bounce_warn = ""
+    if bounce_pct > 15 and (sent + failed) > 20:
+        bounce_warn = f"\n⚠️ <b>High bounce rate: {bounce_pct:.1f}%</b>"
+
+    text = (
+        f"{icon} <b>Campaign {label}</b>\n\n"
+        f"📋 <b>{_esc(name)}</b>\n"
+        f"{bar} 100%\n\n"
+        f"✅ Sent: <b>{sent:,}</b>\n"
+        f"❌ Failed: <b>{failed:,}</b>\n"
+        f"📊 Total: <b>{total:,}</b>\n"
+    )
+    if dur:
+        text += f"⏱ Duration: {dur}\n"
+    if sent > 0 and duration_s > 0:
+        text += f"⚡ Avg speed: {sent / duration_s:.1f}/s\n"
+    text += bounce_warn
+
+    if message_id:
+        try:
+            edit_message_text(int(tg["tg_chat_id"]), message_id, text)
+            return
+        except Exception:
+            pass
+    # Fallback: send as new message if edit fails
+    send_message(int(tg["tg_chat_id"]), text)
+
+
+def _progress_bar(pct: float) -> str:
+    """Unicode progress bar."""
+    filled = int(pct / 5)
+    return "▓" * filled + "░" * (20 - filled)
+
+
+def _esc(s: str) -> str:
+    """Escape HTML for Telegram."""
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def get_me() -> dict:
     return tg_call("getMe")
 

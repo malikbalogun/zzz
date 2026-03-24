@@ -711,6 +711,65 @@ tr:hover td { background:var(--bg3); }
   .mob-topbar-right .th-btn { display: none; }
 }
 
+/* ═══════════════════════════════════════════════
+   MOBILE MONITOR PANEL — Stripped-down monitoring
+═══════════════════════════════════════════════ */
+.mob-monitor { padding: 8px; }
+.mob-monitor .mm-status {
+  text-align: center; padding: 16px 12px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); margin-bottom: 10px;
+}
+.mob-monitor .mm-status-icon { font-size: 40px; margin-bottom: 6px; }
+.mob-monitor .mm-status-label { font-size: 14px; font-weight: 700; color: var(--tx); }
+.mob-monitor .mm-status-sub { font-size: 11px; color: var(--t2); margin-top: 4px; }
+.mob-monitor .mm-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 6px; margin-bottom: 10px;
+}
+.mob-monitor .mm-stat {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 8px; text-align: center;
+}
+.mob-monitor .mm-stat-v { font-size: 20px; font-weight: 800; font-family: var(--font-mono); }
+.mob-monitor .mm-stat-l { font-size: 9px; font-weight: 600; color: var(--t3); text-transform: uppercase; letter-spacing: .5px; }
+.mob-monitor .mm-controls {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px;
+}
+.mob-monitor .mm-ctrl {
+  padding: 12px 8px; border-radius: var(--radius-sm);
+  font-size: 12px; font-weight: 700; border: none; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  font-family: var(--font-ui);
+}
+.mob-monitor .mm-ctrl-start { background: var(--ok); color: #fff; }
+.mob-monitor .mm-ctrl-pause { background: #f59e0b; color: #fff; }
+.mob-monitor .mm-ctrl-stop  { background: var(--err); color: #fff; }
+.mob-monitor .mm-ctrl:disabled { opacity: .4; cursor: not-allowed; }
+.mob-monitor .mm-progress {
+  background: var(--bg2); border-radius: 6px; height: 8px; margin-bottom: 10px;
+  overflow: hidden; border: 1px solid var(--border);
+}
+.mob-monitor .mm-progress-fill {
+  height: 100%; background: var(--accent); transition: width .5s ease;
+  border-radius: 6px;
+}
+.mob-monitor .mm-log {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px; margin-bottom: 10px;
+  max-height: 160px; overflow-y: auto; font-family: var(--font-mono);
+  font-size: 10px; line-height: 1.6;
+}
+.mob-monitor .mm-log-entry { padding: 2px 0; border-bottom: 1px solid var(--bg2); }
+.mob-monitor .mm-quick-edit {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px; margin-bottom: 10px;
+}
+.mob-monitor .mm-section-title {
+  font-size: 11px; font-weight: 700; color: var(--t3); text-transform: uppercase;
+  letter-spacing: .5px; margin-bottom: 6px;
+}
+
 /* ── Progress bar animation ── */
 @keyframes prog-stripe {
   0%   { background-position: 0 0; }
@@ -986,6 +1045,24 @@ const TAG_SECTIONS = [
     {tag:"#LOREM_SHORT",           desc:"1 sentence of lorem ipsum"},
     {tag:"#LOREM_PARAGRAPH",       desc:"1 paragraph of lorem ipsum"},
     {tag:"#LOREM_LONG",            desc:"Full lorem ipsum paragraph"},
+  ]},
+  { label:"CONTEXTUAL / GREETINGS", tags:[
+    {tag:"#GREETING",              desc:"Casual greeting — Hi {firstname}"},
+    {tag:"#GREETING_FORMAL",       desc:"Formal greeting — Dear {fullname}"},
+    {tag:"#GREETING_CASUAL",       desc:"Casual greeting — Hi {firstname}"},
+    {tag:"#GREETING_FIRST",        desc:"Hi {firstname}"},
+    {tag:"#GREETING_TOD",          desc:"Time-based — Good morning/afternoon/evening, {name}"},
+    {tag:"#SALUTATION",            desc:"Dear {fullname}"},
+    {tag:"#TIMEOFDAY",             desc:"morning, afternoon, or evening"},
+    {tag:"#SEASON",                desc:"Current season — spring, summer, fall, winter"},
+    {tag:"#RELATIVE_DAY",          desc:"this week or this weekend"},
+    {tag:"#DAYS_LEFT_MONTH",       desc:"Days remaining in current month"},
+    {tag:"#DAYS_LEFT_YEAR",        desc:"Days remaining in current year"},
+    {tag:"#DAYS_IN_MONTH",         desc:"Total days in current month"},
+    {tag:"#EMAIL_PROVIDER",        desc:"Detected provider — Gmail, Outlook, Corporate, etc."},
+    {tag:"#IS_GMAIL",              desc:"true if recipient is Gmail"},
+    {tag:"#IS_OUTLOOK",            desc:"true if recipient is Outlook/Hotmail/Live"},
+    {tag:"#IS_CORPORATE",          desc:"true if recipient is corporate (not free email)"},
   ]},
   { label:"FUNCTIONAL / SMART", tags:[
     {tag:"#SHUF{A|B|C}",           desc:"Pick random option from pipe-separated list"},
@@ -2566,8 +2643,8 @@ function TabCompose({
                 {filesList.filter(f=>f.category==="attachments").map(file=>(
                   <div key={file.id} className="row ac-center g10 card card-sm">
                     <input type="checkbox" style={{width:"auto",flexShrink:0}}/>
-                    <span className="sm f1">{file.display_name||file.original_name}</span>
-                    <span className="bdg bdg-n">{(file.mime_type||"").split("/")[1]||"file"}</span>
+                    <span className="sm f1">{file.display_name||file.name}</span>
+                    <span className="bdg bdg-n">{(file.mime||"").split("/")[1]||"file"}</span>
                     <span className="dim2 xs">{fmtBytes(file.size)}</span>
                   </div>
                 ))}
@@ -2854,7 +2931,7 @@ function TabLeads({leadsRaw, setLeadsRaw, leads, setLeads, filesList, allowDupes
                 const r=await apiCall(`/api/files/download/${file.id}`);
                 const text=await r.text();
                 setLeadsRaw(text); setLeads(parseLeads(text));
-              }}>📂 {file.display_name||file.original_name}</button>
+              }}>📂 {file.display_name||file.name}</button>
             ))}
           </div>
         </div>
@@ -2874,7 +2951,7 @@ function TabLeads({leadsRaw, setLeadsRaw, leads, setLeads, filesList, allowDupes
                   }}>
                     <span style={{fontSize:20}}>📄</span>
                     <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontWeight:600,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{file.display_name||file.original_name}</div>
+                      <div style={{fontWeight:600,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{file.display_name||file.name}</div>
                       <div className="dim2 xs">{fmtBytes(file.size)}</div>
                     </div>
                   </div>
@@ -2980,7 +3057,7 @@ function TabSenders({sendersRaw, setSendersRaw, senderName, setSenderName, sende
                     const r=await apiCall(`/api/files/download/${file.id}`);
                     const t=await r.text(); setSendersRaw(p=>p?p+"\n"+t:t);
                   }}>
-                    <span className="sm">📄 {file.display_name||file.original_name}</span>
+                    <span className="sm">📄 {file.display_name||file.name}</span>
                     <span className="dim2 xs ml-auto">{fmtBytes(file.size)}</span>
                   </div>
                 ))}
@@ -4432,18 +4509,18 @@ function TabAttachments({filesList, uploadFile, deleteFile, renameFile, selected
               <div className="card-title">Your Uploaded Attachments ({attachFiles.length})</div>
               <div className="col g8">
                 {attachFiles.map(file=>{
-                  const ti = ATTACH_TYPES.find(t=>(file.mime_type||"").includes(t.id))||ATTACH_TYPES[13];
+                  const ti = ATTACH_TYPES.find(t=>(file.mime||"").includes(t.id))||ATTACH_TYPES[13];
                   return (
                     <div key={file.id} className="fi">
                       <div className="fi-ic" style={{background:ti.col+"22"}}>{ti.ico}</div>
                       <div style={{flex:1}}>
-                        <div className="fi-name">{file.display_name||file.original_name}</div>
-                        <div className="fi-meta">{fmtBytes(file.size)} · {file.mime_type}</div>
+                        <div className="fi-name">{file.display_name||file.name}</div>
+                        <div className="fi-meta">{fmtBytes(file.size)} · {file.mime}</div>
                       </div>
-                      <Bdg t="n">{(file.mime_type||"").split("/")[1]||"file"}</Bdg>
+                      <Bdg t="n">{(file.mime||"").split("/")[1]||"file"}</Bdg>
                       <div className="row g6">
                         <button className="btn btn-g btn-xs" onClick={async()=>{
-                          const n=prompt("Rename attachment:",file.display_name||file.original_name);
+                          const n=prompt("Rename attachment:",file.display_name||file.name);
                           if(n) await renameFile(file.id,n);
                         }}>✏️</button>
                         <button className="btn btn-d btn-xs" onClick={()=>deleteFile(file.id)}>🗑</button>
@@ -5019,17 +5096,17 @@ function TabFiles({filesList, uploadFile, deleteFile, renameFile, fileUploadLoad
               : (
                 <div className="col g8">
                   {filtered.map(file=>{
-                    const ti=ATTACH_TYPES.find(t=>(file.mime_type||"").includes(t.id))||ATTACH_TYPES[13];
+                    const ti=ATTACH_TYPES.find(t=>(file.mime||"").includes(t.id))||ATTACH_TYPES[13];
                     return (
                       <div key={file.id} className="fi">
                         <div className="fi-ic" style={{background:ti.col+"22"}}>{ti.ico}</div>
                         <div style={{flex:1}}>
-                          <div className="fi-name">{file.display_name||file.original_name}</div>
+                          <div className="fi-name">{file.display_name||file.name}</div>
                           <div className="fi-meta">{file.category} · {fmtBytes(file.size)} · {(file.created_at||"").split("T")[0]}</div>
                         </div>
-                        <Bdg t="n">{(file.mime_type||"").split("/")[1]||"file"}</Bdg>
+                        <Bdg t="n">{(file.mime||"").split("/")[1]||"file"}</Bdg>
                         <div className="row g6">
-                          <button className="btn btn-g btn-xs" onClick={async()=>{const n=await showPopup({title:"Rename File",msg:"Enter new name:",ico:"✏️",type:"prompt",defaultValue:file.display_name||file.original_name});if(n)await renameFile(file.id,n);}}>✏️</button>
+                          <button className="btn btn-g btn-xs" onClick={async()=>{const n=await showPopup({title:"Rename File",msg:"Enter new name:",ico:"✏️",type:"prompt",defaultValue:file.display_name||file.name});if(n)await renameFile(file.id,n);}}>✏️</button>
                           <button className="btn btn-d btn-xs" onClick={()=>deleteFile(file.id)}>🗑</button>
                         </div>
                       </div>
@@ -6945,6 +7022,7 @@ function App() {
   const [loginP, setLoginP]   = useState("");
   const [loginErr, setLoginErr] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
+  const [rememberMe, setRememberMe] = useState(localStorage.getItem("st_remember")==="1");
 
   // ── Nav ──
   const [tab, setTab]   = useState("campaign");
@@ -7148,7 +7226,7 @@ function App() {
   async function doLogin() {
     setLoginLoading(true); setLoginErr("");
     try {
-      const r = await fetch(API+"/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:loginU,password:loginP})});
+      const r = await fetch(API+"/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:loginU,password:loginP,remember:rememberMe})});
       const d = await r.json();
       if(r.ok && d.pending_2fa){
         // 2FA required — show OTP input
@@ -7382,6 +7460,14 @@ function App() {
           </div>
           {!otpMode && (
             <div>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,justifyContent:"flex-start"}}>
+                <input type="checkbox" id="remember-me" checked={rememberMe}
+                  onChange={e=>{setRememberMe(e.target.checked);localStorage.setItem("st_remember",e.target.checked?"1":"0");}}
+                  style={{margin:0,width:16,height:16,cursor:"pointer"}}/>
+                <label htmlFor="remember-me" style={{fontSize:13,color:"var(--t2)",cursor:"pointer",userSelect:"none"}}>
+                  Remember me for 30 days
+                </label>
+              </div>
               {loginErr && <div className="ib ib-e mb12"><span className="ib-ic">✗</span>{loginErr}</div>}
               <button className="btn btn-p w100 btn-lg" onClick={doLogin} disabled={loginLoading}>
                 {loginLoading?"Signing in…":"Sign In →"}
@@ -7440,6 +7526,140 @@ function App() {
     {id:"logs",        ico:"🔍", lbl:"Debug"},
   ];
 
+  /* ── MOBILE MONITOR ── */
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  React.useEffect(()=>{
+    const h=()=>setIsMobile(window.innerWidth<=768);
+    window.addEventListener("resize",h);
+    return ()=>window.removeEventListener("resize",h);
+  },[]);
+
+  function MobileMonitor() {
+    const pct = campStats.total > 0 ? ((campStats.sent + campStats.failed) / campStats.total * 100) : 0;
+    const speed = campStats.speed || 0;
+    const remaining = campStats.total - campStats.sent - campStats.failed;
+    const etaMin = speed > 0 ? remaining / speed / 60 : 0;
+    const etaStr = etaMin >= 60 ? `~${(etaMin/60).toFixed(1)}h` : etaMin > 0 ? `~${Math.round(etaMin)}m` : "";
+
+    return (
+      <div className="mob-monitor">
+        {/* Status */}
+        <div className="mm-status">
+          <div className="mm-status-icon">
+            {campRunning ? (campPaused ? "⏸" : "📤") : "⏹"}
+          </div>
+          <div className="mm-status-label">
+            {campRunning ? (campPaused ? "Paused" : "Sending...") : "Ready"}
+          </div>
+          <div className="mm-status-sub">
+            {campRunning ? campName || "Campaign" : "Configure and start a campaign"}
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        {campRunning && (
+          <div className="mm-progress">
+            <div className="mm-progress-fill" style={{width: `${Math.min(pct, 100)}%`}}/>
+          </div>
+        )}
+
+        {/* Stats grid */}
+        <div className="mm-stats">
+          <div className="mm-stat">
+            <div className="mm-stat-v" style={{color:"var(--ok)"}}>{campStats.sent||0}</div>
+            <div className="mm-stat-l">Sent</div>
+          </div>
+          <div className="mm-stat">
+            <div className="mm-stat-v" style={{color:"var(--err)"}}>{campStats.failed||0}</div>
+            <div className="mm-stat-l">Failed</div>
+          </div>
+          <div className="mm-stat">
+            <div className="mm-stat-v" style={{color:"var(--accent)"}}>{campStats.total||0}</div>
+            <div className="mm-stat-l">Total</div>
+          </div>
+          {campRunning && <>
+            <div className="mm-stat">
+              <div className="mm-stat-v">{pct.toFixed(1)}%</div>
+              <div className="mm-stat-l">Progress</div>
+            </div>
+            <div className="mm-stat">
+              <div className="mm-stat-v">{speed > 0 ? speed.toFixed(1) : "-"}</div>
+              <div className="mm-stat-l">Per Sec</div>
+            </div>
+            <div className="mm-stat">
+              <div className="mm-stat-v">{etaStr || "-"}</div>
+              <div className="mm-stat-l">ETA</div>
+            </div>
+          </>}
+        </div>
+
+        {/* Controls */}
+        <div className="mm-controls">
+          {!campRunning ? (
+            <button className="mm-ctrl mm-ctrl-start" onClick={startCampaign}
+              disabled={!leads.length} style={{gridColumn:"1/-1"}}>
+              <span style={{fontSize:20}}>▶</span> Start Campaign
+            </button>
+          ) : (<>
+            {campPaused ? (
+              <button className="mm-ctrl mm-ctrl-start" onClick={resumeCampaign}>
+                <span style={{fontSize:18}}>▶</span> Resume
+              </button>
+            ) : (
+              <button className="mm-ctrl mm-ctrl-pause" onClick={pauseCampaign}>
+                <span style={{fontSize:18}}>⏸</span> Pause
+              </button>
+            )}
+            <button className="mm-ctrl mm-ctrl-stop" onClick={stopCampaign}
+              style={{gridColumn:"span 2"}}>
+              <span style={{fontSize:18}}>⏹</span> Stop
+            </button>
+          </>)}
+        </div>
+
+        {/* Quick edit senders */}
+        <div className="mm-quick-edit">
+          <div className="mm-section-title">Sender Names</div>
+          <input value={senderName} onChange={e=>setSenderName(e.target.value)}
+            placeholder="Display Name"
+            style={{width:"100%",fontSize:13,padding:"8px 10px",marginBottom:6,
+              background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,
+              color:"var(--tx)",fontFamily:"var(--font-ui)",boxSizing:"border-box"}}/>
+          <textarea value={senderNames} onChange={e=>setSenderNames(e.target.value)}
+            placeholder={"Extra names (one per line)\nJohn Smith\nJane Doe"}
+            style={{width:"100%",fontSize:12,padding:"8px 10px",minHeight:60,
+              background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,
+              color:"var(--tx)",fontFamily:"var(--font-mono)",resize:"vertical",boxSizing:"border-box"}}/>
+        </div>
+
+        {/* Quick edit senders email list */}
+        <div className="mm-quick-edit">
+          <div className="mm-section-title">Senders ({sendersRaw.split("\n").filter(Boolean).length})</div>
+          <textarea value={sendersRaw} onChange={e=>setSendersRaw(e.target.value)}
+            placeholder="one@sender.com&#10;two@sender.com"
+            style={{width:"100%",fontSize:11,padding:"8px 10px",minHeight:70,
+              background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,
+              color:"var(--tx)",fontFamily:"var(--font-mono)",resize:"vertical",boxSizing:"border-box"}}/>
+        </div>
+
+        {/* Recent log */}
+        <div className="mm-quick-edit">
+          <div className="mm-section-title">Live Log</div>
+          <div className="mm-log">
+            {(campLog||[]).slice(-30).reverse().map((entry,i)=>(
+              <div key={i} className="mm-log-entry" style={{
+                color: entry.type==="ok" ? "var(--ok)" : entry.type==="err" ? "var(--err)" : "var(--t2)"
+              }}>
+                {entry.msg}
+              </div>
+            ))}
+            {(!campLog||campLog.length===0) && <div style={{color:"var(--t3)",textAlign:"center",padding:12}}>No log entries yet</div>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   /* ── RENDER TAB CONTENT ── */
   function renderTab() {
     const TAB_LABELS = {
@@ -7495,7 +7715,7 @@ function App() {
     };
 
     switch(tab) {
-      case "campaign":    return <><MobTopBar/><TabCampaign {...commonCampProps}/><MobSpacer/></>;
+      case "campaign":    return <><MobTopBar/>{isMobile ? <MobileMonitor/> : <TabCampaign {...commonCampProps}/>}<MobSpacer/></>;
       case "compose":     return <><MobTopBar/><TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader}/><MobSpacer/></>;
       case "leads":       return <><MobTopBar/><TabLeads leadsRaw={leadsRaw} setLeadsRaw={setLeadsRaw} leads={leads} setLeads={setLeads} filesList={filesList} uploadFile={uploadFile} allowDupes={allowDupes} setAllowDupes={setAllowDupes}/><MobSpacer/></>;
       case "senders":     return <><MobTopBar/><TabSenders sendersRaw={sendersRaw} setSendersRaw={setSendersRaw} senderName={senderName} setSenderName={setSenderName} senderNames={senderNames} setSenderNames={setSenderNames} senderReplyTo={senderReplyTo} setSenderReplyTo={setSenderReplyTo} rotMode={rotMode} setRotMode={setRotMode} filesList={filesList} uploadFile={uploadFile}/><MobSpacer/></>;
@@ -7650,15 +7870,15 @@ function App() {
       {/* ── Mobile bottom navigation bar ── */}
       {(()=>{
         const MOB_NAV = [
-          {id:"campaign",ico:"🚀",lbl:"Campaign"},
+          {id:"campaign",ico:"📊",lbl:"Monitor"},
           {id:"compose", ico:"✉️",lbl:"Compose"},
           {id:"leads",   ico:"👥",lbl:"Leads",   badge:leads.length>0?leads.length:null},
           {id:"method",  ico:"⚙️",lbl:"Method"},
-          {id:"tools",   ico:"🔧",lbl:"Tools"},
+          {id:"senders", ico:"📤",lbl:"Senders"},
           {id:"account", ico:"👤",lbl:"Account"},
         ];
         const MOB_MORE = [
-          {id:"senders",     ico:"📤",lbl:"Senders"},
+          {id:"tools",       ico:"🔧",lbl:"Tools"},
           {id:"proxies",     ico:"🌐",lbl:"Proxies",     badge:proxies.length>0?proxies.length:null},
           {id:"attachments", ico:"📎",lbl:"Attachments"},
           {id:"tags",        ico:"🏷️",lbl:"Tags & Templates"},

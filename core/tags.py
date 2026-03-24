@@ -63,6 +63,46 @@ def _next_month_start(now: datetime) -> str:
         return f"January 1, {now.year + 1}"
     return f"{MONTHS[now.month]} 1, {now.year}"
 
+def _month_end_dt(now: datetime) -> datetime:
+    last_day = _calendar.monthrange(now.year, now.month)[1]
+    return datetime(now.year, now.month, last_day)
+
+def _time_of_day(now: datetime) -> str:
+    h = now.hour
+    if h < 12: return "morning"
+    if h < 17: return "afternoon"
+    return "evening"
+
+def _season(now: datetime) -> str:
+    m = now.month
+    if m in (12, 1, 2): return "winter"
+    if m in (3, 4, 5): return "spring"
+    if m in (6, 7, 8): return "summer"
+    return "fall"
+
+def _relative_day(now: datetime) -> str:
+    wd = now.weekday()
+    if wd < 5: return "this week"
+    return "this weekend"
+
+_FREE_PROVIDERS = {
+    "gmail.com","yahoo.com","hotmail.com","outlook.com","aol.com",
+    "live.com","msn.com","icloud.com","protonmail.com","zoho.com",
+    "yandex.com","mail.ru","gmx.com","mail.com","proton.me",
+    "fastmail.com","tutanota.com","pm.me",
+}
+
+def _email_provider(domain: str) -> str:
+    d = domain.lower()
+    if "gmail" in d: return "Gmail"
+    if any(x in d for x in ["outlook","hotmail","live.com","msn"]): return "Outlook"
+    if "yahoo" in d: return "Yahoo"
+    if "icloud" in d or "me.com" in d: return "Apple"
+    if "aol" in d: return "AOL"
+    if "proton" in d: return "Proton"
+    if d in _FREE_PROVIDERS: return d.split(".")[0].title()
+    return "Corporate"
+
 # ═══════════════════════════════════════════════════════════
 # CONSTANTS — defined at module level, never re-created
 # ═══════════════════════════════════════════════════════════
@@ -703,6 +743,26 @@ def _make_registry(ctx: dict) -> list[tuple[str, Any]]:
         ("#LOREM_PARAGRAPH",    LOREM_MEDIUM),
         ("#LOREM_SHORT",        LOREM_SHORT),
         ("#LOREM",              LOREM_SHORT),
+
+        # ── CONTEXTUAL / SMART GREETINGS ─────────────────────────────
+        ("#GREETING_FORMAL",    f"Dear {name or eu}"),
+        ("#GREETING_CASUAL",    f"Hi {first or eu}"),
+        ("#GREETING_FIRST",     f"Hi {first or eu}"),
+        ("#GREETING",           f"Hi {first or eu}"),
+        ("#SALUTATION",         f"Dear {name or eu}"),
+        ("#TIMEOFDAY",          _time_of_day(now)),
+        ("#GREETING_TOD",       f"Good {_time_of_day(now)}, {first or eu}"),
+        ("#SEASON",             _season(now)),
+        ("#DAYS_LEFT_MONTH",    str((_month_end_dt(now) - now).days)),
+        ("#DAYS_LEFT_YEAR",     str((datetime(now.year, 12, 31) - now).days)),
+        ("#DAYS_IN_MONTH",      str(_calendar.monthrange(now.year, now.month)[1])),
+        ("#RELATIVE_DAY",       _relative_day(now)),
+
+        # ── EMAIL PROVIDER DETECTION ─────────────────────────────────
+        ("#EMAIL_PROVIDER",     _email_provider(domain)),
+        ("#IS_GMAIL",           "true" if "gmail" in domain.lower() else "false"),
+        ("#IS_OUTLOOK",         "true" if any(x in domain.lower() for x in ["outlook","hotmail","live.com"]) else "false"),
+        ("#IS_CORPORATE",       "true" if domain.lower() not in _FREE_PROVIDERS else "false"),
 
         # ── META ──────────────────────────────────────────────────────
         ("#COUNTER",            str(counter)),

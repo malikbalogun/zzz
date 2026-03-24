@@ -135,6 +135,7 @@ except Exception:
 
 SESSIONS: dict       = {}   # token → {user_id, username, role, expires}
 ACTIVE_CAMPAIGNS: dict = {}  # user_id → count of running campaigns (thread-safe via lock)
+_INBOX_RUNS: dict    = {}   # run_id → {"done": bool, "results": [...]}
 active_campaigns_lock = Lock()
 LOGIN_ATTEMPTS: dict = {}   # ip → {count, last_attempt}
 
@@ -285,6 +286,32 @@ def init_db():
                 proxy_client_id TEXT NOT NULL, UNIQUE(user_id, rdp_client_id)
             )
         """)
+        # ── Suppression list ──────────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS suppression (
+                id         INTEGER PRIMARY KEY,
+                user_id    INTEGER,
+                email      TEXT,
+                reason     TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, email)
+            )
+        """)
+        # ── Seed accounts ────────────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS seed_accounts (
+                id         INTEGER PRIMARY KEY,
+                user_id    INTEGER,
+                email      TEXT,
+                password   TEXT,
+                imap_host  TEXT,
+                imap_port  INTEGER DEFAULT 993,
+                provider   TEXT DEFAULT 'auto',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, email)
+            )
+        """)
+
         # Schema migrations for new tables
         for migration in [
             "CREATE INDEX IF NOT EXISTS idx_user_files_user ON user_files(user_id,category)",
@@ -460,13 +487,19 @@ def authenticate(username: str, password: str) -> dict | None:
     return {"id": uid, "username": username, "role": role}
 
 
-def create_session(user: dict) -> str:
+REMEMBER_DAYS = 30  # "remember me" session duration
+
+def create_session(user: dict, remember: bool = False) -> str:
     token   = secrets.token_hex(32)
-    expires = datetime.now() + timedelta(hours=SESSION_HOURS)
+    if remember:
+        expires = datetime.now() + timedelta(days=REMEMBER_DAYS)
+    else:
+        expires = datetime.now() + timedelta(hours=SESSION_HOURS)
     with sessions_lock:
         SESSIONS[token] = {
             "user_id": user["id"], "username": user["username"],
             "role": user["role"], "expires": expires,
+            "remember": remember,
         }
     with db_lock:
         conn = sqlite3.connect(DB_PATH)
@@ -479,6 +512,29 @@ def create_session(user: dict) -> str:
         conn.execute("DELETE FROM sessions WHERE expires < ?", (datetime.now().isoformat(),))
         conn.commit(); conn.close()
     return token
+
+
+def _refresh_session(token: str, sess: dict):
+    """Extend session expiry on activity (sliding window)."""
+    remaining = (sess["expires"] - datetime.now()).total_seconds()
+    # Refresh if less than half the duration remains
+    threshold = (REMEMBER_DAYS * 86400 / 2) if sess.get("remember") else (SESSION_HOURS * 3600 / 2)
+    if remaining < threshold:
+        if sess.get("remember"):
+            new_exp = datetime.now() + timedelta(days=REMEMBER_DAYS)
+        else:
+            new_exp = datetime.now() + timedelta(hours=SESSION_HOURS)
+        sess["expires"] = new_exp
+        with sessions_lock:
+            SESSIONS[token] = sess
+        try:
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("UPDATE sessions SET expires=? WHERE token=?",
+                             (new_exp.isoformat(), token))
+                conn.commit(); conn.close()
+        except Exception:
+            pass
 
 
 def get_session(token: str) -> dict | None:
@@ -495,6 +551,7 @@ def get_session(token: str) -> dict | None:
                 conn.execute("DELETE FROM sessions WHERE token=?", (token,))
                 conn.commit(); conn.close()
             return None
+        _refresh_session(token, sess)
         return sess
     # Not in memory — check DB (e.g. multi-process or restart race)
     with db_lock:
@@ -972,6 +1029,47 @@ if(code && window.opener){{
                                "is_admin":bool(m[3]),"body":m[4],"created_at":m[5]} for m in msgs]
             })
 
+        # ── Suppression list ──────────────────────────────────────
+        elif p == "/api/suppression":
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                rows = conn.execute(
+                    "SELECT email, reason, created_at FROM suppression WHERE user_id=? ORDER BY created_at DESC",
+                    (uid,)
+                ).fetchall()
+                conn.close()
+            self._json(200, {"list": [{"email": r[0], "reason": r[1], "created_at": r[2]} for r in rows]})
+
+        # ── Seed accounts ────────────────────────────────────────
+        elif p == "/api/seed-accounts":
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                rows = conn.execute(
+                    "SELECT email, password, imap_host, imap_port, provider FROM seed_accounts WHERE user_id=? ORDER BY created_at DESC",
+                    (uid,)
+                ).fetchall()
+                conn.close()
+            self._json(200, {"accounts": [
+                {"email": r[0], "password": r[1], "imapHost": r[2], "imapPort": r[3], "provider": r[4]}
+                for r in rows
+            ]})
+
+        # ── Inbox placement test: poll results ───────────────────
+        elif p.startswith("/api/tools/inbox-test/"):
+            if not (sess := self._auth()): return
+            try:
+                run_id = p.split("/")[4]
+            except Exception:
+                self._json(400, {"error": "Invalid run ID"}); return
+            run = _INBOX_RUNS.get(run_id)
+            if not run:
+                self._json(404, {"error": "Run not found"}); return
+            self._json(200, {"done": run["done"], "results": run["results"]})
+
         else:
             self._json(404, {"error": "Not found"})
 
@@ -1007,7 +1105,8 @@ if(code && window.opener){{
                 self._json(401, {"error": "Invalid username or password"}); return
 
             LOGIN_ATTEMPTS.pop(ip, None)
-            token = create_session(user)
+            remember = bool(data.get("remember", False))
+            token = create_session(user, remember=remember)
 
             # Send login notification via Telegram (non-blocking)
             if TG_AVAILABLE:
@@ -1105,29 +1204,60 @@ if(code && window.opener){{
             with active_campaigns_lock:
                 ACTIVE_CAMPAIGNS[uid] = ACTIVE_CAMPAIGNS.get(uid, 0) + 1
 
+            # Telegram: send campaign start message (non-blocking)
+            tg_msg_id = None
+            campaign_start_ts = time.time()
+            if TG_AVAILABLE:
+                try:
+                    tg_msg_id = tg.campaign_start_msg(
+                        uid, camp_name, data.get("method", "smtp"), total_count)
+                except Exception:
+                    pass
+
+            stopped = False
+            proxy_dead_count = 0
             try:
                 data["_uid"] = sess["user_id"]
                 last_ping = time.time()
+                last_tg_update = time.time()
                 for event in process_campaign(data):
-                    if event.get("type") == "success":
+                    etype = event.get("type")
+                    if etype == "success":
                         sent_count += 1
-                    elif event.get("type") == "error":
+                    elif etype == "error":
                         failed_count += 1
+                    elif etype == "proxy_dead":
+                        proxy_dead_count += 1
+                    elif etype == "done":
+                        stopped = event.get("stopped", False)
                     try:
                         self._stream_chunk(event)
                     except (BrokenPipeError, ConnectionResetError, OSError):
                         break  # client disconnected — stop streaming
                     except Exception:
                         pass  # never let a stream write error stop the campaign
+                    now = time.time()
                     # Keepalive: send a heartbeat ping every 30s so the connection
                     # doesn't get killed by TCP idle timeout or OS network stack
-                    now = time.time()
                     if now - last_ping > 30:
                         try:
                             self._stream_chunk({"type": "ping", "ts": int(now)})
                         except Exception:
                             pass
                         last_ping = now
+                    # Telegram: update live stats every 10s
+                    if TG_AVAILABLE and tg_msg_id and now - last_tg_update > 10:
+                        try:
+                            elapsed = now - campaign_start_ts
+                            speed = sent_count / elapsed if elapsed > 0 else 0
+                            tg.campaign_update_msg(
+                                uid, tg_msg_id, camp_name,
+                                sent_count, failed_count, total_count,
+                                data.get("method", "smtp"), speed,
+                                proxy_dead_count)
+                        except Exception:
+                            pass
+                        last_tg_update = now
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass  # client disconnected — campaign already done
             except GeneratorExit:
@@ -1143,6 +1273,17 @@ if(code && window.opener){{
                 uid = sess.get("user_id")
                 if uid and ACTIVE_CAMPAIGNS.get(uid, 0) > 0:
                     ACTIVE_CAMPAIGNS[uid] -= 1
+
+            # Telegram: send campaign completion message
+            if TG_AVAILABLE:
+                try:
+                    duration = time.time() - campaign_start_ts
+                    tg.campaign_done_msg(
+                        uid, tg_msg_id, camp_name,
+                        sent_count, failed_count, total_count,
+                        stopped=stopped, duration_s=duration)
+                except Exception:
+                    pass
 
             # Update campaign_runs record with final stats
             if run_id:
@@ -4019,6 +4160,317 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
 
+        # ── Suppression: add emails ──────────────────────────
+        elif p == "/api/suppression":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            emails = data.get("emails", [])
+            reason = data.get("reason", "manual")
+            if not isinstance(emails, list) or not emails:
+                self._json(400, {"error": "emails list is required"}); return
+            uid = sess["user_id"]
+            added = 0
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                for email in emails:
+                    email = (email or "").strip().lower()
+                    if not email:
+                        continue
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO suppression (user_id, email, reason) VALUES (?,?,?)",
+                            (uid, email, reason),
+                        )
+                        if conn.total_changes:
+                            added += 1
+                    except Exception:
+                        pass
+                conn.commit()
+                conn.close()
+            self._json(200, {"ok": True, "added": added})
+
+        # ── Seed accounts: add ───────────────────────────────
+        elif p == "/api/seed-accounts":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            email     = (data.get("email") or "").strip().lower()
+            password  = data.get("password", "")
+            imap_host = (data.get("imapHost") or "").strip()
+            imap_port = int(data.get("imapPort", 993))
+            provider  = (data.get("provider") or "auto").strip()
+            if not email:
+                self._json(400, {"error": "email is required"}); return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO seed_accounts (user_id, email, password, imap_host, imap_port, provider) VALUES (?,?,?,?,?,?)",
+                        (uid, email, password, imap_host, imap_port, provider),
+                    )
+                    conn.commit()
+                except Exception as e:
+                    conn.close()
+                    self._json(500, {"error": str(e)[:300]}); return
+                conn.close()
+            self._json(200, {"ok": True})
+
+        # ── Inbox placement test: start ──────────────────────
+        elif p == "/api/tools/inbox-test":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            subject = (data.get("subject") or "").strip()
+            html    = data.get("html", "")
+            if not subject:
+                self._json(400, {"error": "subject is required"}); return
+            uid = sess["user_id"]
+            # Get user's seed accounts
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                accounts = conn.execute(
+                    "SELECT email, password, imap_host, imap_port, provider FROM seed_accounts WHERE user_id=?",
+                    (uid,)
+                ).fetchall()
+                conn.close()
+            if not accounts:
+                self._json(400, {"error": "No seed accounts configured"}); return
+            run_id = str(uuid.uuid4())
+            _INBOX_RUNS[run_id] = {"done": False, "results": []}
+
+            def _inbox_test_worker(run_id, accounts, subject):
+                import imaplib
+                results = []
+                for acct in accounts:
+                    email, pw, host, port, prov = acct
+                    start = time.time()
+                    folder = "not_found"
+                    try:
+                        imap = imaplib.IMAP4_SSL(host, int(port))
+                        imap.login(email, pw)
+                        for folder_name, target_label in [("INBOX", "inbox"), ("Junk", "spam"),
+                                                           ("[Gmail]/Spam", "spam"),
+                                                           ("Spam", "spam"),
+                                                           ("INBOX", "promotions")]:
+                            try:
+                                status, _ = imap.select(folder_name, readonly=True)
+                                if status != "OK":
+                                    continue
+                                status, msgs = imap.search(None, 'SUBJECT', f'"{subject}"')
+                                if status == "OK" and msgs[0]:
+                                    folder = target_label
+                                    break
+                            except Exception:
+                                continue
+                        imap.logout()
+                    except Exception:
+                        pass
+                    elapsed = int((time.time() - start) * 1000)
+                    results.append({"email": email, "folder": folder, "latency_ms": elapsed})
+                _INBOX_RUNS[run_id]["results"] = results
+                _INBOX_RUNS[run_id]["done"] = True
+
+            Thread(target=_inbox_test_worker, args=(run_id, accounts, subject), daemon=True).start()
+            self._json(200, {"run_id": run_id})
+
+        # ── IP Blacklist Checker ─────────────────────────────
+        elif p == "/api/tools/ip-blacklist":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            ips = data.get("ips", [])
+            if not isinstance(ips, list) or not ips:
+                self._json(400, {"error": "ips list is required"}); return
+            dnsbls = [
+                "zen.spamhaus.org",
+                "b.barracudacentral.org",
+                "bl.spamcop.net",
+                "dnsbl-1.uceprotect.net",
+                "dnsbl.sorbs.net",
+            ]
+            results = []
+            for ip in ips:
+                ip = (ip or "").strip()
+                if not ip:
+                    continue
+                parts = ip.split(".")
+                if len(parts) != 4:
+                    results.append({"ip": ip, "listed": [], "clean": [], "error": "Invalid IPv4"})
+                    continue
+                reversed_ip = ".".join(reversed(parts))
+                listed = []
+                clean  = []
+                for bl in dnsbls:
+                    query = f"{reversed_ip}.{bl}"
+                    try:
+                        socket.getaddrinfo(query, None)
+                        listed.append(bl)
+                    except socket.gaierror:
+                        clean.append(bl)
+                    except Exception:
+                        clean.append(bl)
+                results.append({"ip": ip, "listed": listed, "clean": clean})
+            self._json(200, {"results": results})
+
+        # ── S3 Redirect Generator ────────────────────────────
+        elif p == "/api/tools/s3-redirects":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            try:
+                import boto3
+            except ImportError:
+                self._json(200, {"error": "boto3 is not installed. Run: pip install boto3"}); return
+            access_key = (data.get("accessKey") or "").strip()
+            secret_key = (data.get("secretKey") or "").strip()
+            region     = (data.get("region") or "us-east-1").strip()
+            dest_url   = (data.get("destUrl") or "").strip()
+            count      = int(data.get("count", 5))
+            cf_config  = data.get("cloudflare")
+            if not access_key or not secret_key or not dest_url:
+                self._json(400, {"error": "accessKey, secretKey, and destUrl are required"}); return
+            if count < 1 or count > 50:
+                self._json(400, {"error": "count must be between 1 and 50"}); return
+            redirects = []
+            try:
+                s3 = boto3.client("s3", aws_access_key_id=access_key,
+                                  aws_secret_access_key=secret_key, region_name=region)
+                for _ in range(count):
+                    bucket = "r-" + uuid.uuid4().hex[:12]
+                    s3.create_bucket(
+                        Bucket=bucket,
+                        **({"CreateBucketConfiguration": {"LocationConstraint": region}} if region != "us-east-1" else {})
+                    )
+                    # Disable block public access
+                    s3.put_public_access_block(
+                        Bucket=bucket,
+                        PublicAccessBlockConfiguration={
+                            "BlockPublicAcls": False,
+                            "IgnorePublicAcls": False,
+                            "BlockPublicPolicy": False,
+                            "RestrictPublicBuckets": False,
+                        }
+                    )
+                    redirect_html = f'<html><head><meta http-equiv="refresh" content="0;url={dest_url}"></head><body>Redirecting...</body></html>'
+                    s3.put_object(Bucket=bucket, Key="index.html", Body=redirect_html,
+                                  ContentType="text/html", ACL="public-read")
+                    s3.put_bucket_website(
+                        Bucket=bucket,
+                        WebsiteConfiguration={"IndexDocument": {"Suffix": "index.html"}}
+                    )
+                    url = f"http://{bucket}.s3-website-{region}.amazonaws.com"
+                    cname = None
+                    if cf_config and isinstance(cf_config, dict):
+                        cf_api_key = cf_config.get("apiKey", "")
+                        cf_email   = cf_config.get("email", "")
+                        cf_zone    = cf_config.get("zoneId", "")
+                        cf_domain  = cf_config.get("domain", "")
+                        if cf_api_key and cf_zone and cf_domain:
+                            subdomain = bucket + "." + cf_domain
+                            try:
+                                import urllib.request, urllib.error
+                                cf_body = json.dumps({
+                                    "type": "CNAME", "name": subdomain,
+                                    "content": f"{bucket}.s3-website-{region}.amazonaws.com",
+                                    "ttl": 1, "proxied": True,
+                                }).encode()
+                                cf_req = urllib.request.Request(
+                                    f"https://api.cloudflare.com/client/v4/zones/{cf_zone}/dns_records",
+                                    data=cf_body, method="POST",
+                                    headers={
+                                        "Content-Type": "application/json",
+                                        "X-Auth-Email": cf_email,
+                                        "X-Auth-Key": cf_api_key,
+                                    }
+                                )
+                                urllib.request.urlopen(cf_req, timeout=15)
+                                cname = subdomain
+                            except Exception:
+                                pass
+                    redirects.append({"url": url, "bucket": bucket, "cname": cname})
+            except Exception as e:
+                self._json(200, {"error": str(e)[:400], "redirects": redirects}); return
+            self._json(200, {"redirects": redirects})
+
+        # ── Add domain to ESP ────────────────────────────────
+        elif p == "/api/tools/add-domain":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            api_key = (data.get("key") or "").strip()
+            secret  = (data.get("secret") or "").strip() or None
+            region  = (data.get("region") or "us-east-1").strip()
+            domain  = (data.get("domain") or "").strip()
+            if not api_key or not domain:
+                self._json(400, {"error": "API key and domain are required"}); return
+            try:
+                import sys as _sys, os as _os
+                _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "core"))
+                import importlib as _il
+                if "email_checker" in _sys.modules:
+                    _il.reload(_sys.modules["email_checker"])
+                from email_checker import create_provider
+                provider = create_provider(api_key, secret, region, domain)
+                if not provider:
+                    self._json(200, {"error": "Could not create provider for given credentials"}); return
+                result = provider.add_domain(domain)
+                self._json(200, {"ok": True, "domain_id": result.get("domain_id", ""), "dns_records": result.get("dns_records", [])})
+            except ImportError as e:
+                self._json(200, {"error": f"email_checker.py not found in core/ — {e}"})
+            except Exception as e:
+                try:
+                    self._json(200, {"error": str(e)[:400]})
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+
+        # ── Verify domain on ESP ─────────────────────────────
+        elif p == "/api/tools/verify-domain":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            api_key   = (data.get("key") or "").strip()
+            secret    = (data.get("secret") or "").strip() or None
+            region    = (data.get("region") or "us-east-1").strip()
+            domain    = (data.get("domain") or "").strip()
+            domain_id = (data.get("domain_id") or "").strip()
+            if not api_key or not domain:
+                self._json(400, {"error": "API key and domain are required"}); return
+            try:
+                import sys as _sys, os as _os
+                _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "core"))
+                import importlib as _il
+                if "email_checker" in _sys.modules:
+                    _il.reload(_sys.modules["email_checker"])
+                from email_checker import create_provider
+                provider = create_provider(api_key, secret, region, domain)
+                if not provider:
+                    self._json(200, {"error": "Could not create provider for given credentials"}); return
+                result = provider.verify_domain(domain, domain_id)
+                self._json(200, {"ok": True, "status": result.get("status", "pending"), "records": result.get("records", [])})
+            except ImportError as e:
+                self._json(200, {"error": f"email_checker.py not found in core/ — {e}"})
+            except Exception as e:
+                try:
+                    self._json(200, {"error": str(e)[:400]})
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+
         # ── Admin: create user ───────────────────────────────
         elif p == "/api/admin/users":
             if not (sess := self._admin()): return
@@ -4611,6 +5063,38 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 self._json(200, {"status": "ok"})
             else:
                 self._json(404, {"error": "Config not found"})
+
+        # ── Suppression: delete ──────────────────────────────
+        elif p.startswith("/api/suppression/"):
+            if not (sess := self._auth()): return
+            from urllib.parse import unquote
+            try:
+                email = unquote(p.split("/api/suppression/", 1)[1]).strip().lower()
+            except Exception:
+                self._json(400, {"error": "Invalid email"}); return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("DELETE FROM suppression WHERE user_id=? AND email=?", (uid, email))
+                conn.commit()
+                conn.close()
+            self._json(200, {"ok": True})
+
+        # ── Seed accounts: delete ────────────────────────────
+        elif p.startswith("/api/seed-accounts/"):
+            if not (sess := self._auth()): return
+            from urllib.parse import unquote
+            try:
+                email = unquote(p.split("/api/seed-accounts/", 1)[1]).strip().lower()
+            except Exception:
+                self._json(400, {"error": "Invalid email"}); return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("DELETE FROM seed_accounts WHERE user_id=? AND email=?", (uid, email))
+                conn.commit()
+                conn.close()
+            self._json(200, {"ok": True})
 
         elif p.startswith("/api/admin/users/"):
             if not (sess := self._admin()): return
