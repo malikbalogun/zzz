@@ -717,53 +717,58 @@ class SynthTelHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    _9proxy_api_error = ""  # last error from API start attempt
+
     def _ensure_9proxy_api(self):
         """Find or start the 9proxy local HTTP API. Returns base URL or None."""
-        import subprocess, shutil
-        # Check if API is already listening by looking at ss output
+        import subprocess, shutil, re, time
+        self._9proxy_api_error = ""
+
+        # Check if API is already listening
         try:
-            ss_out = subprocess.check_output(
-                ["ss", "-tlnp"], timeout=5
-            ).decode()
-            # Find any 9proxy listener that looks like an API port (not the proxy ports 60000-60099)
+            ss_out = subprocess.check_output(["ss", "-tlnp"], timeout=5).decode()
             for line in ss_out.split("\n"):
                 if "9proxy" in line:
-                    # Extract port from 127.0.0.1:PORT
-                    import re
                     m = re.search(r"127\.0\.0\.1:(\d+)", line)
                     if m:
                         port = int(m.group(1))
                         if port < 60000 or port > 60099:
-                            # This looks like an API port, test it
-                            test_url = f"http://127.0.0.1:{port}/api/proxy?response_type=2&count=1"
                             try:
-                                resp = urlopen(Request(test_url), timeout=3)
+                                resp = urlopen(Request(f"http://127.0.0.1:{port}/api/proxy?response_type=2&count=1"), timeout=3)
                                 if resp.status == 200:
                                     return f"http://127.0.0.1:{port}"
                             except Exception:
                                 pass
         except Exception:
             pass
+
         # API not running — try to start it
         nine_bin = shutil.which("9proxy")
         if not nine_bin:
+            self._9proxy_api_error = "9proxy binary not found"
             return None
         try:
-            subprocess.Popen(
+            result = subprocess.run(
                 [nine_bin, "api", "-s", "-p", "2090"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                capture_output=True, text=True, timeout=15
             )
-            import time
-            time.sleep(2)
-            # Verify it started
-            try:
-                resp = urlopen(Request("http://127.0.0.1:2090/api/proxy?response_type=2&count=1"), timeout=5)
-                if resp.status == 200:
-                    return "http://127.0.0.1:2090"
-            except Exception:
-                pass
-        except Exception:
-            pass
+            api_out = (result.stdout + result.stderr).strip()
+            log.info("9proxy api start: %s", api_out)
+            if "log-in" in api_out.lower() or "login" in api_out.lower():
+                self._9proxy_api_error = "needs_login"
+                return None
+            # Wait for it to come up
+            for _ in range(5):
+                time.sleep(1)
+                try:
+                    resp = urlopen(Request("http://127.0.0.1:2090/api/proxy?response_type=2&count=1"), timeout=3)
+                    if resp.status == 200:
+                        return "http://127.0.0.1:2090"
+                except Exception:
+                    pass
+            self._9proxy_api_error = api_out[:200] if api_out else "API did not start"
+        except Exception as e:
+            self._9proxy_api_error = str(e)[:200]
         return None
 
     # ── OPTIONS ──────────────────────────────────────────────
@@ -2932,9 +2937,11 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             api_url = self._ensure_9proxy_api()
             if api_url:
                 self._json(200, {"status": "ok", "message": f"9proxy ready — API on {api_url}"})
-            else:
-                # API couldn't start — might need login
+            elif self._9proxy_api_error == "needs_login":
                 self._json(200, {"status": "needs_login", "message": "9proxy needs login. Enter your 9proxy email and password."})
+            else:
+                err = self._9proxy_api_error or "Unknown error"
+                self._json(200, {"status": "error", "message": f"Could not start 9proxy API: {err}"})
 
         elif p == "/api/9proxy/fetch":
             if not (sess := self._auth()): return
