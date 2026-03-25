@@ -568,6 +568,232 @@ tr:hover td { background:var(--bg3); }
   .g2,.g3,.g4{grid-template-columns:1fr;}
 }
 
+/* ── Hide mobile-only elements on desktop ── */
+.mob-topbar { display: none !important; }
+.mob-nav    { display: none !important; }
+
+/* ═══════════════════════════════════════════════
+   MOBILE LAYOUT — Bottom nav bar replaces sidebar
+═══════════════════════════════════════════════ */
+@media(max-width:768px){
+  /* Nuclear overflow-x lock — nothing scrolls sideways */
+  html, body { overflow-x: hidden; max-width: 100vw; }
+  #root { flex-direction: column; overflow: hidden; max-width: 100vw; }
+  *, *::before, *::after { box-sizing: border-box; }
+
+  /* Hide the side sidebar entirely */
+  .sidebar { display: none !important; }
+
+  /* Show mobile elements */
+  .mob-topbar { display: flex !important; }
+  .mob-nav    { display: flex !important; }
+
+  /* Main: full width, side padding so content doesn't touch edges */
+  .main {
+    width: 100%; max-width: 100vw; min-width: 0;
+    padding: 0 10px 72px;
+    overflow-y: auto; overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+  .main.tab-campaign {
+    padding: 0 10px 72px;
+    overflow-x: hidden;
+  }
+
+  /* Spacer at bottom of flex column tabs */
+  .tab-campaign-inner::after {
+    content: ''; display: block; height: 8px; flex-shrink: 0;
+  }
+
+  /* Hide the tab's own page header — MobTopBar already shows the name */
+  .ph { display: none !important; }
+
+  /* Sub-tabs (tools, method etc) — scroll horizontally instead of overflow */
+  .tb-row, [class*="tb-row"], .card > .row.g0, .card > div > .row {
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap !important; gap: 0;
+    border-bottom: 1px solid var(--border);
+    margin: 0 -10px; padding: 0 10px;
+    scrollbar-width: none;
+  }
+  .tb-row::-webkit-scrollbar, [class*="tb-row"]::-webkit-scrollbar { display: none; }
+  .tb { white-space: nowrap; flex-shrink: 0; }
+
+  /* Sub-tab bars (Tools, Method, etc) — scroll horizontally */
+  .tab-bar {
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap !important;
+    margin: 0 -10px 16px; padding: 0 10px;
+    scrollbar-width: none; -ms-overflow-style: none;
+  }
+  .tab-bar::-webkit-scrollbar { display: none; }
+  .tab-bar .tb { white-space: nowrap; flex-shrink: 0; font-size: 12px; padding: 7px 10px; }
+
+  /* Bottom nav bar */
+  .mob-nav {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    height: 54px; z-index: 1000;
+    background: var(--bg2);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: stretch;
+    box-shadow: 0 -3px 20px rgba(0,0,0,.5);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  .mob-nav-item {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 1px; cursor: pointer;
+    color: var(--t3); transition: color .15s;
+    padding: 6px 2px; border: none; background: none;
+    position: relative; -webkit-tap-highlight-color: transparent;
+    font-family: var(--font-ui); min-width: 0;
+  }
+  .mob-nav-item.active { color: var(--accent); }
+  .mob-nav-item.active::before {
+    content: ''; position: absolute; top: 0; left: 15%; right: 15%;
+    height: 2px; background: var(--accent); border-radius: 0 0 3px 3px;
+  }
+  /* Use text icons to avoid Safari emoji→symbol rendering */
+  .mob-nav-icon {
+    font-size: 18px; line-height: 1;
+    font-family: "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif;
+  }
+  .mob-nav-lbl { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .2px; line-height: 1; white-space: nowrap; }
+  .mob-nav-badge {
+    position: absolute; top: 3px; right: calc(50% - 18px);
+    background: var(--err); color: #fff;
+    font-size: 8px; font-weight: 700; padding: 1px 4px;
+    border-radius: 20px; min-width: 14px; text-align: center;
+  }
+
+  /* Mobile top bar */
+  .mob-topbar {
+    position: sticky; top: 0; z-index: 200;
+    background: var(--bg2); border-bottom: 1px solid var(--border);
+    padding: 8px 10px 8px 12px;
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 0 -10px 10px; gap: 6px; width: calc(100% + 20px);
+  }
+  .mob-topbar-left  { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .mob-topbar-title { font-size: 15px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mob-topbar-sub   { font-size: 10px; color: var(--t3); }
+  .mob-topbar-right { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+  .mob-topbar-right .th-btn { padding: 4px 5px; font-size: 12px; min-width: 28px; }
+
+  /* Cards */
+  .card { padding: 12px 10px; width: 100%; max-width: 100%; }
+  .card-title { font-size: 14px; }
+
+  /* Stats 2×2 grid */
+  .stat-grid { grid-template-columns: repeat(2,1fr) !important; }
+  .stat { padding: 10px 8px; }
+  .stat-v { font-size: 20px; }
+
+  /* Buttons */
+  .btn-lg { padding: 10px 14px; font-size: 14px; }
+  .btn { white-space: nowrap; }
+
+  /* Log box */
+  .log-box { height: 180px !important; }
+
+  /* All inputs/selects stay in bounds */
+  input, select, textarea, button { max-width: 100%; min-width: 0; }
+
+  /* Grids collapse */
+  .g2, .g3, .g4 { grid-template-columns: 1fr !important; }
+
+  /* Tables scroll within their box */
+  .tw { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+  .tw table { min-width: max-content; }
+
+  /* Rows: wrap by default */
+  .row { flex-wrap: wrap; min-width: 0; }
+  .row > * { min-width: 0; }
+}
+
+@media(max-width:420px){
+  .mob-nav-lbl { display: none; }
+  .mob-nav { height: 50px; }
+  .mob-nav-icon { font-size: 20px; }
+  .stat-v { font-size: 17px; }
+  .mob-topbar-right .th-btn { display: none; }
+}
+
+/* ═══════════════════════════════════════════════
+   MOBILE MONITOR PANEL — Stripped-down monitoring
+═══════════════════════════════════════════════ */
+.mob-monitor { padding: 8px; }
+.mob-monitor .mm-status {
+  text-align: center; padding: 16px 12px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); margin-bottom: 10px;
+}
+.mob-monitor .mm-status-icon { font-size: 40px; margin-bottom: 6px; }
+.mob-monitor .mm-status-label { font-size: 14px; font-weight: 700; color: var(--tx); }
+.mob-monitor .mm-status-sub { font-size: 11px; color: var(--t2); margin-top: 4px; }
+.mob-monitor .mm-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 6px; margin-bottom: 10px;
+}
+.mob-monitor .mm-stat {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 8px; text-align: center;
+}
+.mob-monitor .mm-stat-v { font-size: 20px; font-weight: 800; font-family: var(--font-mono); }
+.mob-monitor .mm-stat-l { font-size: 9px; font-weight: 600; color: var(--t3); text-transform: uppercase; letter-spacing: .5px; }
+.mob-monitor .mm-controls {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px;
+}
+.mob-monitor .mm-ctrl {
+  padding: 12px 8px; border-radius: var(--radius-sm);
+  font-size: 12px; font-weight: 700; border: none; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  font-family: var(--font-ui);
+}
+.mob-monitor .mm-ctrl-start { background: var(--ok); color: #fff; }
+.mob-monitor .mm-ctrl-pause { background: #f59e0b; color: #fff; }
+.mob-monitor .mm-ctrl-stop  { background: var(--err); color: #fff; }
+.mob-monitor .mm-ctrl:disabled { opacity: .4; cursor: not-allowed; }
+.mob-monitor .mm-progress {
+  background: var(--bg2); border-radius: 6px; height: 8px; margin-bottom: 10px;
+  overflow: hidden; border: 1px solid var(--border);
+}
+.mob-monitor .mm-progress-fill {
+  height: 100%; background: var(--accent); transition: width .5s ease;
+  border-radius: 6px;
+}
+.mob-monitor .mm-log {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px; margin-bottom: 10px;
+  max-height: 160px; overflow-y: auto; font-family: var(--font-mono);
+  font-size: 10px; line-height: 1.6;
+}
+.mob-monitor .mm-log-entry { padding: 2px 0; border-bottom: 1px solid var(--bg2); }
+.mob-monitor .mm-quick-edit {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px; margin-bottom: 10px;
+}
+.mob-monitor .mm-section-title {
+  font-size: 11px; font-weight: 700; color: var(--t3); text-transform: uppercase;
+  letter-spacing: .5px; margin-bottom: 6px;
+}
+
+/* ── Progress bar animation ── */
+@keyframes prog-stripe {
+  0%   { background-position: 0 0; }
+  100% { background-position: 40px 0; }
+}
+.prog-active {
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255,255,255,.12) 0px,
+    rgba(255,255,255,.12) 10px,
+    transparent 10px,
+    transparent 20px
+  );
+  background-size: 40px 40px;
+  animation: prog-stripe 1s linear infinite;
+}
 #st-toasts {
   position: fixed; bottom: 24px; right: 24px; z-index: 9999;
   display: flex; flex-direction: column; gap: 10px; pointer-events: none;
@@ -612,206 +838,267 @@ const API = "";
 // ── Tag catalogue (matches full tag reference panel) ──
 const TAG_SECTIONS = [
   { label:"RECIPIENT / LEAD", tags:[
-    {tag:"#REALNAME",         desc:"Full name, or email username if no name"},
-    {tag:"#FIRSTNAME",        desc:"First name (first word of name)"},
-    {tag:"#LASTNAME",         desc:"Last name (last word if multiple words)"},
-    {tag:"#MIDDLENAME",       desc:"Middle name (middle word if 3+ words)"},
-    {tag:"#FULLNAME",         desc:"Same as #REALNAME"},
-    {tag:"#NAMEINITIALS",     desc:"Initials (e.g. JS)"},
-    {tag:"#EMAIL",            desc:"Full recipient email address"},
-    {tag:"#EMAILUSER",        desc:"Part before @ in email"},
-    {tag:"#DOMAIN",           desc:"Domain (e.g. gmail.com)"},
-    {tag:"#DOMAINNAME",       desc:"Domain without TLD (e.g. gmail)"},
-    {tag:"#DOMAIN_TLD",       desc:"TLD only (e.g. com)"},
-    {tag:"#COMPANY",          desc:"Company from lead list, or capitalized domain"},
-    {tag:"#COMPANY_UPPER",    desc:"Company in UPPERCASE"},
-    {tag:"#DOMAIN_LOGO_URL",  desc:"Clearbit logo image URL for recipient domain"},
-    {tag:"#FIELD_{KEY}",      desc:"Custom lead column e.g. #FIELD_PHONE"},
+    {tag:"#REALNAME",              desc:"Full name, or email username if no name"},
+    {tag:"#FIRSTNAME",             desc:"First name (first word of name)"},
+    {tag:"#LASTNAME",              desc:"Last name (last word if multiple words)"},
+    {tag:"#MIDDLENAME",            desc:"Middle name (middle word if 3+ words)"},
+    {tag:"#FULLNAME",              desc:"Same as #REALNAME"},
+    {tag:"#NAMEINITIALS",          desc:"Initials of full name (e.g. JS)"},
+    {tag:"#EMAIL",                 desc:"Full recipient email address"},
+    {tag:"#EMAILUSER",             desc:"Part before @ in email"},
+    {tag:"#DOMAIN",                desc:"Domain (e.g. gmail.com)"},
+    {tag:"#DOMAINNAME",            desc:"Domain without TLD (e.g. gmail)"},
+    {tag:"#DOMAIN_TLD",            desc:"TLD only (e.g. com)"},
+    {tag:"#COMPANY",               desc:"Company from lead list, or capitalized domain"},
+    {tag:"#COMPANY_UPPER",         desc:"Company in UPPERCASE"},
+    {tag:"#DOMAIN_LOGO_URL",       desc:"Clearbit logo image URL for recipient domain"},
+    {tag:"#FIELD_{KEY}",           desc:"Any custom lead column — e.g. #FIELD_PHONE"},
   ]},
   { label:"SENDER", tags:[
-    {tag:"#FROMNAME",         desc:"Sender's From Name"},
-    {tag:"#FROMNAME_UPPER",   desc:"Sender's From Name in UPPERCASE"},
-    {tag:"#FROMEMAIL",        desc:"Sender's From Email"},
-    {tag:"#FROMDOMAIN",       desc:"Domain of sender email"},
-    {tag:"#FROMUSER",         desc:"Username part of sender email"},
-    {tag:"#REPLYTO",          desc:"Reply-To address"},
-    {tag:"#SUBJECT",          desc:"Current subject line"},
-    {tag:"#SUBJECT_UPPER",    desc:"Subject in UPPERCASE"},
+    {tag:"#FROMNAME",              desc:"Sender's From Name"},
+    {tag:"#FROMNAME_UPPER",        desc:"Sender's From Name in UPPERCASE"},
+    {tag:"#FROMEMAIL",             desc:"Sender's From Email"},
+    {tag:"#FROMDOMAIN",            desc:"Domain of sender email"},
+    {tag:"#FROMUSER",              desc:"Username part of sender email"},
+    {tag:"#REPLYTO",               desc:"Reply-To address"},
+    {tag:"#SENDER",                desc:"Sender email (alias for #FROMEMAIL)"},
+    {tag:"#SENDERDOMAIN",          desc:"Sender domain (alias for #FROMDOMAIN)"},
+    {tag:"#SUBJECT",               desc:"Current subject line"},
+    {tag:"#SUBJECT_UPPER",         desc:"Subject in UPPERCASE"},
+    {tag:"#UNIQID",                desc:"Unique 8-char alphanumeric ID per email"},
+    {tag:"#COUNTER",               desc:"Incrementing send counter (1, 2, 3…)"},
   ]},
   { label:"DATE & TIME", tags:[
-    {tag:"#DATE",             desc:"Full date (March 3, 2026)"},
-    {tag:"#DATESHORT",        desc:"Short date (03/03/2026)"},
-    {tag:"#DATEISO",          desc:"ISO date (2026-03-03)"},
-    {tag:"#DATE_RFC",         desc:"RFC 2822 date for email headers"},
-    {tag:"#DATE_UNIX",        desc:"Unix timestamp of today"},
-    {tag:"#DAYNAME",          desc:"Day name (Tuesday)"},
-    {tag:"#DAYNAME_SHORT",    desc:"Short day name (Tue)"},
-    {tag:"#DAY",              desc:"Day of month (3)"},
-    {tag:"#MONTH",            desc:"Month name (March)"},
-    {tag:"#MONTH_SHORT",      desc:"Short month name (Mar)"},
-    {tag:"#MONTHNUM",         desc:"Month number (03)"},
-    {tag:"#YEAR",             desc:"4-digit year (2026)"},
-    {tag:"#YEAR_SHORT",       desc:"2-digit year (26)"},
-    {tag:"#QUARTER",          desc:"Current quarter (Q1)"},
-    {tag:"#WEEKNUM",          desc:"ISO week number"},
-    {tag:"#TIME",             desc:"24h time (14:30:00)"},
-    {tag:"#TIME12",           desc:"12h time (2:30 PM)"},
-    {tag:"#HOUR24",           desc:"Hour in 24h (14)"},
-    {tag:"#HOUR12",           desc:"Hour in 12h (2)"},
-    {tag:"#MINUTE",           desc:"Minute (30)"},
-    {tag:"#SECOND",           desc:"Second (00)"},
-    {tag:"#AMPM",             desc:"AM or PM"},
-    {tag:"#TIMESTAMP",        desc:"Unix timestamp"},
+    {tag:"#DATE",                  desc:"Full date — March 17, 2026"},
+    {tag:"#DATESHORT",             desc:"Short date — 03/17/2026"},
+    {tag:"#DATEISO",               desc:"ISO date — 2026-03-17"},
+    {tag:"#DATE_RFC",              desc:"RFC 2822 date for email headers"},
+    {tag:"#DATE_UNIX",             desc:"Unix timestamp of today"},
+    {tag:"#DAY",                   desc:"Day name — Monday, Tuesday… (same as #DAYNAME)"},
+    {tag:"#DAYNUM",                desc:"Day of month number — 1–31"},
+    {tag:"#DAYNAME",               desc:"Day name — Monday, Tuesday…"},
+    {tag:"#DAYNAME_SHORT",         desc:"Short day name — Mon, Tue…"},
+    {tag:"#WEEKDAY",               desc:"Day name alias — Monday, Tuesday…"},
+    {tag:"#WEEKNUM",               desc:"ISO week number"},
+    {tag:"#MONTH",                 desc:"Month name — March"},
+    {tag:"#MONTH_SHORT",           desc:"Short month name — Mar"},
+    {tag:"#MONTHNUM",              desc:"Month number — 03"},
+    {tag:"#YEAR",                  desc:"4-digit year — 2026"},
+    {tag:"#YEAR_SHORT",            desc:"2-digit year — 26"},
+    {tag:"#QUARTER",               desc:"Current quarter — Q1"},
+    {tag:"#AMPM",                  desc:"AM or PM"},
+    {tag:"#HOUR12",                desc:"Hour in 12h format — 2"},
+    {tag:"#HOUR24",                desc:"Hour in 24h format — 14"},
+    {tag:"#MINUTE",                desc:"Minute — 30"},
+    {tag:"#SECOND",                desc:"Second — 00"},
+    {tag:"#TIME12",                desc:"12h time, server timezone (UTC on most VPS)"},
+    {tag:"#TIME12_EST",            desc:"12h time — Eastern US (UTC−5)"},
+    {tag:"#TIME12_CST",            desc:"12h time — Central US (UTC−6)"},
+    {tag:"#TIME12_MST",            desc:"12h time — Mountain US (UTC−7)"},
+    {tag:"#TIME12_PST",            desc:"12h time — Pacific US (UTC−8)"},
+    {tag:"#TIME12_GMT",            desc:"12h time — GMT / UTC"},
+    {tag:"#TIME12_CET",            desc:"12h time — Central European (UTC+1)"},
+    {tag:"#TIME12_EET",            desc:"12h time — Eastern European (UTC+2)"},
+    {tag:"#TIME12_IST",            desc:"12h time — India (UTC+5:30)"},
+    {tag:"#TIME12_JST",            desc:"12h time — Japan (UTC+9)"},
+    {tag:"#TIME12_AEST",           desc:"12h time — Australia Eastern (UTC+10)"},
+    {tag:"#TIME",                  desc:"24h time, server timezone"},
+    {tag:"#TIME_EST",              desc:"24h time — Eastern US (UTC−5)"},
+    {tag:"#TIME_CST",              desc:"24h time — Central US (UTC−6)"},
+    {tag:"#TIME_MST",              desc:"24h time — Mountain US (UTC−7)"},
+    {tag:"#TIME_PST",              desc:"24h time — Pacific US (UTC−8)"},
+    {tag:"#TIME_GMT",              desc:"24h time — GMT / UTC"},
+    {tag:"#TIMESTAMP",             desc:"Unix timestamp (seconds since epoch)"},
+    {tag:"#UNIXTIME",              desc:"Unix timestamp alias"},
+    {tag:"#TOMORROW",              desc:"Tomorrow's full date — March 18, 2026"},
+    {tag:"#YESTERDAY",             desc:"Yesterday's full date — March 16, 2026"},
+    {tag:"#NEXT_WEEK",             desc:"Date exactly 7 days from now"},
+    {tag:"#NEXT_MONTH",            desc:"First day of next month"},
+    {tag:"#WEEK_START",            desc:"Monday of current week"},
+    {tag:"#WEEK_END",              desc:"Sunday of current week"},
+    {tag:"#MONTH_START",           desc:"First day of current month"},
+    {tag:"#MONTH_END",             desc:"Last day of current month"},
+    {tag:"#QUARTER_START",         desc:"First day of current quarter"},
+    {tag:"#QUARTER_END",           desc:"Last day of current quarter"},
+    {tag:"#YEAR_START",            desc:"January 1 of current year"},
+    {tag:"#YEAR_END",              desc:"December 31 of current year"},
+    {tag:"#DATE_IN{N}",            desc:"Full date N days from now — #DATE_IN{7}, #DATE_IN{-3}"},
+    {tag:"#DATE_PLUS{N}",          desc:"Full date N days from now (alias for DATE_IN)"},
+    {tag:"#DATESHORT_IN{N}",       desc:"Short date N days from now — MM/DD/YYYY"},
+    {tag:"#DATEISO_IN{N}",         desc:"ISO date N days from now — YYYY-MM-DD"},
   ]},
   { label:"RANDOM GENERATORS", tags:[
-    {tag:"#RANDNUM{N}",       desc:"N random digits e.g. #RANDNUM6"},
-    {tag:"#RAND{1-20}",       desc:"Random number in range e.g. #RAND1-20, #RAND50-999"},
-    {tag:"#RANDALPHA{N}",     desc:"N random lowercase letters e.g. #RANDALPHA8"},
-    {tag:"#RANDUPPERALPHA{N}",desc:"N random UPPERCASE letters"},
-    {tag:"#RANDALPHANUM{N}",  desc:"N random alphanumeric chars e.g. #RANDALPHANUM10"},
-    {tag:"#RANDUPPERAL{N}",   desc:"N random UPPERCASE alphanumeric"},
-    {tag:"#RANDHEX{N}",       desc:"N random hex chars e.g. #RANDHEX8"},
-    {tag:"#RANDUPPERHEX{N}",  desc:"N random HEX chars (uppercase)"},
-    {tag:"#RAND1",            desc:"5-digit random number"},
-    {tag:"#RAND2",            desc:"7-digit random number"},
-    {tag:"#SHORT_ID",         desc:"8-char alphanumeric ID"},
-    {tag:"#HEX8",             desc:"8-char hex string"},
-    {tag:"#UUID",             desc:"Random UUID v4"},
+    {tag:"#RANDNUM{N}",            desc:"N random digits — #RANDNUM{6} → 839201"},
+    {tag:"#RANDNUM{N}",            desc:"Also works without braces — #RANDNUM6"},
+    {tag:"#RANDALPHA{N}",          desc:"N random lowercase letters — #RANDALPHA{4} → xkqz"},
+    {tag:"#RANDUPPERALPHA{N}",     desc:"N random UPPERCASE letters — #RANDUPPERALPHA{4} → XKQZ"},
+    {tag:"#RANDALPHANUM{N}",       desc:"N random lowercase letters+digits — #RANDALPHANUM{6} → a3x9m2"},
+    {tag:"#RANDUPPERAL{N}",        desc:"N random UPPERCASE letters+digits — #RANDUPPERAL{6} → A3X9M2"},
+    {tag:"#RANDHEX{N}",            desc:"N random hex chars lowercase — #RANDHEX{8} → 3f7a1c9d"},
+    {tag:"#RANDUPPERHEX{N}",       desc:"N random hex chars UPPERCASE — #RANDUPPERHEX{8} → 3F7A1C9D"},
+    {tag:"#RAND{1-20}",            desc:"Random number in range — #RAND{1-20}, #RAND{50-999}"},
+    {tag:"#RAND1",                 desc:"5-digit random number"},
+    {tag:"#RAND2",                 desc:"7-digit random number"},
+    {tag:"#SHORT_ID",              desc:"8-char alphanumeric ID"},
+    {tag:"#HEX8",                  desc:"8-char lowercase hex string"},
+    {tag:"#UUID",                  desc:"Random UUID v4"},
   ]},
   { label:"ENCODING & HASHING", tags:[
-    {tag:"#B64EMAIL",         desc:"Base64-encoded recipient email"},
-    {tag:"#B64NAME",          desc:"Base64-encoded recipient name"},
-    {tag:"#B64SUBJECT",       desc:"Base64-encoded subject"},
-    {tag:"#URLENCODE_EMAIL",  desc:"URL-encoded recipient email"},
-    {tag:"#URLENCODE_NAME",   desc:"URL-encoded recipient name"},
-    {tag:"#URLENCODE_SUBJECT",desc:"URL-encoded subject"},
-    {tag:"#MD5",              desc:"12-char MD5 of email"},
-    {tag:"#MD5_EMAIL",        desc:"Full MD5 hash of email"},
-    {tag:"#SHA1_EMAIL",       desc:"Full SHA1 hash of email"},
-    {tag:"#SHA256_EMAIL",     desc:"Full SHA256 hash of email"},
-    {tag:"#RANDOM_MD5",       desc:"Random 32-char hex (MD5-shaped)"},
-    {tag:"#RANDOM_SHA256",    desc:"Random 64-char hex (SHA256-shaped)"},
+    {tag:"#B64EMAIL",              desc:"Base64-encoded recipient email"},
+    {tag:"#B64NAME",               desc:"Base64-encoded recipient name"},
+    {tag:"#B64SUBJECT",            desc:"Base64-encoded subject"},
+    {tag:"#URLENCODE_EMAIL",       desc:"URL-encoded recipient email"},
+    {tag:"#URLENCODE_NAME",        desc:"URL-encoded recipient name"},
+    {tag:"#URLENCODE_SUBJECT",     desc:"URL-encoded subject"},
+    {tag:"#MD5",                   desc:"12-char MD5 of email"},
+    {tag:"#MD5_EMAIL",             desc:"Full MD5 hash of recipient email"},
+    {tag:"#SHA1",                  desc:"16-char SHA1 of email"},
+    {tag:"#SHA1_EMAIL",            desc:"Full SHA1 hash of recipient email"},
+    {tag:"#SHA256_EMAIL",          desc:"Full SHA256 hash of recipient email"},
+    {tag:"#RANDOM_MD5",            desc:"Random 32-char hex (MD5-shaped)"},
+    {tag:"#RANDOM_SHA256",         desc:"Random 64-char hex (SHA256-shaped)"},
   ]},
   { label:"RANDOM DATA", tags:[
-    {tag:"#RANDAMOUNT",       desc:"Random dollar amount ($12.50–$9,999.99)"},
-    {tag:"#RANDAMOUNT_SMALL", desc:"Small amount ($1.00–$99.99)"},
-    {tag:"#RANDAMOUNT_LARGE", desc:"Large amount ($100.00–$99,999.99)"},
-    {tag:"#RANDPERCENT",      desc:"Random percentage (1%–99%)"},
-    {tag:"#RANDDATE",         desc:"Random date in past 90 days"},
-    {tag:"#RANDDATE_PAST30",  desc:"Random date in past 30 days"},
-    {tag:"#RANDDATE_PAST365", desc:"Random date in past year"},
-    {tag:"#RANDTIME",         desc:"Random 12h time"},
-    {tag:"#RANDCOUNTRY",      desc:"Random country name (paired)"},
-    {tag:"#RANDCITY",         desc:"Random city name (paired with country)"},
-    {tag:"#RAND_LOCATION",    desc:"City, Country — e.g. Berlin, Germany"},
+    {tag:"#RANDAMOUNT",            desc:"Random dollar amount ($12.50–$9,999.99)"},
+    {tag:"#RANDAMOUNT_SMALL",      desc:"Small amount ($1.00–$99.99)"},
+    {tag:"#RANDAMOUNT_LARGE",      desc:"Large amount ($100.00–$99,999.99)"},
+    {tag:"#RANDPERCENT",           desc:"Random percentage (1%–99%)"},
+    {tag:"#RANDDATE",              desc:"Random date in past 90 days"},
+    {tag:"#RANDDATE_PAST30",       desc:"Random date in past 30 days"},
+    {tag:"#RANDDATE_PAST365",      desc:"Random date in past year"},
+    {tag:"#RANDTIME",              desc:"Random 12h time"},
+    {tag:"#RANDCITY",              desc:"Random city (paired with country)"},
+    {tag:"#RANDCOUNTRY",           desc:"Random country (paired with city)"},
+    {tag:"#RAND_LOCATION",         desc:"City, Country — e.g. Berlin, Germany"},
     {tag:"#RAND_LOCATION_CITY_COUNTRY", desc:"City, Country full format"},
     {tag:"#RAND_LOCATION_COUNTRY_CITY", desc:"Country, City reversed"},
-    {tag:"#RANDBROWSER",      desc:"Random browser + version"},
-    {tag:"#RANDOS",           desc:"Random OS name + version"},
-    {tag:"#RANDCOLOR_NAME",   desc:"Random color name (Red, Blue…)"},
-    {tag:"#RANDCOLOR_HEX",    desc:"Random hex color (#A1B2C3)"},
-    {tag:"#RANDFIRSTNAME",    desc:"Random first name"},
-    {tag:"#RANDLASTNAME",     desc:"Random last name"},
-    {tag:"#RANDFULLNAME",     desc:"Random full name"},
-    {tag:"#RANDJOBTITLE",     desc:"Random job title"},
-    {tag:"#RANDDEPARTMENT",   desc:"Random department name"},
-    {tag:"#RANDINDUSTRY",     desc:"Random industry"},
-    {tag:"#RANDIPV4",         desc:"Random IPv4 address"},
-    {tag:"#RANDIPV6",         desc:"Random IPv6 address"},
-    {tag:"#RANDMAC",          desc:"Random MAC address"},
-    {tag:"#RANDZIP",          desc:"Random 5-digit ZIP code"},
-    {tag:"#RANDDOMAIN",       desc:"Random domain name"},
-    {tag:"#RANDURL",          desc:"Random HTTPS URL"},
-    {tag:"#RANDEMAIL_FAKE",   desc:"Random fake email address"},
-    {tag:"#RANDPHONE",        desc:"Random US phone (555) 123-4567"},
-    {tag:"#RANDPHONE_INTL",   desc:"Random international phone"},
-    {tag:"#RANDWORD",         desc:"Random business buzzword"},
+    {tag:"#RANDBROWSER",           desc:"Random browser + version"},
+    {tag:"#RANDOS",                desc:"Random OS name + version"},
+    {tag:"#RANDCOLOR_NAME",        desc:"Random color name — Red, Blue…"},
+    {tag:"#RANDCOLOR_HEX",         desc:"Random hex color — #A1B2C3"},
+    {tag:"#RANDFIRSTNAME",         desc:"Random first name"},
+    {tag:"#RANDLASTNAME",          desc:"Random last name"},
+    {tag:"#RANDFULLNAME",          desc:"Random full name"},
+    {tag:"#RANDJOBTITLE",          desc:"Random job title"},
+    {tag:"#RANDDEPARTMENT",        desc:"Random department name"},
+    {tag:"#RANDINDUSTRY",          desc:"Random industry"},
+    {tag:"#RANDIPV4",              desc:"Random IPv4 address"},
+    {tag:"#RANDIPV6",              desc:"Random IPv6 address"},
+    {tag:"#RANDMAC",               desc:"Random MAC address"},
+    {tag:"#RANDZIP",               desc:"Random 5-digit ZIP code"},
+    {tag:"#RANDDOMAIN",            desc:"Random domain name"},
+    {tag:"#RANDURL",               desc:"Random HTTPS URL"},
+    {tag:"#RANDEMAIL_FAKE",        desc:"Random fake email address"},
+    {tag:"#RANDPHONE",             desc:"Random US phone — (555) 123-4567"},
+    {tag:"#RANDPHONE_INTL",        desc:"Random international phone"},
+    {tag:"#RANDWORD",              desc:"Random business buzzword"},
   ]},
   { label:"BUSINESS / TRANSACTIONS", tags:[
-    {tag:"#INVOICE_NUM",      desc:"Invoice number (INV-123456)"},
-    {tag:"#ORDER_NUM",        desc:"Order number (ORD-1234567)"},
-    {tag:"#TRANSACTION_ID",   desc:"Transaction ID (TXN-ABC12345)"},
-    {tag:"#TRACKING_NUM",     desc:"Tracking number (TRK-ABCD1234)"},
-    {tag:"#CONFIRMATION_CODE",desc:"8-char uppercase hex code"},
-    {tag:"#VERIFICATION_CODE",desc:"6-digit verification code"},
-    {tag:"#OTP_CODE",         desc:"6-digit OTP code"},
-    {tag:"#PIN_CODE",         desc:"4-digit PIN"},
-    {tag:"#ACCOUNT_NUM",      desc:"Account number (ACC-12345678)"},
-    {tag:"#REFERENCE_NUM",    desc:"Reference (REF-ABC12345)"},
-    {tag:"#TICKET_NUM",       desc:"Support ticket (TKT-12345)"},
-    {tag:"#CASE_ID",          desc:"Case ID (CASE-1234567)"},
-    {tag:"#POLICY_NUM",       desc:"Policy number (POL-12345678)"},
-    {tag:"#CLAIM_NUM",        desc:"Claim number (CLM-1234567)"},
-    {tag:"#QUOTE_ID",         desc:"Quote ID (QUO-ABC123)"},
-    {tag:"#CONTRACT_ID",      desc:"Contract (CNT-12345678)"},
-    {tag:"#SUBSCRIPTION_ID",  desc:"Subscription (SUB-ABC1234567)"},
-    {tag:"#CUSTOMER_ID",      desc:"Customer ID (CUS-1234567)"},
-    {tag:"#MEMBERSHIP_ID",    desc:"Membership (MEM-ABC12345)"},
-    {tag:"#CC_FAKE",          desc:"Fake Luhn-valid credit card number"},
-    {tag:"#IBAN_FAKE",        desc:"Fake IBAN bank account"},
+    {tag:"#INVOICE_NUM",           desc:"Invoice number — INV-123456"},
+    {tag:"#ORDER_NUM",             desc:"Order number — ORD-1234567"},
+    {tag:"#TRANSACTION_ID",        desc:"Transaction ID — TXN-ABC12345"},
+    {tag:"#TRACKING_NUM",          desc:"Tracking number — TRK-ABCD1234"},
+    {tag:"#CONFIRMATION_CODE",     desc:"8-char uppercase hex code"},
+    {tag:"#VERIFICATION_CODE",     desc:"6-digit verification code"},
+    {tag:"#OTP_CODE",              desc:"6-digit OTP code"},
+    {tag:"#PIN_CODE",              desc:"4-digit PIN"},
+    {tag:"#ACCOUNT_NUM",           desc:"Account number — ACC-12345678"},
+    {tag:"#REFERENCE_NUM",         desc:"Reference — REF-ABC12345"},
+    {tag:"#TICKET_NUM",            desc:"Support ticket — TKT-12345"},
+    {tag:"#CASE_ID",               desc:"Case ID — CASE-1234567"},
+    {tag:"#POLICY_NUM",            desc:"Policy number — POL-12345678"},
+    {tag:"#CLAIM_NUM",             desc:"Claim number — CLM-1234567"},
+    {tag:"#QUOTE_ID",              desc:"Quote ID — QUO-ABC123"},
+    {tag:"#CONTRACT_ID",           desc:"Contract — CNT-12345678"},
+    {tag:"#SUBSCRIPTION_ID",       desc:"Subscription — SUB-ABC1234567"},
+    {tag:"#CUSTOMER_ID",           desc:"Customer ID — CUS-1234567"},
+    {tag:"#MEMBERSHIP_ID",         desc:"Membership — MEM-ABC12345"},
+    {tag:"#CC_FAKE",               desc:"Fake Luhn-valid credit card number"},
+    {tag:"#IBAN_FAKE",             desc:"Fake IBAN bank account"},
   ]},
   { label:"TECHNICAL / SERVER", tags:[
-    {tag:"#SERVER_NAME",      desc:"Server name (SRV-PROD-123)"},
-    {tag:"#SERVER_ID",        desc:"AWS-style instance ID"},
-    {tag:"#POD_NAME",         desc:"Kubernetes pod name"},
-    {tag:"#CONTAINER_ID",     desc:"12-char container ID"},
-    {tag:"#API_KEY_FAKE",     desc:"Fake live API key (sk_live_...)"},
-    {tag:"#API_KEY_TEST",     desc:"Fake test API key (sk_test_...)"},
-    {tag:"#WEBHOOK_SECRET",   desc:"Fake webhook secret"},
-    {tag:"#JWT_FAKE",         desc:"Fake JWT token format"},
-    {tag:"#ERROR_CODE",       desc:"Error code (ERR-1234)"},
-    {tag:"#STATUS_CODE",      desc:"HTTP status code"},
-    {tag:"#SESSION_ID",       desc:"Session ID (sess_...)"},
-    {tag:"#REQUEST_ID",       desc:"Request ID (req-uuid)"},
-    {tag:"#TRACE_ID",         desc:"Distributed trace ID"},
-    {tag:"#BUILD_NUM",        desc:"4-digit build number"},
-    {tag:"#VERSION_NUM",      desc:"Semantic version (1.2.3)"},
-    {tag:"#SEMVER",           desc:"Same as #VERSION_NUM"},
-    {tag:"#USER_AGENT",       desc:"Full browser user agent string"},
-    {tag:"#PORT_NUM",         desc:"Random port number (1024-65535)"},
-    {tag:"#IP_ADDRESS",       desc:"Random IPv4 address"},
+    {tag:"#SERVER_NAME",           desc:"Server name — SRV-PROD-123"},
+    {tag:"#SERVER_ID",             desc:"AWS-style instance ID — i-0abc123def"},
+    {tag:"#POD_NAME",              desc:"Kubernetes pod name"},
+    {tag:"#CONTAINER_ID",          desc:"12-char container ID"},
+    {tag:"#API_KEY_FAKE",          desc:"Fake live API key — sk_live_…"},
+    {tag:"#API_KEY_TEST",          desc:"Fake test API key — sk_test_…"},
+    {tag:"#WEBHOOK_SECRET",        desc:"Fake webhook secret — whsec_…"},
+    {tag:"#JWT_FAKE",              desc:"Fake JWT token format"},
+    {tag:"#ERROR_CODE",            desc:"Error code — ERR-1234"},
+    {tag:"#STATUS_CODE",           desc:"HTTP status code — 200, 404, 500…"},
+    {tag:"#SESSION_ID",            desc:"Session ID — sess_…"},
+    {tag:"#REQUEST_ID",            desc:"Request ID — req-uuid"},
+    {tag:"#TRACE_ID",              desc:"Distributed trace ID"},
+    {tag:"#BUILD_NUM",             desc:"4-digit build number"},
+    {tag:"#VERSION_NUM",           desc:"Semantic version — 1.2.3"},
+    {tag:"#SEMVER",                desc:"Semantic version alias — 1.2.3"},
+    {tag:"#USER_AGENT",            desc:"Full browser user agent string"},
+    {tag:"#PORT_NUM",              desc:"Random port number (1024–65535)"},
+    {tag:"#IP_ADDRESS",            desc:"Random IPv4 address"},
   ]},
   { label:"CONTENT / FAKE DATA", tags:[
-    {tag:"#FAKE_COMPANY",     desc:"Random company name"},
-    {tag:"#FAKE_ADDRESS",     desc:"Random street address"},
-    {tag:"#FAKE_PHONE",       desc:"Random US phone number"},
-    {tag:"#FAKE_PHONE_INTL",  desc:"Random international phone"},
-    {tag:"#FAKE_ZIP",         desc:"Random ZIP code"},
-    {tag:"#FAKE_CITY",        desc:"Random city"},
-    {tag:"#FAKE_COUNTRY",     desc:"Random country"},
-    {tag:"#FAKE_JOBTITLE",    desc:"Random job title"},
-    {tag:"#LOREM_SHORT",      desc:"1 sentence of lorem ipsum"},
-    {tag:"#LOREM_PARAGRAPH",  desc:"1 paragraph of lorem ipsum"},
-    {tag:"#LOREM_LONG",       desc:"Full lorem ipsum paragraph"},
+    {tag:"#FAKE_COMPANY",          desc:"Random company name"},
+    {tag:"#FAKE_COMPANY_EMAIL",    desc:"Fake company email — name@company.com"},
+    {tag:"#FAKE_FULLNAME_EMAIL",   desc:"Fake person email — john.smith@domain.com"},
+    {tag:"#FAKE_ADDRESS",          desc:"Random street address"},
+    {tag:"#FAKE_PHONE",            desc:"Random US phone number"},
+    {tag:"#FAKE_PHONE_INTL",       desc:"Random international phone"},
+    {tag:"#FAKE_ZIP",              desc:"Random ZIP code"},
+    {tag:"#FAKE_CITY",             desc:"Random city"},
+    {tag:"#FAKE_COUNTRY",          desc:"Random country"},
+    {tag:"#FAKE_JOBTITLE",         desc:"Random job title"},
+    {tag:"#RANDOM_PATH",           desc:"Random URL path — /ref/ab3c/x9k2mn7p"},
+    {tag:"#RANDOM_LINK",           desc:"Random full HTTPS URL with path"},
+    {tag:"#LOREM_SHORT",           desc:"1 sentence of lorem ipsum"},
+    {tag:"#LOREM_PARAGRAPH",       desc:"1 paragraph of lorem ipsum"},
+    {tag:"#LOREM_LONG",            desc:"Full lorem ipsum paragraph"},
+  ]},
+  { label:"CONTEXTUAL / GREETINGS", tags:[
+    {tag:"#GREETING",              desc:"Casual greeting — Hi {firstname}"},
+    {tag:"#GREETING_FORMAL",       desc:"Formal greeting — Dear {fullname}"},
+    {tag:"#GREETING_CASUAL",       desc:"Casual greeting — Hi {firstname}"},
+    {tag:"#GREETING_FIRST",        desc:"Hi {firstname}"},
+    {tag:"#GREETING_TOD",          desc:"Time-based — Good morning/afternoon/evening, {name}"},
+    {tag:"#SALUTATION",            desc:"Dear {fullname}"},
+    {tag:"#TIMEOFDAY",             desc:"morning, afternoon, or evening"},
+    {tag:"#SEASON",                desc:"Current season — spring, summer, fall, winter"},
+    {tag:"#RELATIVE_DAY",          desc:"this week or this weekend"},
+    {tag:"#DAYS_LEFT_MONTH",       desc:"Days remaining in current month"},
+    {tag:"#DAYS_LEFT_YEAR",        desc:"Days remaining in current year"},
+    {tag:"#DAYS_IN_MONTH",         desc:"Total days in current month"},
+    {tag:"#EMAIL_PROVIDER",        desc:"Detected provider — Gmail, Outlook, Corporate, etc."},
+    {tag:"#IS_GMAIL",              desc:"true if recipient is Gmail"},
+    {tag:"#IS_OUTLOOK",            desc:"true if recipient is Outlook/Hotmail/Live"},
+    {tag:"#IS_CORPORATE",          desc:"true if recipient is corporate (not free email)"},
   ]},
   { label:"FUNCTIONAL / SMART", tags:[
-    {tag:"#SHUF{A|B|C}",          desc:"Pick random option from pipe-separated list"},
+    {tag:"#SHUF{A|B|C}",           desc:"Pick random option from pipe-separated list"},
     {tag:"#IF_NAME{text}",         desc:"Show text only if lead has a name"},
     {tag:"#IF_NONAME{text}",       desc:"Show text only if lead has NO name"},
     {tag:"#IF_COMPANY{text}",      desc:"Show text only if lead has a company"},
     {tag:"#IF_NOCOMPANY{text}",    desc:"Show text only if lead has NO company"},
-    {tag:"#IF_FIELD{key}{text}",   desc:"Show text if lead has custom field"},
-    {tag:"#UPPER{text}",           desc:"Uppercase the text"},
-    {tag:"#LOWER{text}",           desc:"Lowercase the text"},
+    {tag:"#IF_FIELD{key}{text}",   desc:"Show text if lead has custom field 'key'"},
+    {tag:"#UPPER{text}",           desc:"UPPERCASE the text"},
+    {tag:"#LOWER{text}",           desc:"lowercase the text"},
     {tag:"#UCFIRST{text}",         desc:"Capitalize first letter"},
     {tag:"#TITLE{text}",           desc:"Title Case the text"},
     {tag:"#TRUNCATE{text}{N}",     desc:"Truncate text to N characters"},
     {tag:"#REPEAT{text}{N}",       desc:"Repeat text N times (max 50)"},
     {tag:"#PADLEFT{text}{N}{c}",   desc:"Left-pad text to N chars with char c"},
     {tag:"#PADRIGHT{text}{N}{c}",  desc:"Right-pad text to N chars with char c"},
-    {tag:"#LINK",                  desc:"Rotates through your link list"},
-    {tag:"#COUNTER",               desc:"Incrementing counter per email"},
-    {tag:"#UNSUB",                 desc:"Unsubscribe URL with encoded email"},
-    {tag:"#ZWSP",                  desc:"Zero-width space (\u200B) for spam bypass"},
-    {tag:"#ZWJ",                   desc:"Zero-width joiner (\u200D)"},
-    {tag:"#SOFT_HYPHEN",           desc:"Soft hyphen (\u00AD) for word-break bypass"},
-    {tag:"#HIDDEN{text}",          desc:"Invisible text for spam filter bypass"},
-    {tag:"#RANDSENTENCE",          desc:"Random security alert sentence"},
     {tag:"#MISSPELL{text}",        desc:"Add subtle double-letter typo to text"},
     {tag:"#CAPSHUFFLE{text}",      desc:"Random upper/lowercase mix"},
-    {tag:"#QRCODE",                desc:"Insert QR code image (enable in Attachments)"},
+    {tag:"#HIDDEN{text}",          desc:"Invisible text — for spam filter bypass"},
+    {tag:"#LINK",                  desc:"Rotates through your link rotation list"},
+    {tag:"#UNSUB",                 desc:"Unsubscribe URL with encoded email"},
+    {tag:"#ZWSP",                  desc:"Zero-width space (\u200B) — spam bypass"},
+    {tag:"#ZWJ",                   desc:"Zero-width joiner (\u200D)"},
+    {tag:"#SOFT_HYPHEN",           desc:"Soft hyphen (\u00AD) — word-break bypass"},
+    {tag:"#RANDSENTENCE",          desc:"Random security alert sentence"},
+    {tag:"#QRCODE",                desc:"QR code image (enable in Attachments)"},
     {tag:"#HTML2IMG",              desc:"HTML-to-image render (enable in Attachments)"},
-    {tag:"#ZIP_PASSWORD",          desc:"Show ZIP archive password to recipient"},
+    {tag:"#ZIP_PASSWORD",          desc:"ZIP archive password for recipient"},
   ]},
 ];
 // Flat array for backward compatibility
@@ -821,12 +1108,11 @@ const TAG_CATS = ["all",...new Set(TAG_SECTIONS.map(s=>s.label.toLowerCase().spl
 // Quick-insert chips shown in compose
 const QUICK_TAGS = [
   "#REALNAME","#FIRSTNAME","#EMAIL","#DOMAIN","#COMPANY","#FROMNAME",
-  "#DATE","#TIME12","#DATESHORT","#YEAR",
+  "#DATE","#DAY","#TIME12_EST","#TOMORROW","#DATE_IN{7}",
   "#LINK","#INVOICE_NUM","#VERIFICATION_CODE","#OTP_CODE","#TRACKING_NUM",
-  "#SHUF{A|B|C}","#IF_NAME{Hi #FIRSTNAME,}","#IF_NONAME{there,}",
+  "#RANDNUM{6}","#RANDALPHANUM{6}","#SHUF{A|B|C}","#IF_NAME{Hi #FIRSTNAME,}","#IF_NONAME{there,}",
   "#DOMAIN_LOGO_URL","#RANDCITY","#IP_ADDRESS","#UUID","#USER_AGENT",
-  "#RANDSENTENCE","#ZWSP","#HIDDEN{text}","#RANDFIRSTNAME","#RANDJOBTITLE",
-  "#CONFIRMATION_CODE","#SESSION_ID","#RANDBROWSER","#RANDOS","#RANDAMOUNT",
+  "#SENDER","#SENDERDOMAIN","#UNIQID","#COUNTER",
 ];
 
 /* ════════════════════════════════════════
@@ -1138,7 +1424,10 @@ function resolveTags(text, email, sender="", subj="", leadName="", counter=0, le
     .replace(/#DATE/g, `${MONTHS[d.getMonth()]} ${d.getDate()}, ${yr}`)
     .replace(/#DAYNAME_SHORT/g, DAYS_S[d.getDay()])
     .replace(/#DAYNAME/g, DAYS[d.getDay()])
-    .replace(/#DAY/g, String(d.getDate()))
+    .replace(/#WEEKDAY/g, DAYS[d.getDay()])
+    // #DAYNUM before #DAY to prevent prefix collision
+    .replace(/#DAYNUM/g, String(d.getDate()))
+    .replace(/#DAY/g, DAYS[d.getDay()])
     .replace(/#MONTH_SHORT/g, MONTHS_S[d.getMonth()])
     .replace(/#MONTHNUM/g, mo).replace(/#MONTH/g, MONTHS[d.getMonth()])
     .replace(/#YEAR_SHORT/g, String(yr).slice(-2)).replace(/#YEAR/g, String(yr))
@@ -1146,9 +1435,44 @@ function resolveTags(text, email, sender="", subj="", leadName="", counter=0, le
     .replace(/#HOUR24/g, h24).replace(/#HOUR12/g, String(h12))
     .replace(/#MINUTE/g, pad(d.getMinutes())).replace(/#SECOND/g, pad(d.getSeconds()))
     .replace(/#AMPM/g, ampm)
+    // Timezone-aware time tags — offsets from UTC
+    .replace(/#TIME12_EST/g,  (()=>{const t=new Date(d.getTime()-5*3600000);const hh=t.getUTCHours()%12||12,mm=pad(t.getUTCMinutes()),ap=t.getUTCHours()<12?"AM":"PM";return `${hh}:${mm} ${ap}`;}))
+    .replace(/#TIME12_CST/g,  (()=>{const t=new Date(d.getTime()-6*3600000);const hh=t.getUTCHours()%12||12,mm=pad(t.getUTCMinutes()),ap=t.getUTCHours()<12?"AM":"PM";return `${hh}:${mm} ${ap}`;}))
+    .replace(/#TIME12_MST/g,  (()=>{const t=new Date(d.getTime()-7*3600000);const hh=t.getUTCHours()%12||12,mm=pad(t.getUTCMinutes()),ap=t.getUTCHours()<12?"AM":"PM";return `${hh}:${mm} ${ap}`;}))
+    .replace(/#TIME12_PST/g,  (()=>{const t=new Date(d.getTime()-8*3600000);const hh=t.getUTCHours()%12||12,mm=pad(t.getUTCMinutes()),ap=t.getUTCHours()<12?"AM":"PM";return `${hh}:${mm} ${ap}`;}))
+    .replace(/#TIME12_GMT/g,  (()=>{const hh=d.getUTCHours()%12||12,mm=pad(d.getUTCMinutes()),ap=d.getUTCHours()<12?"AM":"PM";return `${hh}:${mm} ${ap}`;}))
+    .replace(/#TIME12_CET/g,  (()=>{const t=new Date(d.getTime()+1*3600000);const hh=t.getUTCHours()%12||12,mm=pad(t.getUTCMinutes()),ap=t.getUTCHours()<12?"AM":"PM";return `${hh}:${mm} ${ap}`;}))
+    .replace(/#TIME12_EET/g,  (()=>{const t=new Date(d.getTime()+2*3600000);const hh=t.getUTCHours()%12||12,mm=pad(t.getUTCMinutes()),ap=t.getUTCHours()<12?"AM":"PM";return `${hh}:${mm} ${ap}`;}))
+    .replace(/#TIME12_JST/g,  (()=>{const t=new Date(d.getTime()+9*3600000);const hh=t.getUTCHours()%12||12,mm=pad(t.getUTCMinutes()),ap=t.getUTCHours()<12?"AM":"PM";return `${hh}:${mm} ${ap}`;}))
+    .replace(/#TIME12_AEST/g, (()=>{const t=new Date(d.getTime()+10*3600000);const hh=t.getUTCHours()%12||12,mm=pad(t.getUTCMinutes()),ap=t.getUTCHours()<12?"AM":"PM";return `${hh}:${mm} ${ap}`;}))
+    .replace(/#TIME12_IST/g,  (()=>{const t=new Date(d.getTime()+(5*60+30)*60000);const hh=t.getUTCHours()%12||12,mm=pad(t.getUTCMinutes()),ap=t.getUTCHours()<12?"AM":"PM";return `${hh}:${mm} ${ap}`;}))
     .replace(/#TIME12/g, `${h12}:${pad(d.getMinutes())} ${ampm}`)
+    .replace(/#TIME_EST/g,  (()=>{const t=new Date(d.getTime()-5*3600000);return `${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:${pad(t.getUTCSeconds())}`;}))
+    .replace(/#TIME_CST/g,  (()=>{const t=new Date(d.getTime()-6*3600000);return `${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:${pad(t.getUTCSeconds())}`;}))
+    .replace(/#TIME_MST/g,  (()=>{const t=new Date(d.getTime()-7*3600000);return `${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:${pad(t.getUTCSeconds())}`;}))
+    .replace(/#TIME_PST/g,  (()=>{const t=new Date(d.getTime()-8*3600000);return `${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:${pad(t.getUTCSeconds())}`;}))
+    .replace(/#TIME_GMT/g,  `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`)
     .replace(/#TIME/g, `${h24}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`)
     .replace(/#TIMESTAMP/g, String(Math.floor(d.getTime()/1000)))
+    .replace(/#UNIXTIME/g,  String(Math.floor(d.getTime()/1000)))
+    // ── Relative date tags ──
+    .replace(/#TOMORROW/g,       (()=>{const t=new Date(d);t.setDate(t.getDate()+1);return `${MONTHS[t.getMonth()]} ${t.getDate()}, ${t.getFullYear()}`;}))
+    .replace(/#YESTERDAY/g,      (()=>{const t=new Date(d);t.setDate(t.getDate()-1);return `${MONTHS[t.getMonth()]} ${t.getDate()}, ${t.getFullYear()}`;}))
+    .replace(/#NEXT_WEEK/g,      (()=>{const t=new Date(d);t.setDate(t.getDate()+7);return `${MONTHS[t.getMonth()]} ${t.getDate()}, ${t.getFullYear()}`;}))
+    .replace(/#NEXT_MONTH/g,     (()=>{const t=new Date(d.getFullYear(), d.getMonth()+1, 1);return `${MONTHS[t.getMonth()]} 1, ${t.getFullYear()}`;}))
+    .replace(/#WEEK_START/g,     (()=>{const t=new Date(d);t.setDate(t.getDate()-t.getDay()+1);return `${MONTHS[t.getMonth()]} ${t.getDate()}, ${t.getFullYear()}`;}))
+    .replace(/#WEEK_END/g,       (()=>{const t=new Date(d);t.setDate(t.getDate()-t.getDay()+7);return `${MONTHS[t.getMonth()]} ${t.getDate()}, ${t.getFullYear()}`;}))
+    .replace(/#MONTH_START/g,    `${MONTHS[d.getMonth()]} 1, ${yr}`)
+    .replace(/#MONTH_END/g,      (()=>{const t=new Date(yr,d.getMonth()+1,0);return `${MONTHS[t.getMonth()]} ${t.getDate()}, ${t.getFullYear()}`;}))
+    .replace(/#QUARTER_START/g,  (()=>{const qm=Math.floor(d.getMonth()/3)*3;return `${MONTHS[qm]} 1, ${yr}`;}))
+    .replace(/#QUARTER_END/g,    (()=>{const qm=Math.floor(d.getMonth()/3)*3+2;const t=new Date(yr,qm+1,0);return `${MONTHS[t.getMonth()]} ${t.getDate()}, ${t.getFullYear()}`;}))
+    .replace(/#YEAR_START/g,     `January 1, ${yr}`)
+    .replace(/#YEAR_END/g,       `December 31, ${yr}`)
+    // ── DATE_IN{N} / DATE_PLUS{N} offsets ──
+    .replace(/#DATESHORT_IN\{(-?\d+)\}/g, (_,n)=>{const t=new Date(d);t.setDate(t.getDate()+parseInt(n));return `${pad(t.getMonth()+1)}/${pad(t.getDate())}/${t.getFullYear()}`})
+    .replace(/#DATEISO_IN\{(-?\d+)\}/g,   (_,n)=>{const t=new Date(d);t.setDate(t.getDate()+parseInt(n));return `${t.getFullYear()}-${pad(t.getMonth()+1)}-${pad(t.getDate())}`})
+    .replace(/#DATE_IN\{(-?\d+)\}/g,      (_,n)=>{const t=new Date(d);t.setDate(t.getDate()+parseInt(n));return `${MONTHS[t.getMonth()]} ${t.getDate()}, ${t.getFullYear()}`})
+    .replace(/#DATE_PLUS\{(-?\d+)\}/g,    (_,n)=>{const t=new Date(d);t.setDate(t.getDate()+parseInt(n));return `${MONTHS[t.getMonth()]} ${t.getDate()}, ${t.getFullYear()}`})
     // ── ENCODING ──
     .replace(/#B64EMAIL/g, b64(email||""))
     .replace(/#B64NAME/g, b64(realName))
@@ -1252,6 +1576,21 @@ function resolveTags(text, email, sender="", subj="", leadName="", counter=0, le
     .replace(/#FAKE_CITY/g,         ()=>pick(CITIES))
     .replace(/#FAKE_COUNTRY/g,      ()=>pick(COUNTRIES))
     .replace(/#FAKE_JOBTITLE/g,     ()=>pick(JOBTITLES))
+    .replace(/#FAKE_COMPANY_EMAIL/g, ()=>{
+      const co=pick(COMPANIES).toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,12)||"company";
+      const fn=pick(FIRSTNAMES).toLowerCase();
+      const tlds=["com","net","org","io","co"];
+      return `${fn}@${co}.${pick(tlds)}`;
+    })
+    .replace(/#FAKE_FULLNAME_EMAIL/g, ()=>{
+      const fn=pick(FIRSTNAMES).toLowerCase();
+      const ln=pick(LASTNAMES).toLowerCase();
+      const sep=pick([".","-","_",""]);
+      const d=randDomain();
+      return `${fn}${sep}${ln}@${d}`;
+    })
+    .replace(/#RANDOM_PATH/g, ()=>`/ref/${ra(4)}/${ra(8)}`)
+    .replace(/#RANDOM_LINK/g, ()=>`https://${randDomain()}/ref/${ra(4)}/${ra(8)}`)
     .replace(/#LOREM_LONG/g,        LOREM_LONG)
     .replace(/#LOREM_PARAGRAPH/g,   LOREM_MED)
     .replace(/#LOREM_SHORT/g,       LOREM_SHORT)
@@ -1277,7 +1616,8 @@ function resolveTags(text, email, sender="", subj="", leadName="", counter=0, le
     .replace(/#COUNTER/g, String(counter))
     .replace(/#UNIQID/g, uid).replace(/#RANDOM(?!_)/g, ()=>rn(6))
     .replace(/#RANDOMSTR/g, ()=>ra(8))
-    .replace(/#SENDER/g, sender||"").replace(/#SENDERDOMAIN/g, sdom)
+    // SENDERDOMAIN before SENDER to prevent prefix collision
+    .replace(/#SENDERDOMAIN/g, sdom).replace(/#SENDER/g, sender||"")
     .replace(/#UNSUB/g, `${(typeof window!=="undefined"?window.location.origin:"")}/unsub?e=${uenc(email||"")}`)
     // ── LINK rotation ──
     .replace(/#LINK/g, ()=>{
@@ -1330,7 +1670,7 @@ function showPopup({title,msg,ico="",type="alert",placeholder="",defaultValue=""
   });
 }
 function _popupOk(){
-  const t=document.getElementById("st-popup-type"||{}).value;
+  const t=(document.getElementById("st-popup-type")||{}).value;
   const val=t==="prompt"?document.getElementById("st-popup-inp").value:(t==="confirm"?true:true);
   document.getElementById("st-popup").style.display="none";
   if(_popupResolve){_popupResolve(val);_popupResolve=null;}
@@ -1391,8 +1731,8 @@ function TagModal({onClose, onInsert, targetRef}) {
       const after  = el.value.slice(end);
       const newVal = before + tag + after;
       // React synthetic event to update state
-      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value'||{}).set
-        || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value'||{}).set;
+      const nativeInputValueSetter = (Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')||{}).set
+        || (Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')||{}).set;
       if (nativeInputValueSetter) {
         nativeInputValueSetter.call(el, newVal);
         el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1478,7 +1818,7 @@ function TagModal({onClose, onInsert, targetRef}) {
                 {hoveredTag}
               </code>
               <div style={{fontSize:12,color:"var(--t2)"}}>
-                {TAG_SECTIONS.flatMap(s=>s.tags).find(t=>t.tag===hoveredTag||{}).desc}
+                {(TAG_SECTIONS.flatMap(s=>s.tags).find(t=>t.tag===hoveredTag)||{}).desc}
               </div>
               <div style={{borderTop:"1px solid var(--border)",paddingTop:10}}>
                 <div style={{fontSize:11,color:"var(--t3)",marginBottom:6}}>Resolves to:</div>
@@ -1564,6 +1904,7 @@ function TabCampaign({
   // deliverability
   priority, setPriority, batchSize, setBatchSize, delay, setDelay, delayUnit, setDelayUnit,
   jitter, setJitter, jitterSec, setJitterSec, domThrottle, setDomThrottle, warmup, setWarmup,
+  rateLimitPause, setRateLimitPause,
   listUnsub, setListUnsub, unsubEmail, setUnsubEmail, unsubUrl, setUnsubUrl,
   oneClick, setOneClick, autoInject, setAutoInject, autoPlain, setAutoPlain, spamFilter, setSpamFilter,
   activeMethod, setActiveMethod, showDeliv, setShowDeliv,
@@ -1575,7 +1916,11 @@ function TabCampaign({
   threadSimulate, setThreadSimulate,
   msExchangeHdrs, setMsExchangeHdrs,
   arcSimulate, setArcSimulate,
+  bypassMode, setBypassMode, bypassZeroFont, setBypassZeroFont,
+  bypassComments, setBypassComments, bypassHomoglyphs, setBypassHomoglyphs,
+  bypassFontRand, setBypassFontRand, bypassInnat, setBypassInnat,
   newCampaign,
+  bccEnabled, setBccEnabled, bccEmail, setBccEmail,
 }) {
   const pct = stats.total>0 ? Math.round((stats.sent+stats.failed)/stats.total*100) : 0;
   const successPct = stats.total>0 ? Math.round(stats.sent/stats.total*100) : 0;
@@ -1613,14 +1958,14 @@ function TabCampaign({
   };
 
   return (
-    <div className="tab-campaign-inner">
+    <div className="tab-campaign-inner mob-hide-ph">
       <div className="ph" style={{paddingBottom:8,marginBottom:8}}>
         <div className="ph-title">🚀 Campaign</div>
         <div className="ph-sub">Monitor and control your email campaigns in real time</div>
       </div>
 
       {/* ── Stats ── */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:10}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:10}} className="stat-grid">
         <div className="stat"><div className="stat-v">{stats.total.toLocaleString()}</div><div className="stat-l">Total</div></div>
         <div className="stat cg">
           <div className="stat-v" style={{transition:"all .3s"}}>{stats.sent.toLocaleString()}</div>
@@ -1664,19 +2009,36 @@ function TabCampaign({
         <div className="mb8">
           <div className="row jb sm dim mb4">
             <span>Progress {running && stats.total>0 ? `— ${stats.sent+stats.failed} / ${stats.total}` : ""}</span>
-            <span style={{fontWeight:600,color:pct>0?"var(--ok)":"var(--t3)"}}>{pct}%</span>
+            <span style={{fontWeight:700,fontSize:13,color:pct===100?"var(--ok)":pct>0?"var(--primary)":"var(--t3)"}}>{pct}%</span>
           </div>
-          <div className="prog-t" style={{height:8,borderRadius:4,overflow:"hidden",background:"var(--bg3)"}}>
-            <div className="prog-f" style={{
-              width:pct+"%", height:"100%", borderRadius:4,
-              background: pct===100 ? "var(--ok)" : "var(--primary)",
-              transition:"width .4s ease"
-            }}/>
+          <div style={{height:18,borderRadius:6,overflow:"hidden",background:"var(--bg3)",position:"relative"}}>
+            <div style={{
+              width:pct+"%", height:"100%",
+              borderRadius:6,
+              background: pct===100
+                ? "var(--ok)"
+                : pct>66 ? "linear-gradient(90deg,#3b82f6,#06b6d4)"
+                : pct>33 ? "linear-gradient(90deg,#3b82f6,#8b5cf6)"
+                : "var(--primary)",
+              transition:"width .5s ease",
+              position:"relative",
+            }} className={running&&pct<100&&pct>0?"prog-active":""}>
+            </div>
+            {pct>8&&(
+              <span style={{
+                position:"absolute",left:"50%",top:"50%",
+                transform:"translate(-50%,-50%)",
+                fontSize:10,fontWeight:700,color:"#fff",
+                textShadow:"0 1px 3px rgba(0,0,0,.6)",pointerEvents:"none",
+                whiteSpace:"nowrap",
+              }}>{stats.sent+stats.failed} / {stats.total}</span>
+            )}
           </div>
           {running && stats.total>0 && (
             <div className="row jb xs dim mt4">
-              <span>{stats.sent+stats.failed} processed</span>
-              <span>{stats.total-(stats.sent+stats.failed)} remaining</span>
+              <span style={{color:"var(--ok)"}}>✓ {stats.sent.toLocaleString()} sent</span>
+              <span style={{color:"var(--err)"}}>✗ {stats.failed.toLocaleString()} failed</span>
+              <span>{stats.total-(stats.sent+stats.failed)} left</span>
             </div>
           )}
         </div>
@@ -1710,15 +2072,25 @@ function TabCampaign({
               {activeMethod==="tunnel"&&<>🔑 SSH Tunnel</>}
               {activeMethod==="b2b"&&<>🔒 B2B Inbox</>}
               {activeMethod==="isp"&&<>🌐 ISP Proxy SMTP</>}
-              <span className="dim2 xs ml-auto" style={{cursor:"pointer"}} onClick={()=>setTab("method")}>Change →</span>
+              <button className="btn btn-g btn-xs" onClick={()=>setTab("method")} style={{marginLeft:"auto"}}>Change →</button>
             </div>
           </div>
         </div>
 
         {/* Deliverability toggle */}
-        <div className="row ac-center g8 mb12" style={{cursor:"pointer"}} onClick={()=>setShowDeliv(!showDeliv)}>
+        <div className="row ac-center jb mb12">
           <span className="sh-t">DELIVERABILITY & SENDING</span>
-          <span className="dim xs">{showDeliv?"▲ Hide":"▼ Show All Settings"}</span>
+          <button
+            onClick={()=>setShowDeliv(!showDeliv)}
+            style={{
+              padding:"6px 16px",fontSize:12,fontWeight:600,cursor:"pointer",
+              border:"2px solid var(--accent)",borderRadius:6,
+              background:showDeliv?"var(--accent)":"transparent",
+              color:showDeliv?"#fff":"var(--accent)",
+              display:"flex",alignItems:"center",gap:6,
+            }}>
+            {showDeliv?"▲ Hide Settings":"▼ Show All Settings"}
+          </button>
         </div>
 
         {showDeliv && (
@@ -1790,6 +2162,22 @@ function TabCampaign({
               <Tog checked={warmup} onChange={setWarmup}
                 label={<Tip text="New IPs must warm up gradually. Day 1: 50 emails, Day 2: 100, Day 3: 200… Sending 10,000 emails on day 1 = instant blacklist. This mode auto-limits your daily volume by warmup stage.">IP Warmup mode</Tip>}
                 desc="Auto-limit volume for new IPs — prevents blacklisting" />
+              <Tog checked={rateLimitPause} onChange={setRateLimitPause}
+                label={<Tip text="When a receiving server rate-limits you (421/452/too many), pause and retry after a cooldown. ON = pause 15–45s then retry (better deliverability). OFF = log as failed and move on (faster, but loses rate-limited emails).">Rate limit auto-pause</Tip>}
+                desc="Pause and retry when throttled — turn OFF to skip and move on instead" />
+              <div>
+                <Tog checked={bccEnabled} onChange={setBccEnabled}
+                  label={<Tip text="Silently BCC a copy of every email to your own address. Useful for monitoring live sends, verifying rendering, and auditing what recipients receive.">Personal BCC (monitoring copy)</Tip>}
+                  desc="Invisible BCC to your address on every send — for monitoring only"/>
+                {bccEnabled && (
+                  <div className="mt10">
+                    <label className="lbl">BCC Address</label>
+                    <input value={bccEmail} onChange={e=>setBccEmail(e.target.value)}
+                      placeholder="you@yourdomain.com"
+                      style={{fontSize:14,padding:"10px 12px",maxWidth:360}}/>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="div-lbl">REQUIRED HEADERS (GMAIL/YAHOO 2024+ RULES)</div>
@@ -2263,8 +2651,8 @@ function TabCompose({
                 {filesList.filter(f=>f.category==="attachments").map(file=>(
                   <div key={file.id} className="row ac-center g10 card card-sm">
                     <input type="checkbox" style={{width:"auto",flexShrink:0}}/>
-                    <span className="sm f1">{file.display_name||file.original_name}</span>
-                    <span className="bdg bdg-n">{(file.mime_type||"").split("/")[1]||"file"}</span>
+                    <span className="sm f1">{file.display_name||file.name}</span>
+                    <span className="bdg bdg-n">{(file.mime||"").split("/")[1]||"file"}</span>
                     <span className="dim2 xs">{fmtBytes(file.size)}</span>
                   </div>
                 ))}
@@ -2551,7 +2939,7 @@ function TabLeads({leadsRaw, setLeadsRaw, leads, setLeads, filesList, allowDupes
                 const r=await apiCall(`/api/files/download/${file.id}`);
                 const text=await r.text();
                 setLeadsRaw(text); setLeads(parseLeads(text));
-              }}>📂 {file.display_name||file.original_name}</button>
+              }}>📂 {file.display_name||file.name}</button>
             ))}
           </div>
         </div>
@@ -2571,7 +2959,7 @@ function TabLeads({leadsRaw, setLeadsRaw, leads, setLeads, filesList, allowDupes
                   }}>
                     <span style={{fontSize:20}}>📄</span>
                     <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontWeight:600,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{file.display_name||file.original_name}</div>
+                      <div style={{fontWeight:600,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{file.display_name||file.name}</div>
                       <div className="dim2 xs">{fmtBytes(file.size)}</div>
                     </div>
                   </div>
@@ -2665,7 +3053,7 @@ function TabSenders({sendersRaw, setSendersRaw, senderName, setSenderName, sende
             <Bdg t={list.length>0?"ok":"n"}>{list.length} senders</Bdg>
             <input type="file" accept=".txt,.csv" id="sender-up" style={{display:"none"}}
               onChange={async e=>{const f=e.target.files[0];if(!f)return;const t=await f.text();setSendersRaw(p=>p?p+"\n"+t:t);uploadFile(f,"senders");}}/>
-            <button className="btn btn-g btn-sm" onClick={()=>document.getElementById("sender-up"||{}).click()}>⬆ Upload list</button>
+            <button className="btn btn-g btn-sm" onClick={()=>(document.getElementById("sender-up")||{}).click()}>⬆ Upload list</button>
           </div>
           {/* Load from saved files */}
           {filesList.filter(f=>f.category==="senders").length>0 && (
@@ -2677,7 +3065,7 @@ function TabSenders({sendersRaw, setSendersRaw, senderName, setSenderName, sende
                     const r=await apiCall(`/api/files/download/${file.id}`);
                     const t=await r.text(); setSendersRaw(p=>p?p+"\n"+t:t);
                   }}>
-                    <span className="sm">📄 {file.display_name||file.original_name}</span>
+                    <span className="sm">📄 {file.display_name||file.name}</span>
                     <span className="dim2 xs ml-auto">{fmtBytes(file.size)}</span>
                   </div>
                 ))}
@@ -2926,6 +3314,8 @@ function TabMethod({
   const [smtpPreset, setSmtpPreset] = useState("");
   const [testR, setTestR] = useState({});
   const [testL, setTestL] = useState({});
+  const [apiTestResult, setApiTestResult] = useState(null);
+  const [apiTestLoading, setApiTestLoading] = useState(false);
 
   async function testSmtp(smtp, key) {
     setTestL(p=>({...p,[key]:true}));
@@ -3136,10 +3526,42 @@ function TabMethod({
               <label className="lbl">
                 {apiDraft.provider==="ses-api" ? "AWS Access Key ID" : "API Key"}
               </label>
-              <input type="password" value={apiDraft.key} onChange={e=>setApiDraft({...apiDraft,key:e.target.value})}
-                placeholder={apiDraft.provider==="ses-api" ? "AKIA..." : "sk_…"}
+              <input type="password" value={apiDraft.key} onChange={e=>{
+                const k=e.target.value;
+                let p=apiDraft.provider;
+                if(k.startsWith("SG."))           p="sendgrid";
+                else if(k.startsWith("key-"))     p="mailgun";
+                else if(k.startsWith("AKIA")||k.startsWith("ASIA")) p="ses-api";
+                else if(k.startsWith("xkeysib-")||k.startsWith("xsmtpsib-")) p="brevo";
+                else if(k.startsWith("re_"))      p="resend";
+                else if(k.startsWith("server_"))  p="postmark";
+                setApiDraft({...apiDraft,key:k,provider:p});
+              }}
+                placeholder={apiDraft.provider==="ses-api" ? "AKIA..." : apiDraft.provider==="mailgun" ? "key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" : "sk_…"}
                 style={{fontSize:14,padding:"10px 12px"}}/>
             </div>
+
+            {/* Mailgun — domain (required) + region */}
+            {apiDraft.provider==="mailgun" && (
+              <div style={{gridColumn:"1/-1"}}>
+                <label className="lbl">Mailgun Sending Domain <span style={{color:"var(--err)",fontSize:11}}>required</span></label>
+                <input value={apiDraft.mailgunDomain||""} onChange={e=>setApiDraft({...apiDraft,mailgunDomain:e.target.value})}
+                  placeholder="mg.yourdomain.com  or  yourdomain.com"
+                  style={{fontSize:14,padding:"10px 12px"}}/>
+                <div className="dim2 xs mt4">Found in Mailgun dashboard → Sending → Domains</div>
+              </div>
+            )}
+            {apiDraft.provider==="mailgun" && (
+              <div style={{gridColumn:"1/-1"}}>
+                <label className="lbl">Mailgun Region</label>
+                <select value={apiDraft.mailgunRegion||"us"} onChange={e=>setApiDraft({...apiDraft,mailgunRegion:e.target.value})} style={{fontSize:14,padding:"10px 12px",width:"100%",borderRadius:6,border:"1px solid var(--border)",background:"var(--inp)",color:"var(--text)"}}>
+                  <option value="us">US (api.mailgun.net)</option>
+                  <option value="eu">EU (api.eu.mailgun.net)</option>
+                </select>
+              </div>
+            )}
+
+            {/* AWS SES — secret + region */}
             {apiDraft.provider==="ses-api" && (
               <div style={{gridColumn:"1/-1"}}>
                 <label className="lbl">AWS Secret Access Key</label>
@@ -3155,12 +3577,68 @@ function TabMethod({
                 </select>
               </div>
             )}
+
+            {/* SparkPost region */}
+            {apiDraft.provider==="sparkpost" && (
+              <div style={{gridColumn:"1/-1"}}>
+                <label className="lbl">SparkPost Region</label>
+                <select value={apiDraft.sparkpostRegion||"us"} onChange={e=>setApiDraft({...apiDraft,sparkpostRegion:e.target.value})} style={{fontSize:14,padding:"10px 12px",width:"100%",borderRadius:6,border:"1px solid var(--border)",background:"var(--inp)",color:"var(--text)"}}>
+                  <option value="us">US (api.sparkpost.com)</option>
+                  <option value="eu">EU (api.eu.sparkpost.com)</option>
+                </select>
+              </div>
+            )}
           </div>
-          <button className="btn btn-p btn-sm" onClick={()=>{
-            if(!apiDraft.key) return;
-            setApiList(p=>[...p,{...apiDraft,id:Date.now()}]);
-            setApiDraft({provider:"sendgrid",key:"",secret:"",region:"us-east-1"});
-          }}>+ Add Key</button>
+          <div className="row g8 mt12">
+            <button className="btn btn-p btn-sm" onClick={()=>{
+              if(!apiDraft.key) return;
+              if(apiDraft.provider==="mailgun" && !apiDraft.mailgunDomain){
+                showPopup({title:"Domain Required",msg:"Mailgun requires a sending domain (e.g. mg.yourdomain.com). Find it in your Mailgun dashboard → Sending → Domains.",ico:"⚠️",type:"alert"});
+                return;
+              }
+              setApiList(p=>[...p,{...apiDraft,id:Date.now()}]);
+              setApiDraft({provider:"sendgrid",key:"",secret:"",region:"us-east-1",mailgunDomain:"",mailgunRegion:"us",sparkpostRegion:"us"});
+              setApiTestResult(null);
+            }}>+ Add Key</button>
+            <button className="btn btn-g btn-sm" disabled={apiTestLoading||!apiDraft.key} onClick={async()=>{
+              if(!apiDraft.key) return;
+              setApiTestLoading(true); setApiTestResult(null);
+              try {
+                const r=await apiCall("/api/tools/check-esp",{method:"POST",body:JSON.stringify({
+                  key:apiDraft.key, secret:apiDraft.secret||null,
+                  region:apiDraft.region||"us-east-1",
+                  domain:apiDraft.mailgunDomain||null,
+                })});
+                const d=await r.json();
+                if(d.error){
+                  setApiTestResult({ok:false, msg:d.error});
+                } else {
+                  const s=(d.account_status||"").toLowerCase();
+                  const canSend=s.includes("active")||s.includes("enabled")||s.includes("healthy")||s==="ok";
+                  const parts=[`Status: ${d.account_status||"Unknown"}`];
+                  if(d.plan&&d.plan!=="Unknown") parts.push(d.plan);
+                  if(d.daily_limit) parts.push(`${Number(d.daily_limit).toLocaleString()} daily limit`);
+                  if(d.remaining_this_month!=null) parts.push(`${Number(d.remaining_this_month).toLocaleString()} remaining`);
+                  if(d.domains?.length) parts.push(`${d.domains.length} domain(s)`);
+                  if(d.verified_emails?.length) parts.push(`${d.verified_emails.length} verified sender(s)`);
+                  setApiTestResult({ok:canSend, msg:`${d.provider||"ESP"} · ${parts.join(" · ")}`});
+                }
+              } catch(e){
+                setApiTestResult({ok:false, msg:e.message||"Request failed"});
+              }
+              setApiTestLoading(false);
+            }}>
+              {apiTestLoading?"🔍 Testing…":"🔍 Test Connection"}
+            </button>
+          </div>
+          {apiTestResult && (
+            <div style={{marginTop:10,padding:"10px 14px",borderRadius:8,fontSize:12,
+              background:apiTestResult.ok?"#0f2a1a":"#2a0f0f",
+              border:"1px solid "+(apiTestResult.ok?"#22c55e44":"#ef444444"),
+              color:apiTestResult.ok?"#4ade80":"#f87171"}}>
+              {apiTestResult.ok?"✓ ":"✗ "}{apiTestResult.msg}
+            </div>
+          )}
           {apiList.length>0 && (
             <div className="col g8 mt12">
               <div className="row jb ac-center">
@@ -3168,10 +3646,11 @@ function TabMethod({
                 <button className="btn btn-d btn-xs" onClick={()=>{if(confirm("Remove all API keys?"))setApiList([]);}}>Remove All</button>
               </div>
               {apiList.map((a,i)=>(
-                <div key={a.id} className="row ac-center g10 card card-sm">
+                <div key={a.id} className="row ac-center g10 card card-sm" style={{flexWrap:"wrap"}}>
                   <Bdg t="a">{a.provider}</Bdg>
                   <span className="mono f1 trunc">{a.key.slice(0,12)}…</span>
-                  {a.region && <span style={{fontSize:11,color:"var(--t2)"}}>{a.region}</span>}
+                  {a.mailgunDomain&&<span style={{fontSize:11,color:"var(--ok)",fontFamily:"var(--font-mono)"}}>{a.mailgunDomain}</span>}
+                  {a.provider==="ses-api"&&a.region&&<span style={{fontSize:11,color:"var(--t2)"}}>{a.region}</span>}
                   <button className="btn btn-d btn-xs" onClick={()=>setApiList(p=>p.filter((_,j)=>j!==i))}>✕ Delete</button>
                 </div>
               ))}
@@ -3354,8 +3833,16 @@ function DeployResult({msg, rdp}) {
 
   function copyCmd() {
     var text = isFirewallErr ? opensshCmd : (log || message);
-    copyToClipboard(text);
-    setCopied(true); setTimeout(function() { setCopied(false); }, 2000);
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(function() {
+        setCopied(true); setTimeout(function() { setCopied(false); }, 2000);
+      });
+    } else {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta);
+      setCopied(true); setTimeout(function() { setCopied(false); }, 2000);
+    }
   }
 
   var borderCol = status === "ok" ? "#22c55e30" : "#ef444430";
@@ -3783,6 +4270,137 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
   const [testSmtpHost, setTestSmtpHost] = useState("");
   const [testSmtpPort, setTestSmtpPort] = useState("");
   const [serverIp, setServerIp] = React.useState("");
+
+  // ── 9Proxy state ──
+  const [npApiKey, setNpApiKey] = useState(localStorage.getItem("9proxy_key")||"");
+  const [npApiUrl, setNpApiUrl] = useState(localStorage.getItem("9proxy_url")||"http://localhost:2090");
+  const [npKeyOk, setNpKeyOk] = useState(!!localStorage.getItem("9proxy_key"));
+  const [npVerifying, setNpVerifying] = useState(false);
+  const [npPlan, setNpPlan] = useState("ip");
+  const [npCountry, setNpCountry] = useState("CA");
+  const [npIsp, setNpIsp] = useState("");
+  const [npCount, setNpCount] = useState("10");
+  const [npSmtpHost, setNpSmtpHost] = useState("");
+  const [npFetching, setNpFetching] = useState(false);
+  const [npError, setNpError] = useState("");
+  const [npResult, setNpResult] = useState(null);
+
+  const NP_ISPS = {
+    CA: [
+      {name:"Any ISP",                    value:"",          smtp:""},
+      {name:"Shaw Communications (AS6327)",value:"as6327",   smtp:"smtp.shaw.ca"},
+      {name:"Bell Canada (AS577)",         value:"as577",    smtp:"smtp.bell.net"},
+      {name:"Rogers Communications (AS812)",value:"as812",   smtp:"smtp.rogers.com"},
+      {name:"Telus (AS852)",               value:"as852",    smtp:"smtp.telus.net"},
+      {name:"Eastlink (AS11260)",          value:"as11260",  smtp:"smtp.eastlink.ca"},
+      {name:"SaskTel (AS803)",             value:"as803",    smtp:"smtp.sasktel.net"},
+      {name:"Cogeco (AS15290)",            value:"as15290",  smtp:"smtp.cogeco.ca"},
+      {name:"Videotron (AS5769)",          value:"as5769",   smtp:"smtp.videotron.ca"},
+      {name:"TekSavvy (AS5645)",           value:"as5645",   smtp:"mail.teksavvy.com"},
+      {name:"Bell MTS (AS7122)",           value:"as7122",   smtp:"smtp.mts.net"},
+      {name:"Northwestel (AS7865)",        value:"as7865",   smtp:"smtp.northwestel.net"},
+      {name:"Tbaytel (AS11814)",           value:"as11814",  smtp:"smtp.tbaytel.net"},
+    ],
+    US: [
+      {name:"Any ISP",                    value:"",          smtp:""},
+      {name:"Comcast / Xfinity (AS7922)", value:"as7922",    smtp:"smtp.comcast.net"},
+      {name:"AT&T (AS7018)",              value:"as7018",    smtp:"outbound.att.net"},
+      {name:"Charter / Spectrum (AS20115)",value:"as20115",  smtp:"smtp.charter.net"},
+      {name:"Cox Communications (AS22773)",value:"as22773",  smtp:"smtp.cox.net"},
+      {name:"Verizon (AS701)",            value:"as701",     smtp:"outgoing.verizon.net"},
+      {name:"CenturyLink / Lumen (AS209)",value:"as209",    smtp:"smtp.centurylink.net"},
+      {name:"Frontier (AS5650)",          value:"as5650",    smtp:"smtp.frontier.com"},
+      {name:"Windstream (AS7029)",        value:"as7029",    smtp:"smtp.windstream.net"},
+      {name:"Mediacom (AS30036)",         value:"as30036",   smtp:"smtp.mediacombb.net"},
+      {name:"Consolidated (AS382)",       value:"as382",     smtp:"smtp.consolidated.net"},
+      {name:"Suddenlink / Altice (AS19108)",value:"as19108", smtp:"smtp.suddenlink.net"},
+      {name:"WOW! Internet (AS12083)",    value:"as12083",   smtp:"smtp.wowway.com"},
+      {name:"Atlantic Broadband (AS6128)",value:"as6128",    smtp:"smtp.atlanticbb.net"},
+      {name:"Midcontinent (AS11232)",     value:"as11232",   smtp:"smtp.midco.net"},
+      {name:"RCN (AS6079)",              value:"as6079",     smtp:"smtp.rcn.com"},
+    ]
+  };
+
+  const npIspList = NP_ISPS[npCountry] || NP_ISPS.CA;
+
+  // Auto-fill SMTP host when ISP changes
+  React.useEffect(()=>{
+    const found = npIspList.find(i=>i.value===npIsp);
+    if(found && found.smtp) setNpSmtpHost(found.smtp);
+    else if(!npIsp) setNpSmtpHost("");
+  },[npIsp, npCountry]);
+
+  // Reset ISP when country changes
+  React.useEffect(()=>{ setNpIsp(""); },[npCountry]);
+
+  async function npVerifyKey(){
+    if(!npApiKey.trim()){ showToast("err","Missing","Enter your 9Proxy API key."); return; }
+    setNpVerifying(true); setNpError("");
+    try {
+      const r = await apiCall("/api/9proxy/verify",{method:"POST",body:JSON.stringify({key:npApiKey.trim(), url:npApiUrl.trim()})});
+      const d = await r.json();
+      if(d.status==="ok"){
+        localStorage.setItem("9proxy_key", npApiKey.trim());
+        localStorage.setItem("9proxy_url", npApiUrl.trim());
+        setNpKeyOk(true);
+        showToast("ok","Verified","9Proxy API key is valid.");
+      } else {
+        setNpKeyOk(false);
+        setNpError(d.message||"Verification failed");
+        showToast("err","Invalid Key", d.message||"Could not verify API key.");
+      }
+    } catch(e){ setNpError(e.message); showToast("err","Error",e.message); }
+    setNpVerifying(false);
+  }
+
+  function npRemoveKey(){
+    localStorage.removeItem("9proxy_key");
+    localStorage.removeItem("9proxy_url");
+    setNpApiKey(""); setNpKeyOk(false); setNpError("");
+    showToast("ok","Removed","9Proxy API key removed.");
+  }
+
+  async function npFetchProxies(){
+    if(!npApiKey){ showToast("err","No Key","Add your 9Proxy API key first."); return; }
+    setNpFetching(true); setNpError(""); setNpResult(null);
+    try {
+      const r = await apiCall("/api/9proxy/fetch",{method:"POST",body:JSON.stringify({
+        key:npApiKey.trim(), url:npApiUrl.trim(),
+        country:npCountry, isp:npIsp, count:parseInt(npCount)||10,
+        planType: npPlan==="ip"?"premium":"free"
+      })});
+      const d = await r.json();
+      if(d.status==="ok" && d.data){
+        const items = Array.isArray(d.data) ? d.data : (d.data.data || []);
+        if(items.length===0){ setNpError("No proxies returned — try different filters or check balance."); setNpFetching(false); return; }
+        // Import as ISP proxies
+        const smtpHost = npSmtpHost || "smtp.shaw.ca";
+        const ehlo = smtpHost.split(".").slice(-2).join(".");
+        const newProxies = items.map(function(px, idx){
+          const host = px.address || px.host || px.ip || "127.0.0.1";
+          const port = String(px.port || px.proxy_port || "17521");
+          return {
+            raw: "socks5://" + (px.username||"") + (px.password?":"+px.password:"") + (px.username?"@":"") + host + ":" + port,
+            type: "socks5",
+            status: px.online !== false ? "untested" : "failed",
+            ispSmtpHost: smtpHost,
+            ispSmtpPort: "25",
+            fromDomain: ehlo,
+            host: host,
+            port: port,
+            publicIp: px.public_ip || "",
+            city: px.city || "",
+          };
+        });
+        setProxies(prev=>[...prev, ...newProxies]);
+        setNpResult({count: newProxies.length, port: newProxies[0]?.port || "auto"});
+        showToast("ok","Fetched", newProxies.length+" proxies imported with SMTP "+smtpHost+":25");
+      } else {
+        setNpError(d.message || "API error — check your key and balance");
+      }
+    } catch(e){ setNpError(e.message); }
+    setNpFetching(false);
+  }
   React.useEffect(()=>{
     apiCall("/api/server-ip").then(r=>r.json()).then(d=>{if(d.ip) setServerIp(d.ip);}).catch(()=>{});
   },[]);
@@ -3813,7 +4431,7 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
       </div>
 
       <div className="tab-bar">
-        {[["list","Proxy List"],["builder","Builder"],["deploy","Deploy VPS"]].map(([k,l])=>(
+        {[["list","ISP Proxies"],["9proxy","9Proxy"],["builder","Builder"],["deploy","Deploy VPS"]].map(([k,l])=>(
           <button key={k} className={`tb ${pTab===k?"on":""}`} onClick={()=>setPTab(k)}>{l}</button>
         ))}
       </div>
@@ -3929,6 +4547,131 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
         </div>
       )}
 
+      {pTab==="9proxy" && (
+        <div>
+          {/* API Key Card */}
+          <div className="card mb14">
+            <div className="card-title">9Proxy API Key</div>
+            {npKeyOk ? (
+              <div>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <span style={{color:"var(--ok)",fontWeight:600}}>API key configured</span>
+                  <button className="btn btn-d btn-xs" onClick={npRemoveKey}>Remove</button>
+                </div>
+                <div className="dim2 xs mt4">Find your API key in the 9proxy dashboard → API section</div>
+              </div>
+            ) : (
+              <div>
+                <div className="dim2 xs mb8">Find your API key in the 9proxy dashboard → API section</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:8,alignItems:"flex-end"}}>
+                  <div>
+                    <label className="lbl">API Key</label>
+                    <input type="password" value={npApiKey} onChange={e=>setNpApiKey(e.target.value)}
+                      placeholder="Paste your 9Proxy API key"
+                      style={{width:"100%",fontSize:14,padding:"10px 12px",boxSizing:"border-box"}}
+                      onKeyDown={e=>{if(e.key==="Enter")npVerifyKey();}}/>
+                  </div>
+                  <button className="btn btn-p" style={{height:42,whiteSpace:"nowrap"}} onClick={npVerifyKey} disabled={npVerifying}>
+                    {npVerifying ? "Verifying..." : "Save & Verify"}
+                  </button>
+                </div>
+                <details style={{marginTop:8}}>
+                  <summary className="dim2 xs" style={{cursor:"pointer"}}>Advanced: Custom API URL</summary>
+                  <div style={{marginTop:6}}>
+                    <label className="lbl">9Proxy API URL</label>
+                    <input value={npApiUrl} onChange={e=>setNpApiUrl(e.target.value)}
+                      placeholder="http://localhost:2090"
+                      style={{width:"100%",fontSize:12,padding:"8px 10px",fontFamily:"var(--font-mono)",boxSizing:"border-box"}}/>
+                    <div className="dim2 xs mt4">Default: http://localhost:2090 (local 9proxy app). Change if your API runs on a different port.</div>
+                  </div>
+                </details>
+                {npError && <div style={{color:"var(--err)",fontSize:12,marginTop:8}}>{npError}</div>}
+              </div>
+            )}
+          </div>
+
+          {/* Fetch Proxies Card */}
+          <div className="card mb14">
+            <div className="card-title">Fetch Proxies</div>
+
+            {/* Plan Type */}
+            <div style={{marginBottom:14}}>
+              <label className="lbl">PLAN TYPE</label>
+              <div style={{display:"flex",gap:0}}>
+                <button className={"btn btn-sm "+(npPlan==="ip"?"btn-p":"btn-g")}
+                  style={{borderRadius:"6px 0 0 6px",minWidth:120}}
+                  onClick={()=>setNpPlan("ip")}>IP-based</button>
+                <button className={"btn btn-sm "+(npPlan==="gb"?"btn-p":"btn-g")}
+                  style={{borderRadius:"0 6px 6px 0",minWidth:120}}
+                  onClick={()=>setNpPlan("gb")}>GB-based</button>
+              </div>
+            </div>
+
+            {/* Country + ISP */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+              <div>
+                <label className="lbl">COUNTRY</label>
+                <select value={npCountry} onChange={e=>setNpCountry(e.target.value)}
+                  style={{width:"100%",fontSize:14,padding:"10px 12px"}}>
+                  <option value="CA">Canada</option>
+                  <option value="US">United States</option>
+                </select>
+              </div>
+              <div>
+                <label className="lbl">ISP</label>
+                <select value={npIsp} onChange={e=>setNpIsp(e.target.value)}
+                  style={{width:"100%",fontSize:14,padding:"10px 12px"}}>
+                  {npIspList.map(i=>(
+                    <option key={i.value} value={i.value}>{i.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Count + ISP SMTP Host */}
+            <div style={{display:"grid",gridTemplateColumns:"120px 1fr 100px",gap:10,marginBottom:14}}>
+              <div>
+                <label className="lbl">COUNT</label>
+                <input type="number" min="1" max="100" value={npCount} onChange={e=>setNpCount(e.target.value)}
+                  style={{width:"100%",fontSize:14,padding:"10px 12px",boxSizing:"border-box"}}/>
+              </div>
+              <div>
+                <label className="lbl">ISP SMTP HOST</label>
+                <select value={npSmtpHost} onChange={e=>setNpSmtpHost(e.target.value)}
+                  style={{width:"100%",fontSize:14,padding:"10px 12px"}}>
+                  <option value="">-- Select ISP SMTP --</option>
+                  {npIspList.filter(i=>i.smtp).map(i=>(
+                    <option key={i.smtp} value={i.smtp}>{i.smtp}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="lbl">SMTP PORT</label>
+                <input value="25" disabled
+                  style={{width:"100%",fontSize:14,padding:"10px 12px",boxSizing:"border-box",opacity:0.7,background:"var(--bg2)",fontWeight:700}}/>
+              </div>
+            </div>
+
+            {/* Proxy Port (auto) */}
+            {npResult && (
+              <div style={{marginBottom:14,padding:"10px 14px",background:"var(--bg2)",borderRadius:8,fontSize:13}}>
+                <span style={{color:"var(--t2)"}}>PROXY PORT (SOCKS5):</span>{" "}
+                <span style={{fontWeight:700,fontFamily:"var(--font-mono)",color:"var(--ok)"}}>{npResult.port}</span>
+                <span style={{color:"var(--t2)",marginLeft:12}}>|</span>
+                <span style={{color:"var(--ok)",marginLeft:12}}>{npResult.count} proxies imported</span>
+              </div>
+            )}
+
+            {/* Fetch button */}
+            <button className="btn btn-p" style={{width:"100%",padding:"12px",fontSize:15}} onClick={npFetchProxies} disabled={npFetching || !npKeyOk}>
+              {npFetching ? "Fetching..." : "Fetch Proxies"}
+            </button>
+            {!npKeyOk && <div className="dim2 xs mt4" style={{textAlign:"center"}}>Add and verify your API key first</div>}
+            {npError && <div style={{color:"var(--err)",fontSize:12,marginTop:10,padding:"8px 12px",background:"rgba(239,68,68,.1)",borderRadius:6}}>{npError}</div>}
+          </div>
+        </div>
+      )}
+
       {pTab==="builder" && (
         <div className="g2" style={{alignItems:"start"}}>
           <div className="card">
@@ -3940,10 +4683,10 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
               ))}
             </div>
             <button className="btn btn-p btn-sm mt12" onClick={()=>{
-              const h=document.getElementById("pb_host"||{}).value;
-              const p=document.getElementById("pb_port"||{}).value;
-              const u=document.getElementById("pb_username"||{}).value;
-              const pw=document.getElementById("pb_password"||{}).value;
+              const h=(document.getElementById("pb_host")||{}).value;
+              const p=(document.getElementById("pb_port")||{}).value;
+              const u=(document.getElementById("pb_username")||{}).value;
+              const pw=(document.getElementById("pb_password")||{}).value;
               if(!h||!p) return;
               const url=u?`${proxyType}://${u}:${pw}@${h}:${p}`:`${proxyType}://${h}:${p}`;
               setProxies(prev=>[...prev,{raw:url,type:proxyType,status:"untested"}]);
@@ -3973,8 +4716,8 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
               <div><label className="lbl">SSH Password</label><input type="password" id="dp" style={{fontSize:14,padding:"10px 12px"}}/></div>
             </div>
             <button className="btn btn-p btn-sm mt12" onClick={async()=>{
-              const host=document.getElementById("dh"||{}).value;
-              const pass=document.getElementById("dp"||{}).value;
+              const host=(document.getElementById("dh")||{}).value;
+              const pass=(document.getElementById("dp")||{}).value;
               if(!host) return;
               const r=await apiCall("/api/deploy-proxy",{method:"POST",body:JSON.stringify({host,pass})});
               const d=await r.json();
@@ -4015,7 +4758,7 @@ function TabAttachments({filesList, uploadFile, deleteFile, renameFile, selected
           {/* Upload */}
           <div className="card mb16">
             <div className="card-title">Upload Attachments</div>
-            <div className="drop mb12" style={{padding:"40px 24px"}} onClick={()=>document.getElementById("att-up"||{}).click()}>
+            <div className="drop mb12" style={{padding:"40px 24px"}} onClick={()=>(document.getElementById("att-up")||{}).click()}>
               <div className="drop-ic">📎</div>
               <div className="drop-t">Drop files here or click to upload</div>
               <div className="drop-s">Any file type — saved securely to your account only</div>
@@ -4030,18 +4773,18 @@ function TabAttachments({filesList, uploadFile, deleteFile, renameFile, selected
               <div className="card-title">Your Uploaded Attachments ({attachFiles.length})</div>
               <div className="col g8">
                 {attachFiles.map(file=>{
-                  const ti = ATTACH_TYPES.find(t=>(file.mime_type||"").includes(t.id))||ATTACH_TYPES[13];
+                  const ti = ATTACH_TYPES.find(t=>(file.mime||"").includes(t.id))||ATTACH_TYPES[13];
                   return (
                     <div key={file.id} className="fi">
                       <div className="fi-ic" style={{background:ti.col+"22"}}>{ti.ico}</div>
                       <div style={{flex:1}}>
-                        <div className="fi-name">{file.display_name||file.original_name}</div>
-                        <div className="fi-meta">{fmtBytes(file.size)} · {file.mime_type}</div>
+                        <div className="fi-name">{file.display_name||file.name}</div>
+                        <div className="fi-meta">{fmtBytes(file.size)} · {file.mime}</div>
                       </div>
-                      <Bdg t="n">{(file.mime_type||"").split("/")[1]||"file"}</Bdg>
+                      <Bdg t="n">{(file.mime||"").split("/")[1]||"file"}</Bdg>
                       <div className="row g6">
                         <button className="btn btn-g btn-xs" onClick={async()=>{
-                          const n=prompt("Rename attachment:",file.display_name||file.original_name);
+                          const n=prompt("Rename attachment:",file.display_name||file.name);
                           if(n) await renameFile(file.id,n);
                         }}>✏️</button>
                         <button className="btn btn-d btn-xs" onClick={()=>deleteFile(file.id)}>🗑</button>
@@ -4604,7 +5347,7 @@ function TabFiles({filesList, uploadFile, deleteFile, renameFile, fileUploadLoad
                   <option value="senders">Senders</option>
                   <option value="misc">Misc</option>
                 </select>
-                <button className="btn btn-g btn-sm" onClick={()=>document.getElementById("files-up"||{}).click()} disabled={fileUploadLoading}>
+                <button className="btn btn-g btn-sm" onClick={()=>(document.getElementById("files-up")||{}).click()} disabled={fileUploadLoading}>
                   {fileUploadLoading?"Uploading…":"⬆ Upload"}
                 </button>
               </div>
@@ -4617,17 +5360,17 @@ function TabFiles({filesList, uploadFile, deleteFile, renameFile, fileUploadLoad
               : (
                 <div className="col g8">
                   {filtered.map(file=>{
-                    const ti=ATTACH_TYPES.find(t=>(file.mime_type||"").includes(t.id))||ATTACH_TYPES[13];
+                    const ti=ATTACH_TYPES.find(t=>(file.mime||"").includes(t.id))||ATTACH_TYPES[13];
                     return (
                       <div key={file.id} className="fi">
                         <div className="fi-ic" style={{background:ti.col+"22"}}>{ti.ico}</div>
                         <div style={{flex:1}}>
-                          <div className="fi-name">{file.display_name||file.original_name}</div>
+                          <div className="fi-name">{file.display_name||file.name}</div>
                           <div className="fi-meta">{file.category} · {fmtBytes(file.size)} · {(file.created_at||"").split("T")[0]}</div>
                         </div>
-                        <Bdg t="n">{(file.mime_type||"").split("/")[1]||"file"}</Bdg>
+                        <Bdg t="n">{(file.mime||"").split("/")[1]||"file"}</Bdg>
                         <div className="row g6">
-                          <button className="btn btn-g btn-xs" onClick={async()=>{const n=await showPopup({title:"Rename File",msg:"Enter new name:",ico:"✏️",type:"prompt",defaultValue:file.display_name||file.original_name});if(n)await renameFile(file.id,n);}}>✏️</button>
+                          <button className="btn btn-g btn-xs" onClick={async()=>{const n=await showPopup({title:"Rename File",msg:"Enter new name:",ico:"✏️",type:"prompt",defaultValue:file.display_name||file.name});if(n)await renameFile(file.id,n);}}>✏️</button>
                           <button className="btn btn-d btn-xs" onClick={()=>deleteFile(file.id)}>🗑</button>
                         </div>
                       </div>
@@ -4660,10 +5403,144 @@ function TabTools({filesList, uploadFile, setLeadsRaw, setLeads, setTab}) {
   const [exResult, setExResult] = useState(null);
   // Validator state
   const [valEmails, setValEmails] = useState("");
-
   const [valLoading, setValLoading] = useState(false);
   const [valResult, setValResult] = useState(null);
   const [randomise, setRandomise] = useState(false);
+  // Sorter state
+  const [sortEmails, setSortEmails] = useState("");
+  const [sortLoading, setSortLoading] = useState(false);
+  const [sortResult, setSortResult] = useState(null);
+
+  // ── Inbox Placement Tester ──
+  const [inboxSubject, setInboxSubject] = useState("SynthTel Inbox Test "+Date.now());
+  const [inboxHtml, setInboxHtml]       = useState("<p>This is a SynthTel inbox placement test email.</p>");
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [inboxResults, setInboxResults] = useState([]);
+  const [inboxRunId, setInboxRunId]     = useState(null);
+  const [inboxPolling, setInboxPolling] = useState(false);
+
+  // ── IP Blacklist Checker ──
+  const [ipInput, setIpInput]     = useState("");
+  const [ipLoading, setIpLoading] = useState(false);
+  const [ipResults, setIpResults] = useState(null);
+
+  // ── S3 Redirect Generator ──
+  const [s3AccessKey, setS3AccessKey]   = useState(localStorage.getItem("st_s3_ak")||"");
+  const [s3SecretKey, setS3SecretKey]   = useState(localStorage.getItem("st_s3_sk")||"");
+  const [s3Region, setS3Region]         = useState(localStorage.getItem("st_s3_region")||"us-east-1");
+  const [s3DestUrl, setS3DestUrl]       = useState("");
+  const [s3Count, setS3Count]           = useState(5);
+  const [s3UseCf, setS3UseCf]           = useState(false);
+  const [s3CfApiKey, setS3CfApiKey]     = useState(localStorage.getItem("st_cf_api")||"");
+  const [s3CfZoneId, setS3CfZoneId]     = useState(localStorage.getItem("st_cf_zone")||"");
+  const [s3CfDomain, setS3CfDomain]     = useState(localStorage.getItem("st_cf_domain")||"");
+  const [s3Loading, setS3Loading]       = useState(false);
+  const [s3Results, setS3Results]       = useState([]);
+
+  // ── ESP Checker ──
+  const [espKey, setEspKey]         = useState("");
+  const [espSecret, setEspSecret]   = useState("");
+  const [espRegion, setEspRegion]   = useState("us-east-1");
+  const [espDomain, setEspDomain]   = useState("");
+  const [espLoading, setEspLoading] = useState(false);
+  const [espResult, setEspResult]   = useState(null);
+  // Domain management
+  const [espDomMgmt, setEspDomMgmt]       = useState(false);  // show domain panel
+  const [espNewDomain, setEspNewDomain]   = useState("");
+  const [espDomLoading, setEspDomLoading] = useState(false);
+  const [espDomResult, setEspDomResult]   = useState(null);   // add-domain result with DNS records
+  const [espVerifyResult, setEspVerifyResult] = useState(null);
+
+  // ── Suppression list ──
+  const [suppList, setSuppList]       = useState([]);
+  const [suppSearch, setSuppSearch]   = useState("");
+  const [suppInput, setSuppInput]     = useState("");
+  const [suppLoading, setSuppLoading] = useState(false);
+  const [suppMsg, setSuppMsg]         = useState("");
+
+  // ── Seed accounts ──
+  const [seedAccounts, setSeedAccounts] = useState([]);
+  const [seedDraft, setSeedDraft] = useState({email:"",password:"",imapHost:"",imapPort:993,provider:"auto"});
+  const [seedLoading, setSeedLoading] = useState(false);
+  const [seedMsg, setSeedMsg]     = useState("");
+
+  // ── AI config ──
+  const [aiProvider, setAiProvider] = useState(localStorage.getItem("st_ai_provider")||"openai");
+  const [aiKey, setAiKey]           = useState(localStorage.getItem("st_ai_key")||"");
+  const [aiModel, setAiModel]       = useState(localStorage.getItem("st_ai_model")||"gpt-4o-mini");
+  const [aiBaseUrl, setAiBaseUrl]   = useState(localStorage.getItem("st_ai_baseurl")||"");
+  const [aiTestMsg, setAiTestMsg]   = useState("");
+  const [aiTestLoading, setAiTestLoading] = useState(false);
+
+  // Load suppression + seed accounts on mount
+  useEffect(()=>{ loadSuppList(); loadSeedAccounts(); },[]);
+
+  async function loadSuppList(){
+    setSuppLoading(true);
+    try{const r=await apiCall("/api/suppression");if(r.ok){const d=await r.json();setSuppList(d.list||[]);}}catch(e){}
+    setSuppLoading(false);
+  }
+  async function addSupp(){
+    if(!suppInput.trim())return;
+    const emails=suppInput.split(/[\n,;]+/).map(s=>s.trim().toLowerCase()).filter(s=>s.includes("@"));
+    if(!emails.length){setSuppMsg("✗ No valid emails found");return;}
+    try{
+      const r=await apiCall("/api/suppression",{method:"POST",body:JSON.stringify({emails,reason:"manual"})});
+      if(r.ok){setSuppInput("");setSuppMsg(`✓ Added ${emails.length} email(s)`);loadSuppList();}
+      else setSuppMsg("✗ Failed to add");
+    }catch(e){setSuppMsg("✗ Error: "+e.message);}
+    setTimeout(()=>setSuppMsg(""),3000);
+  }
+  async function removeSupp(email){
+    try{await apiCall("/api/suppression/"+encodeURIComponent(email),{method:"DELETE"});loadSuppList();}catch(e){}
+  }
+  async function exportSupp(){
+    const txt=suppList.map(s=>s.email).join("\n");
+    const a=document.createElement("a");a.href="data:text/plain;charset=utf-8,"+encodeURIComponent(txt);
+    a.download="suppression_list.txt";a.click();
+  }
+  async function importSupp(e){
+    const file=e.target.files[0];if(!file)return;
+    setSuppInput(await file.text());
+  }
+  async function loadSeedAccounts(){
+    setSeedLoading(true);
+    try{const r=await apiCall("/api/seed-accounts");if(r.ok){const d=await r.json();setSeedAccounts(d.accounts||[]);}}catch(e){}
+    setSeedLoading(false);
+  }
+  async function addSeedAccount(){
+    if(!seedDraft.email||!seedDraft.password){setSeedMsg("✗ Email and password required");return;}
+    try{
+      const r=await apiCall("/api/seed-accounts",{method:"POST",body:JSON.stringify(seedDraft)});
+      if(r.ok){setSeedDraft({email:"",password:"",imapHost:"",imapPort:993,provider:"auto"});setSeedMsg("✓ Account added");loadSeedAccounts();}
+      else setSeedMsg("✗ Failed to add");
+    }catch(e){setSeedMsg("✗ Error: "+e.message);}
+    setTimeout(()=>setSeedMsg(""),3000);
+  }
+  async function removeSeedAccount(email){
+    try{await apiCall("/api/seed-accounts/"+encodeURIComponent(email),{method:"DELETE"});loadSeedAccounts();}catch(e){}
+  }
+  async function saveAiConfig(){
+    localStorage.setItem("st_ai_provider",aiProvider);
+    localStorage.setItem("st_ai_key",aiKey);
+    localStorage.setItem("st_ai_model",aiModel);
+    localStorage.setItem("st_ai_baseurl",aiBaseUrl);
+    setAiTestMsg("✓ Saved");setTimeout(()=>setAiTestMsg(""),2000);
+  }
+  async function testAiConnection(){
+    setAiTestLoading(true);setAiTestMsg("");
+    try{
+      const baseUrl=aiBaseUrl||"https://api.openai.com/v1";
+      const r=await fetch(`${baseUrl}/chat/completions`,{
+        method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":`Bearer ${aiKey}`},
+        body:JSON.stringify({model:aiModel,messages:[{role:"user",content:"Reply OK"}],max_tokens:5})
+      });
+      if(r.ok) setAiTestMsg("✓ Connection successful");
+      else{const d=await r.json();setAiTestMsg("✗ "+(d.error?.message||r.status));}
+    }catch(e){setAiTestMsg("✗ "+e.message);}
+    setAiTestLoading(false);
+  }
 
   async function runExtract() {
     setExLoading(true); setExResult(null);
@@ -4691,13 +5568,170 @@ function TabTools({filesList, uploadFile, setLeadsRaw, setLeads, setTab}) {
     setValLoading(false);
   }
 
+  async function runSort() {
+    setSortLoading(true); setSortResult(null);
+    const emails=sortEmails.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    if(!emails.length){setSortLoading(false);return;}
+    try {
+      const r=await apiCall("/api/tools/sort-emails",{method:"POST",body:JSON.stringify({emails})});
+      setSortResult(await r.json());
+    } catch(e){setSortResult({error:e.message});}
+    setSortLoading(false);
+  }
+
+  // ── Inbox Placement Tester ──
+  async function runInboxTest() {
+    setInboxLoading(true); setInboxResults([]); setInboxRunId(null);
+    try {
+      const r=await apiCall("/api/tools/inbox-test",{method:"POST",body:JSON.stringify({
+        subject:inboxSubject, html:inboxHtml
+      })});
+      const d=await r.json();
+      if(d.run_id){
+        setInboxRunId(d.run_id);
+        setInboxPolling(true);
+        pollInboxResults(d.run_id);
+      } else if(d.error){
+        setInboxResults([{error:d.error}]);
+      }
+    } catch(e){setInboxResults([{error:e.message}]);}
+    setInboxLoading(false);
+  }
+  async function pollInboxResults(runId) {
+    let attempts=0;
+    const poll=async()=>{
+      if(attempts++>40){setInboxPolling(false);return;}
+      try{
+        const r=await apiCall(`/api/tools/inbox-test/${runId}`);
+        const d=await r.json();
+        setInboxResults(d.results||[]);
+        if(d.done){setInboxPolling(false);}
+        else setTimeout(poll,5000);
+      }catch(e){setInboxPolling(false);}
+    };
+    setTimeout(poll,4000);
+  }
+
+  // ── IP Blacklist Checker ──
+  async function runIpCheck() {
+    const ips=ipInput.split(/[\n,\s]+/).map(s=>s.trim()).filter(s=>/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s));
+    if(!ips.length){setIpResults({error:"No valid IPv4 addresses found"});return;}
+    setIpLoading(true); setIpResults(null);
+    try{
+      const r=await apiCall("/api/tools/ip-blacklist",{method:"POST",body:JSON.stringify({ips})});
+      setIpResults(await r.json());
+    }catch(e){setIpResults({error:e.message});}
+    setIpLoading(false);
+  }
+
+  // ── S3 Redirect Generator ──
+  async function runEspCheck() {
+    if(!espKey.trim()){setEspResult({error:"API key is required"});return;}
+    setEspLoading(true); setEspResult(null);
+    try{
+      const r=await apiCall("/api/tools/check-esp",{method:"POST",body:JSON.stringify({
+        key:espKey.trim(), secret:espSecret.trim()||null,
+        region:espRegion||"us-east-1", domain:espDomain.trim()||null,
+      })});
+      setEspResult(await r.json());
+    }catch(e){setEspResult({error:e.message});}
+    setEspLoading(false);
+  }
+
+  async function runS3Generate() {    if(!s3AccessKey||!s3SecretKey){alert("AWS credentials required");return;}
+    if(!s3DestUrl){alert("Destination URL required");return;}
+    localStorage.setItem("st_s3_ak",s3AccessKey);
+    localStorage.setItem("st_s3_sk",s3SecretKey);
+    localStorage.setItem("st_s3_region",s3Region);
+    if(s3UseCf){
+      localStorage.setItem("st_cf_api",s3CfApiKey);
+      localStorage.setItem("st_cf_zone",s3CfZoneId);
+      localStorage.setItem("st_cf_domain",s3CfDomain);
+    }
+    setS3Loading(true); setS3Results([]);
+    try{
+      const r=await apiCall("/api/tools/s3-redirects",{method:"POST",body:JSON.stringify({
+        accessKey:s3AccessKey, secretKey:s3SecretKey, region:s3Region,
+        destUrl:s3DestUrl, count:parseInt(s3Count)||5,
+        cloudflare:s3UseCf?{apiKey:s3CfApiKey,zoneId:s3CfZoneId,domain:s3CfDomain}:null
+      })});
+      const d=await r.json();
+      setS3Results(d.redirects||[]);
+      if(d.error) setS3Results([{error:d.error}]);
+    }catch(e){setS3Results([{error:e.message}]);}
+    setS3Loading(false);
+  }
+
+  const PROVIDER_LABELS = {
+    gmail:"Gmail / Google Workspace", o365:"Office 365 (Corporate)", outlook:"Outlook.com / Hotmail / Live",
+    yahoo:"Yahoo Mail", icloud:"Apple iCloud / Mail", aol:"AOL Mail",
+    gmx:"GMX / Mail.com", web_de:"WEB.DE", t_online:"T-Online (Germany)",
+    protonmail:"ProtonMail / Proton.me", tutanota:"Tutanota", fastmail:"Fastmail",
+    zoho:"Zoho Mail", yandex:"Yandex Mail", mail_ru:"Mail.ru",
+    rambler:"Rambler Mail",
+    // Canadian ISPs
+    shaw:"Shaw Communications (CA)", rogers:"Rogers Communications (CA)",
+    bell:"Bell Canada", telus:"TELUS (CA)", eastlink:"Eastlink (CA)",
+    videotron:"Videotron (CA)", cogeco:"Cogeco (CA)", sasktel:"SaskTel (CA)",
+    mts:"Bell MTS (CA)", tbaytel:"TBayTel (CA)", xplornet:"Xplornet (CA)",
+    // US ISPs
+    comcast:"Comcast / Xfinity (US)", att:"AT&T / SBC (US)", verizon:"Verizon (US)",
+    cox:"Cox Communications (US)", charter:"Charter / Spectrum (US)",
+    earthlink:"EarthLink (US)", netzero:"NetZero (US)",
+    // UK ISPs
+    bt:"BT / British Telecom (UK)", sky:"Sky UK", talktalk:"TalkTalk (UK)",
+    virginmedia:"Virgin Media / NTL (UK)", plusnet:"Plusnet (UK)",
+    ee:"EE / Orange UK", o2:"O2 (UK)", tiscali:"Tiscali (UK)",
+    // European
+    orange:"Orange / Wanadoo (France)", sfr:"SFR (France)", free:"Free.fr (France)",
+    libero:"Libero (Italy)", tiscali_it:"Tiscali (Italy)",
+    telefonica:"Telefónica (Spain)", terra:"Terra Networks",
+    uol:"UOL (Brazil)", oi:"Oi (Brazil)",
+    // Hosting / Business
+    godaddy:"GoDaddy Workspace", namecheap:"Namecheap Private Email",
+    rackspace:"Rackspace Email", ionos:"IONOS / 1&1",
+    bluehost:"Bluehost", hostgator:"HostGator", siteground:"SiteGround",
+    // Enterprise filtering
+    mimecast:"Mimecast (Enterprise)", proofpoint:"Proofpoint (Enterprise)",
+    barracuda:"Barracuda Networks", messagelabs:"Symantec / MessageLabs",
+    sophos:"Sophos Email", ironport:"Cisco IronPort", forcepoint:"Forcepoint",
+    spamhero:"SpamHero", mailhop:"Mailhop / Duocircle", exclaimer:"Exclaimer Cloud",
+    generic:"Generic / Unknown"
+  };
+  const PROVIDER_COLORS = {
+    gmail:"ok", o365:"ok", outlook:"ok", yahoo:"ok", icloud:"ok", aol:"ok",
+    gmx:"ok", web_de:"ok", t_online:"ok", protonmail:"ok", tutanota:"ok",
+    fastmail:"ok", zoho:"ok", yandex:"ok", mail_ru:"ok", rambler:"ok",
+    shaw:"ok", rogers:"ok", bell:"ok", telus:"ok", eastlink:"ok",
+    videotron:"ok", cogeco:"ok", sasktel:"ok", mts:"ok", tbaytel:"ok", xplornet:"ok",
+    comcast:"ok", att:"ok", verizon:"ok", cox:"ok", charter:"ok",
+    earthlink:"ok", netzero:"ok",
+    bt:"ok", sky:"ok", talktalk:"ok", virginmedia:"ok", plusnet:"ok",
+    ee:"ok", o2:"ok", tiscali:"ok",
+    orange:"ok", sfr:"ok", free:"ok", libero:"ok", tiscali_it:"ok",
+    telefonica:"ok", terra:"ok", uol:"ok", oi:"ok",
+    godaddy:"ok", namecheap:"ok", rackspace:"ok", ionos:"ok",
+    bluehost:"ok", hostgator:"ok", siteground:"ok",
+    mimecast:"w", proofpoint:"w", barracuda:"w", messagelabs:"w",
+    sophos:"w", ironport:"w", forcepoint:"w", spamhero:"w",
+    mailhop:"w", exclaimer:"w", generic:"n"
+  };
+
   return (
     <div>
-      <div className="ph"><div className="ph-title">🔧 Tools</div><div className="ph-sub">Utilities for inbox extraction and sender validation</div></div>
+      <div className="ph"><div className="ph-title">🔧 Tools</div><div className="ph-sub">Utilities for inbox extraction, validation, and redirect generation</div></div>
 
       <div className="tab-bar">
         <button className={`tb ${tTool==="extractor"?"on":""}`} onClick={()=>setTTool("extractor")}>📥 From-Mail Extractor</button>
         <button className={`tb ${tTool==="validator"?"on":""}`} onClick={()=>setTTool("validator")}>✅ From-Mail Validator</button>
+        <button className={`tb ${tTool==="sorter"?"on":""}`} onClick={()=>setTTool("sorter")}>🔀 Email Sorter</button>
+        <button className={`tb ${tTool==="inboxtest"?"on":""}`} onClick={()=>setTTool("inboxtest")}>📬 Inbox Test</button>
+        <button className={`tb ${tTool==="ipcheck"?"on":""}`} onClick={()=>setTTool("ipcheck")}>🛡️ IP Blacklist</button>
+        <button className={`tb ${tTool==="s3redir"?"on":""}`} onClick={()=>setTTool("s3redir")}>☁️ S3 Redirects</button>
+        <button className={`tb ${tTool==="suppression"?"on":""}`} onClick={()=>setTTool("suppression")}>🚫 Suppression</button>
+        <button className={`tb ${tTool==="seedaccounts"?"on":""}`} onClick={()=>setTTool("seedaccounts")}>📧 Seed Accounts</button>
+        <button className={`tb ${tTool==="aiconfig"?"on":""}`} onClick={()=>setTTool("aiconfig")}>✨ AI Config</button>
+        <button className={`tb ${tTool==="espcheck"?"on":""}`} onClick={()=>setTTool("espcheck")}>🔌 ESP Checker</button>
       </div>
 
       {tTool==="extractor" && (
@@ -4813,6 +5847,794 @@ function TabTools({filesList, uploadFile, setLeadsRaw, setLeads, setTab}) {
           </div>
         </div>
       )}
+      {tTool==="sorter" && (
+        <div className="g2" style={{alignItems:"start"}}>
+          <div className="card">
+            <div className="card-title">🔀 MX Email Sorter</div>
+            <Info type="i">Classifies your recipient list by mail provider (Gmail, O365, Yahoo etc) using live MX record lookup. Helps target sends by provider and apply the right sending method.</Info>
+            <div className="mt12 mb12">
+              <label className="lbl">Emails to Sort (one per line)</label>
+              <textarea value={sortEmails} onChange={e=>setSortEmails(e.target.value)}
+                placeholder={"user@gmail.com\nbob@company.com\nalice@yahoo.com"}
+                style={{minHeight:180,fontFamily:"var(--font-mono)",fontSize:12}}/>
+            </div>
+            <div className="row g8 ac-center">
+              <button className="btn btn-p" onClick={runSort} disabled={sortLoading||!sortEmails.trim()}>
+                {sortLoading?"Sorting…":"▶ Sort Emails"}
+              </button>
+              {sortResult&&!sortResult.error&&<span className="dim2 sm">{sortResult.total||0} emails classified</span>}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-title">Sort Results</div>
+            {!sortResult
+              ? <div className="dim2 sm" style={{padding:"20px 0",textAlign:"center"}}>Run sort to see provider breakdown here.</div>
+              : sortResult.error
+                ? <Info type="e">{sortResult.error}</Info>
+                : <div>
+                    <div className="row g8 mb16" style={{flexWrap:"wrap"}}>
+                      {Object.entries(sortResult.summary||{}).sort((a,b)=>b[1]-a[1]).map(([prov,count])=>(
+                        <Bdg key={prov} t={PROVIDER_COLORS[prov]||"n"}>{PROVIDER_LABELS[prov]||prov}: {count}</Bdg>
+                      ))}
+                    </div>
+                    {Object.entries(sortResult.buckets||{}).sort((a,b)=>b[1].length-a[1].length).map(([prov,emails])=>(
+                      <div key={prov} className="mb16">
+                        <div className="row jb ac-center mb8">
+                          <div className="row g8 ac-center">
+                            <Bdg t={PROVIDER_COLORS[prov]||"n"}>{PROVIDER_LABELS[prov]||prov}</Bdg>
+                            <span className="dim2 sm">{emails.length} addresses</span>
+                          </div>
+                          <div className="row g8">
+                            <button className="btn btn-ok btn-sm" onClick={()=>{
+                              setLeadsRaw(emails.join("\n"));
+                              setLeads(parseLeads(emails.join("\n")));
+                              setTab("leads");
+                            }}>→ Load to Leads</button>
+                            <button className="btn btn-g btn-sm" onClick={()=>copyToClipboard(emails.join("\n"))}>📋 Copy</button>
+                          </div>
+                        </div>
+                        <div className="code" style={{maxHeight:120,overflowY:"auto",fontSize:11}}>
+                          {emails.join("\n")}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+            }
+          </div>
+        </div>
+      )}
+
+      {/* ─── INBOX PLACEMENT TESTER ─── */}
+      {tTool==="inboxtest" && (
+        <div className="g2" style={{alignItems:"start"}}>
+          <div className="card">
+            <div className="card-title">📬 Inbox Placement Tester</div>
+            <Info type="i">Sends a test email to all your saved seed accounts and checks whether it lands in inbox, spam, or trash. Add seed accounts in the <strong>Seed Accounts</strong> tab below.</Info>
+            <div className="col g12 mt16">
+              <div>
+                <label className="lbl">Test Subject</label>
+                <input value={inboxSubject} onChange={e=>setInboxSubject(e.target.value)}
+                  style={{fontSize:14,padding:"10px 12px"}}/>
+              </div>
+              <div>
+                <label className="lbl">Test HTML Body</label>
+                <textarea value={inboxHtml} onChange={e=>setInboxHtml(e.target.value)}
+                  rows={5} style={{fontFamily:"var(--font-mono)",fontSize:12}}/>
+              </div>
+            </div>
+            <div className="mt12 row g8">
+              <button className="btn btn-p" onClick={runInboxTest}
+                disabled={inboxLoading||inboxPolling}>
+                {inboxLoading?"Sending…":inboxPolling?"⏳ Polling results…":"▶ Run Inbox Test"}
+              </button>
+              {inboxPolling&&<span className="dim2 sm">Checking mailboxes every 5s…</span>}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">Results {inboxResults.length>0&&<Bdg t="n">{inboxResults.length}</Bdg>}</div>
+            {inboxResults.length===0?(
+              <div className="dim2 sm" style={{padding:"20px 0",textAlign:"center"}}>
+                {inboxPolling?"⏳ Waiting for results…":"Run a test to see results here."}
+              </div>
+            ):(
+              <div className="col g10">
+                {inboxResults.map((r,i)=>(
+                  <div key={i} className="pi" style={{gap:12}}>
+                    {r.error?(
+                      <><span style={{fontSize:20}}>❌</span><div><div className="sm">{r.account||"Error"}</div><div className="dim2 xs">{r.error}</div></div></>
+                    ):(
+                      <>
+                        <span style={{fontSize:20}}>
+                          {r.folder==="inbox"?"✅":r.folder==="spam"?"🚫":r.folder==="trash"?"🗑️":"⏳"}
+                        </span>
+                        <div style={{flex:1}}>
+                          <div className="sm mono">{r.account}</div>
+                          <div className="dim2 xs">{r.provider||""}</div>
+                        </div>
+                        <Bdg t={r.folder==="inbox"?"ok":r.folder==="spam"?"e":r.folder==="trash"?"e":"n"}>
+                          {r.folder||"pending"}
+                        </Bdg>
+                        {r.latency_ms&&<span className="dim2 xs">{r.latency_ms}ms</span>}
+                      </>
+                    )}
+                  </div>
+                ))}
+                {!inboxPolling&&inboxResults.length>0&&(()=>{
+                  const inbox=inboxResults.filter(r=>r.folder==="inbox").length;
+                  const spam=inboxResults.filter(r=>r.folder==="spam"||r.folder==="trash").length;
+                  const total=inboxResults.filter(r=>r.folder).length;
+                  return total>0&&(
+                    <div className="mt8 card" style={{background:"var(--inset)",padding:12}}>
+                      <div className="row g12">
+                        <div><Bdg t="ok">✅ Inbox {inbox}/{total}</Bdg></div>
+                        {spam>0&&<div><Bdg t="e">🚫 Spam/Trash {spam}/{total}</Bdg></div>}
+                        <div className="dim2 sm">{Math.round(inbox/total*100)}% inbox rate</div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── IP BLACKLIST CHECKER ─── */}
+      {tTool==="ipcheck" && (
+        <div className="g2" style={{alignItems:"start"}}>
+          <div className="card">
+            <div className="card-title">🛡️ IP Blacklist Checker</div>
+            <Info type="i">Checks your SMTP server IPs against major blacklists: Spamhaus ZEN, SORBS, Barracuda, SpamCop, PSBL, Mailspike, DroneBL, UCEPROTECT, GBUdb, NiX Spam.</Info>
+            <div className="mt12">
+              <label className="lbl">IP Addresses (one per line or comma separated)</label>
+              <textarea value={ipInput} onChange={e=>setIpInput(e.target.value)}
+                placeholder={"1.2.3.4\n5.6.7.8"}
+                rows={5} style={{fontFamily:"var(--font-mono)",fontSize:13}}/>
+            </div>
+            <div className="mt12">
+              <button className="btn btn-p" onClick={runIpCheck} disabled={ipLoading}>
+                {ipLoading?"Checking…":"🔍 Check Blacklists"}
+              </button>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">Blacklist Results</div>
+            {!ipResults?(
+              <div className="dim2 sm" style={{padding:"20px 0",textAlign:"center"}}>Enter IPs and run check.</div>
+            ):ipResults.error?(
+              <Info type="e">{ipResults.error}</Info>
+            ):(
+              <div className="col g16">
+                {(ipResults.results||[]).map((r,i)=>(
+                  <div key={i}>
+                    <div className="row g8 ac-center mb8">
+                      <span className="mono" style={{fontWeight:600}}>{r.ip}</span>
+                      <Bdg t={r.listed_count===0?"ok":"e"}>
+                        {r.listed_count===0?"✅ Clean":`⚠️ Listed on ${r.listed_count}`}
+                      </Bdg>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:6}}>
+                      {(r.checks||[]).map((c,j)=>(
+                        <div key={j} className="pi" style={{padding:"6px 10px",gap:8}}>
+                          <span style={{fontSize:14}}>{c.listed?"🔴":"🟢"}</span>
+                          <div>
+                            <div className="xs" style={{fontWeight:600}}>{c.list}</div>
+                            {c.listed&&<div className="dim2 xs">{c.reason||"Listed"}</div>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── S3 REDIRECT GENERATOR ─── */}
+      {tTool==="s3redir" && (
+        <div>
+          <div className="g2 mb20" style={{alignItems:"start"}}>
+            <div className="card">
+              <div className="card-title">☁️ AWS Credentials</div>
+              <Info type="i">Credentials are saved to your browser only — never sent to the SynthTel server. Uses AWS S3 to create unique redirect buckets.</Info>
+              <div className="col g12 mt12">
+                <div><label className="lbl">Access Key ID</label>
+                  <input value={s3AccessKey} onChange={e=>setS3AccessKey(e.target.value)} placeholder="AKIA..." style={{fontSize:14,padding:"10px 12px",fontFamily:"var(--font-mono)"}}/>
+                </div>
+                <div><label className="lbl">Secret Access Key</label>
+                  <input type="password" value={s3SecretKey} onChange={e=>setS3SecretKey(e.target.value)} placeholder="wJalrXUtnFEMI..." style={{fontSize:14,padding:"10px 12px"}}/>
+                </div>
+                <div><label className="lbl">Region</label>
+                  <select value={s3Region} onChange={e=>setS3Region(e.target.value)} style={{fontSize:14,padding:"10px 12px",width:"100%",borderRadius:6,border:"1px solid var(--border)",background:"var(--inp)",color:"var(--text)"}}>
+                    {["us-east-1","us-east-2","us-west-1","us-west-2","ca-central-1","eu-west-1","eu-west-2","eu-central-1","eu-north-1","ap-southeast-1","ap-southeast-2","ap-northeast-1","ap-northeast-2","ap-south-1","sa-east-1"].map(r=>(
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-title">☁️ CloudFlare (Optional — for HTTPS)</div>
+              <Info type="w">Without CloudFront/CloudFlare, S3 redirect URLs are HTTP only. Enable CloudFlare to get HTTPS links using your own domain routed through CF Workers.</Info>
+              <div className="mt12">
+                <Tog checked={s3UseCf} onChange={setS3UseCf} label="Enable CloudFlare HTTPS wrapping" desc="Each redirect gets https://rand.yourdomain.com via CF Worker"/>
+              </div>
+              {s3UseCf&&(
+                <div className="col g12 mt12">
+                  <div><label className="lbl">CloudFlare API Key</label>
+                    <input type="password" value={s3CfApiKey} onChange={e=>setS3CfApiKey(e.target.value)} placeholder="CF Global API Key or Token" style={{fontSize:14,padding:"10px 12px"}}/>
+                  </div>
+                  <div><label className="lbl">Zone ID</label>
+                    <input value={s3CfZoneId} onChange={e=>setS3CfZoneId(e.target.value)} placeholder="32-char zone ID from CF dashboard" style={{fontSize:14,padding:"10px 12px",fontFamily:"var(--font-mono)"}}/>
+                  </div>
+                  <div><label className="lbl">Your Domain</label>
+                    <input value={s3CfDomain} onChange={e=>setS3CfDomain(e.target.value)} placeholder="r3dhawk.com" style={{fontSize:14,padding:"10px 12px"}}/>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">Generate Redirects</div>
+            <div className="g3 mt12" style={{alignItems:"end"}}>
+              <div>
+                <label className="lbl">Destination URL</label>
+                <input value={s3DestUrl} onChange={e=>setS3DestUrl(e.target.value)}
+                  placeholder="https://yourfinalpage.com/landing"
+                  style={{fontSize:14,padding:"10px 12px"}}/>
+                <div className="dim2 xs mt4">All generated redirects will forward to this URL.</div>
+              </div>
+              <div>
+                <label className="lbl">Number of Redirects</label>
+                <input type="number" min={1} max={50} value={s3Count} onChange={e=>setS3Count(parseInt(e.target.value)||5)}
+                  style={{fontSize:14,padding:"10px 12px"}}/>
+              </div>
+              <div>
+                <button className="btn btn-p" onClick={runS3Generate}
+                  disabled={s3Loading||!s3AccessKey||!s3SecretKey||!s3DestUrl}>
+                  {s3Loading?`⏳ Creating buckets…`:`☁️ Generate ${s3Count} Redirect${s3Count!==1?"s":""}`}
+                </button>
+              </div>
+            </div>
+            {s3Results.length>0&&(
+              <div className="mt16">
+                <div className="sh mb8">
+                  <span className="sm" style={{fontWeight:600}}>{s3Results.filter(r=>!r.error).length} redirect URLs generated</span>
+                  <div className="row g8">
+                    <button className="btn btn-ok btn-sm" onClick={()=>{
+                      const urls=s3Results.filter(r=>r.url).map(r=>r.url).join("\n");
+                      copyToClipboard(urls);
+                    }}>📋 Copy All URLs</button>
+                    <button className="btn btn-g btn-sm" onClick={()=>{
+                      const urls=s3Results.filter(r=>r.url).map(r=>r.url).join("\n");
+                      const a=document.createElement("a");
+                      a.href="data:text/plain;charset=utf-8,"+encodeURIComponent(urls);
+                      a.download="s3_redirects.txt";a.click();
+                    }}>💾 Download</button>
+                    <button className="btn btn-g btn-sm" onClick={()=>{
+                      const urls=s3Results.filter(r=>r.url).map(r=>r.url).join("\n");
+                      window.dispatchEvent(new CustomEvent("st_load_links",{detail:{links:urls}}));
+                    }}>→ Load to Link Rotation</button>
+                  </div>
+                </div>
+                <div className="col g6">
+                  {s3Results.map((r,i)=>(
+                    <div key={i} className="pi" style={{padding:"8px 12px",gap:10}}>
+                      {r.error?(
+                        <><span>❌</span><span className="dim2 xs">{r.error}</span></>
+                      ):(
+                        <>
+                          <Bdg t={r.https?"ok":"w"}>{r.https?"HTTPS":"HTTP"}</Bdg>
+                          <span className="mono xs" style={{flex:1,wordBreak:"break-all"}}>{r.url}</span>
+                          <span className="dim2 xs">{r.bucket}</span>
+                          <button className="btn btn-g btn-sm" style={{padding:"2px 8px",flexShrink:0}}
+                            onClick={()=>copyToClipboard(r.url)}>📋</button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── SUPPRESSION LIST ─── */}
+      {tTool==="suppression" && (
+        <div>
+          <Info type="i">Suppressed emails are automatically skipped across <strong>all</strong> campaigns. Add bounces, unsubscribes, and opt-outs here to stay compliant.</Info>
+          <div className="g2 mt16" style={{alignItems:"start"}}>
+            <div className="card">
+              <div className="card-title">🚫 Add to Suppression List</div>
+              <div className="mt12">
+                <label className="lbl">Emails (one per line, or comma/semicolon separated)</label>
+                <textarea value={suppInput} onChange={e=>setSuppInput(e.target.value)}
+                  placeholder={"bad@bounce.com\nunsubscribed@example.com"}
+                  style={{minHeight:140,fontFamily:"var(--font-mono)",fontSize:12}}/>
+              </div>
+              <div className="row g8 mt12" style={{flexWrap:"wrap"}}>
+                <button className="btn btn-p btn-sm" onClick={addSupp}>➕ Add</button>
+                <label className="btn btn-g btn-sm" style={{cursor:"pointer"}}>
+                  📥 Import File<input type="file" accept=".txt,.csv" onChange={importSupp} style={{display:"none"}}/>
+                </label>
+                <button className="btn btn-g btn-sm" onClick={exportSupp} disabled={!suppList.length}>📤 Export</button>
+                {suppMsg&&<span className={suppMsg.startsWith("✓")?"dim":"err"}>{suppMsg}</span>}
+              </div>
+            </div>
+            <div className="card">
+              <div className="sh">
+                <div className="card-title">Suppressed Emails <Bdg t="n">{suppList.length}</Bdg></div>
+                <input value={suppSearch} onChange={e=>setSuppSearch(e.target.value)}
+                  placeholder="Search..." style={{fontSize:12,padding:"6px 10px",width:160,borderRadius:6,border:"1px solid var(--border)",background:"var(--inp)",color:"var(--text)"}}/>
+              </div>
+              {suppLoading ? <div className="dim2 sm">Loading…</div> : suppList.length===0 ? (
+                <div className="dim2 sm" style={{padding:"20px 0",textAlign:"center"}}>No suppressions yet.</div>
+              ) : (
+                <div className="tw" style={{maxHeight:360,overflowY:"auto"}}>
+                  <table>
+                    <thead><tr><th>Email</th><th>Reason</th><th>Added</th><th></th></tr></thead>
+                    <tbody>
+                      {suppList.filter(s=>!suppSearch||s.email.includes(suppSearch.toLowerCase())).map((s,i)=>(
+                        <tr key={i}>
+                          <td className="mono" style={{fontSize:12}}>{s.email}</td>
+                          <td><Bdg t="n">{s.reason||"manual"}</Bdg></td>
+                          <td className="dim2 xs">{s.added_at?(new Date(s.added_at)).toLocaleDateString():"-"}</td>
+                          <td><button className="btn btn-g btn-sm" style={{padding:"2px 8px"}} onClick={()=>removeSupp(s.email)}>✕</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── SEED ACCOUNTS ─── */}
+      {tTool==="seedaccounts" && (
+        <div>
+          <Info type="i">Seed accounts used for inbox placement testing. Add IMAP credentials and then use the <strong>Inbox Test</strong> tab to run a placement test.</Info>
+          <div className="g2 mt16" style={{alignItems:"start"}}>
+            <div className="card">
+              <div className="card-title">➕ Add Seed Account</div>
+              <div className="col g12 mt12">
+                <div className="g2">
+                  <div><label className="lbl">Email Address</label><input value={seedDraft.email} onChange={e=>setSeedDraft({...seedDraft,email:e.target.value})} placeholder="seed@gmail.com" style={{fontSize:14,padding:"10px 12px"}}/></div>
+                  <div><label className="lbl">Password / App Password</label><input type="password" value={seedDraft.password} onChange={e=>setSeedDraft({...seedDraft,password:e.target.value})} style={{fontSize:14,padding:"10px 12px"}}/></div>
+                </div>
+                <div>
+                  <label className="lbl">Provider</label>
+                  <select value={seedDraft.provider} onChange={e=>setSeedDraft({...seedDraft,provider:e.target.value})} style={{fontSize:14,padding:"10px 12px",width:"100%",borderRadius:6,border:"1px solid var(--border)",background:"var(--inp)",color:"var(--text)"}}>
+                    <option value="auto">Auto-detect</option>
+                    <option value="gmail">Gmail</option>
+                    <option value="outlook">Outlook / Hotmail</option>
+                    <option value="yahoo">Yahoo</option>
+                    <option value="gmx">GMX / Mail.com</option>
+                    <option value="aol">AOL</option>
+                    <option value="custom">Custom IMAP</option>
+                  </select>
+                </div>
+                {seedDraft.provider==="custom" && (
+                  <div className="g2">
+                    <div><label className="lbl">IMAP Host</label><input value={seedDraft.imapHost} onChange={e=>setSeedDraft({...seedDraft,imapHost:e.target.value})} placeholder="imap.yourdomain.com" style={{fontSize:14,padding:"10px 12px"}}/></div>
+                    <div><label className="lbl">IMAP Port</label><input type="number" value={seedDraft.imapPort} onChange={e=>setSeedDraft({...seedDraft,imapPort:parseInt(e.target.value)})} style={{fontSize:14,padding:"10px 12px"}}/></div>
+                  </div>
+                )}
+              </div>
+              <div className="row g8 mt12">
+                <button className="btn btn-p btn-sm" onClick={addSeedAccount} disabled={seedLoading}>➕ Add Account</button>
+                {seedMsg&&<span className={seedMsg.startsWith("✓")?"dim":"err"}>{seedMsg}</span>}
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-title">Seed Accounts <Bdg t="n">{seedAccounts.length}</Bdg></div>
+              {seedAccounts.length===0 ? (
+                <div className="dim2 sm" style={{padding:"20px 0",textAlign:"center"}}>No seed accounts yet. Add one above.</div>
+              ) : (
+                <div className="tw">
+                  <table>
+                    <thead><tr><th>Email</th><th>Provider</th><th>Status</th><th></th></tr></thead>
+                    <tbody>
+                      {seedAccounts.map((a,i)=>(
+                        <tr key={i}>
+                          <td className="mono" style={{fontSize:12}}>{a.email}</td>
+                          <td><Bdg t="i">{a.provider||"auto"}</Bdg></td>
+                          <td><Bdg t={a.status==="ok"?"ok":a.status==="error"?"e":"n"}>{a.status||"unchecked"}</Bdg></td>
+                          <td><button className="btn btn-g btn-sm" style={{padding:"2px 8px"}} onClick={()=>removeSeedAccount(a.email)}>✕</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── AI CONFIG ─── */}
+      {tTool==="aiconfig" && (
+        <div className="g2" style={{alignItems:"start"}}>
+          <div className="card">
+            <div className="card-title">✨ AI Configuration</div>
+            <Info type="i">Connect to an AI provider to enable AI-powered subject generation, email rewriting, and spam analysis.</Info>
+            <div className="col g14 mt16">
+              <div>
+                <label className="lbl">Provider</label>
+                <select value={aiProvider} onChange={e=>setAiProvider(e.target.value)} style={{fontSize:14,padding:"10px 12px",width:"100%",borderRadius:6,border:"1px solid var(--border)",background:"var(--inp)",color:"var(--text)"}}>
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic Claude</option>
+                  <option value="xai">xAI Grok</option>
+                  <option value="custom">Custom (OpenAI-compatible)</option>
+                </select>
+              </div>
+              <div>
+                <label className="lbl">API Key</label>
+                <input type="password" value={aiKey} onChange={e=>setAiKey(e.target.value)}
+                  placeholder={aiProvider==="anthropic"?"sk-ant-...":"sk-..."}
+                  style={{fontSize:14,padding:"10px 12px"}}/>
+              </div>
+              <div>
+                <label className="lbl">Model</label>
+                <select value={aiModel} onChange={e=>setAiModel(e.target.value)} style={{fontSize:14,padding:"10px 12px",width:"100%",borderRadius:6,border:"1px solid var(--border)",background:"var(--inp)",color:"var(--text)"}}>
+                  {aiProvider==="openai"&&<>
+                    <option value="gpt-4o-mini">GPT-4o Mini (Fast, Cheap)</option>
+                    <option value="gpt-4o">GPT-4o</option>
+                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                  </>}
+                  {aiProvider==="anthropic"&&<>
+                    <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                    <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
+                  </>}
+                  {aiProvider==="xai"&&<>
+                    <option value="grok-2-latest">Grok 2</option>
+                    <option value="grok-beta">Grok Beta</option>
+                  </>}
+                  {aiProvider==="custom"&&<option value={aiModel}>{aiModel||"custom-model"}</option>}
+                </select>
+                {aiProvider==="custom"&&<input value={aiModel} onChange={e=>setAiModel(e.target.value)} placeholder="model-name" style={{fontSize:13,padding:"8px 10px",marginTop:6}}/>}
+              </div>
+              {(aiProvider==="custom"||aiProvider==="xai")&&(
+                <div>
+                  <label className="lbl">Base URL</label>
+                  <input value={aiBaseUrl} onChange={e=>setAiBaseUrl(e.target.value)}
+                    placeholder={aiProvider==="xai"?"https://api.x.ai/v1":"https://api.openai.com/v1 (default)"}
+                    style={{fontSize:14,padding:"10px 12px"}}/>
+                  <div className="dim2 xs mt4">Leave empty for OpenAI default endpoint.</div>
+                </div>
+              )}
+            </div>
+            <div className="row g8 mt16">
+              <button className="btn btn-p btn-sm" onClick={saveAiConfig}>💾 Save</button>
+              <button className="btn btn-g btn-sm" onClick={testAiConnection} disabled={aiTestLoading||!aiKey}>
+                {aiTestLoading?"Testing…":"✨ Test Connection"}
+              </button>
+              {aiTestMsg&&<span className={aiTestMsg.startsWith("✓")?"dim ok":"err"}>{aiTestMsg}</span>}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">What AI Unlocks</div>
+            <div className="col g10 sm dim2">
+              <div>✨ <strong>Subject line generator</strong> — generate subject variations from your email body</div>
+              <div>✏️ <strong>Email rewriter</strong> — rewrite HTML body to sound more natural</div>
+              <div>🛡️ <strong>Spam score analysis</strong> — AI reviews content for spam signals before send</div>
+              <div>🏷️ <strong>Tag autocomplete</strong> — AI suggests relevant tags for your template</div>
+            </div>
+            <Info type="w" style={{marginTop:12}}>API keys stored in browser localStorage only — never sent to the SynthTel server.</Info>
+          </div>
+        </div>
+      )}
+
+      {/* ─── ESP / API ACCOUNT CHECKER ─── */}
+      {tTool==="espcheck" && (
+        <div className="g2" style={{alignItems:"start"}}>
+          <div className="card">
+            <div className="card-title">🔌 ESP Account Checker</div>
+            <Info type="i">Auto-detects your provider from the key format. Shows send limits, quota used, verified domains, and from-email addresses. Supports SendGrid, AWS SES, Mailgun, Postmark, Mailjet, Brevo, and SparkPost.</Info>
+            <div className="col g12 mt16">
+              <div>
+                <label className="lbl">API Key</label>
+                <input type="password" value={espKey} onChange={e=>setEspKey(e.target.value)}
+                  placeholder="SG.xxx  /  AKIA...  /  key-...  /  server_..."
+                  style={{fontSize:14,padding:"10px 12px",fontFamily:"var(--font-mono)"}}/>
+                <div className="dim2 xs mt4">Provider is auto-detected from the key format.</div>
+              </div>
+              <div className="g2">
+                <div>
+                  <label className="lbl">Secret Key <span className="dim2 xs">(AWS SES / Mailjet only)</span></label>
+                  <input type="password" value={espSecret} onChange={e=>setEspSecret(e.target.value)}
+                    placeholder="AWS Secret or Mailjet Private Key"
+                    style={{fontSize:14,padding:"10px 12px"}}/>
+                </div>
+                <div>
+                  <label className="lbl">AWS Region <span className="dim2 xs">(SES only)</span></label>
+                  <select value={espRegion} onChange={e=>setEspRegion(e.target.value)}
+                    style={{fontSize:14,padding:"10px 12px",width:"100%",borderRadius:6,border:"1px solid var(--border)",background:"var(--inp)",color:"var(--text)"}}>
+                    {["us-east-1","us-east-2","us-west-1","us-west-2","eu-west-1","eu-west-2","eu-central-1","ap-southeast-1","ap-northeast-1","ap-south-1","ca-central-1","sa-east-1"].map(r=>(
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="lbl">Domain <span className="dim2 xs">(Mailgun only — optional)</span></label>
+                <input value={espDomain} onChange={e=>setEspDomain(e.target.value)}
+                  placeholder="mg.yourdomain.com"
+                  style={{fontSize:14,padding:"10px 12px"}}/>
+              </div>
+            </div>
+            <div className="mt16">
+              <button className="btn btn-p" onClick={runEspCheck} disabled={espLoading||!espKey.trim()}>
+                {espLoading?"🔍 Checking…":"🔍 Check Account"}
+              </button>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-title">Results</div>
+            {!espResult?(
+              <div className="dim2 sm" style={{padding:"20px 0",textAlign:"center"}}>Enter an API key and click Check Account.</div>
+            ):espResult.error?(
+              <Info type="e">{espResult.error}</Info>
+            ):(()=>{
+              const r=espResult;
+              const pct = r.daily_limit&&r.sent_last_24h!=null ? Math.round(r.sent_last_24h/r.daily_limit*100) : null;
+              const pctM = r.monthly_limit&&r.sent_this_month!=null ? Math.round(r.sent_this_month/r.monthly_limit*100) : null;
+              // Derive can-send: account active + has quota remaining
+              const isActive = (()=>{const s=(r.account_status||"").toLowerCase();return s.includes("active")||s.includes("enabled")||s.includes("healthy")||s==="ok";})();
+              const hasQuota = r.remaining_today==null||r.remaining_today>0;
+              const hasMonthQuota = r.remaining_this_month==null||r.remaining_this_month>0;
+              const canSend = isActive && hasQuota && hasMonthQuota;
+              return (
+                <div className="col g16">
+                  {/* Header with can-send indicator */}
+                  <div className="row g12 ac-center" style={{flexWrap:"wrap"}}>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:16}}>{r.provider}</div>
+                      <div className="dim2 xs">{r.plan&&r.plan!=="Unknown"?r.plan:""}</div>
+                    </div>
+                    <Bdg t={isActive?"ok":"e"}>{r.account_status||"Unknown"}</Bdg>
+                    <Bdg t={canSend?"ok":"e"} style={{fontSize:13,padding:"4px 10px"}}>
+                      {canSend?"✅ Can Send":"🚫 Cannot Send"}
+                    </Bdg>
+                  </div>
+
+                  {/* Send limits */}
+                  <div>
+                    <div className="div-lbl mb8">SENDING LIMITS & QUOTA</div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:8}}>
+                      {r.daily_limit!=null&&<div className="card" style={{background:"var(--inset)",padding:"10px 14px"}}>
+                        <div className="dim2 xs">Daily Limit</div>
+                        <div style={{fontWeight:700,fontSize:18}}>{r.daily_limit.toLocaleString()}</div>
+                      </div>}
+                      {r.sent_last_24h!=null&&<div className="card" style={{background:"var(--inset)",padding:"10px 14px"}}>
+                        <div className="dim2 xs">Sent (24h)</div>
+                        <div style={{fontWeight:700,fontSize:18,color:pct>80?"var(--err)":pct>50?"var(--warn)":"var(--ok)"}}>{r.sent_last_24h.toLocaleString()}</div>
+                      </div>}
+                      {r.remaining_today!=null&&<div className="card" style={{background:"var(--inset)",padding:"10px 14px"}}>
+                        <div className="dim2 xs">Remaining Today</div>
+                        <div style={{fontWeight:700,fontSize:18,color:"var(--ok)"}}>{r.remaining_today.toLocaleString()}</div>
+                      </div>}
+                      {r.monthly_limit!=null&&<div className="card" style={{background:"var(--inset)",padding:"10px 14px"}}>
+                        <div className="dim2 xs">Monthly Limit</div>
+                        <div style={{fontWeight:700,fontSize:18}}>{r.monthly_limit.toLocaleString()}</div>
+                      </div>}
+                      {r.sent_this_month!=null&&<div className="card" style={{background:"var(--inset)",padding:"10px 14px"}}>
+                        <div className="dim2 xs">Sent This Month</div>
+                        <div style={{fontWeight:700,fontSize:18,color:pctM>80?"var(--err)":pctM>50?"var(--warn)":"var(--ok)"}}>{r.sent_this_month.toLocaleString()}</div>
+                      </div>}
+                      {r.remaining_this_month!=null&&<div className="card" style={{background:"var(--inset)",padding:"10px 14px"}}>
+                        <div className="dim2 xs">Remaining Month</div>
+                        <div style={{fontWeight:700,fontSize:18,color:"var(--ok)"}}>{r.remaining_this_month.toLocaleString()}</div>
+                      </div>}
+                      {r.rate_limit!=null&&<div className="card" style={{background:"var(--inset)",padding:"10px 14px"}}>
+                        <div className="dim2 xs">Rate Limit</div>
+                        <div style={{fontWeight:700,fontSize:18}}>{r.rate_limit}/sec</div>
+                      </div>}
+                    </div>
+                    {pct!=null&&(
+                      <div className="mt8">
+                        <div className="row jb xs dim mb4">
+                          <span>24h usage</span>
+                          <span style={{color:pct>80?"var(--err)":pct>50?"var(--warn)":"var(--ok)",fontWeight:600}}>{pct}%</span>
+                        </div>
+                        <div style={{height:6,borderRadius:3,background:"var(--bg3)",overflow:"hidden"}}>
+                          <div style={{width:pct+"%",height:"100%",borderRadius:3,background:pct>80?"var(--err)":pct>50?"var(--warn)":"var(--ok)",transition:"width .4s"}}/>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Domains */}
+                  {r.domains&&r.domains.length>0&&(
+                    <div>
+                      <div className="div-lbl mb8">VERIFIED DOMAINS ({r.domains.length})</div>
+                      <div className="tw">
+                        <table>
+                          <thead><tr><th>Domain</th><th>Status</th><th>DKIM</th></tr></thead>
+                          <tbody>
+                            {r.domains.map((d,i)=>{
+                              // verified can be bool (SendGrid) or string ("Success"/"Pending") (SES/others)
+                              const verOk = d.verified===true||d.verified==="Success"||d.verified==="active";
+                              const verPending = d.verified==="Pending"||d.state==="unverified";
+                              const verLabel = d.verified===true?"Verified":d.verified===false?"Unverified":d.verified||d.state||"—";
+                              // DKIM: bool or status string
+                              const dkimOk = d.dkim_enabled===true||d.dkim_verified===true||d.dkim_status==="Success";
+                              const dkimLabel = d.dkim_status||(d.dkim_enabled===true?"✓":d.dkim_enabled===false?"✗":"—");
+                              return (
+                                <tr key={i}>
+                                  <td className="mono xs">{d.domain}</td>
+                                  <td><Bdg t={verOk?"ok":verPending?"w":"n"}>{verLabel}</Bdg></td>
+                                  <td><Bdg t={dkimOk?"ok":"n"}>{dkimLabel}</Bdg></td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Verified from-emails */}
+                  {r.verified_emails&&r.verified_emails.length>0&&(
+                    <div>
+                      <div className="div-lbl mb8">VERIFIED FROM-EMAILS ({r.verified_emails.length})</div>
+                      <div className="col g4">
+                        {r.verified_emails.map((e,i)=>(
+                          <div key={i} className="pi" style={{padding:"6px 12px",gap:8}}>
+                            <span style={{color:"var(--ok)"}}>✓</span>
+                            <span className="mono xs">{e}</span>
+                            <button className="btn btn-g btn-sm ml-auto" style={{padding:"2px 8px",flexShrink:0}}
+                              onClick={()=>copyToClipboard(e)}>📋</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Extra info */}
+                  {r.extra_info&&Object.keys(r.extra_info).length>0&&(
+                    <div>
+                      <div className="div-lbl mb8">ACCOUNT DETAILS</div>
+                      <div className="col g6">
+                        {Object.entries(r.extra_info).filter(([,v])=>v!=null&&v!=="").map(([k,v],i)=>(
+                          <div key={i} className="row jb xs" style={{padding:"4px 0",borderBottom:"1px solid var(--border)"}}>
+                            <span className="dim2">{k.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase())}</span>
+                            <span style={{fontWeight:500}}>{String(v)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Errors */}
+                  {r.errors&&r.errors.length>0&&(
+                    <Info type="w">{r.errors.join(" | ")}</Info>
+                  )}
+
+                  {/* Billing link */}
+                  {(()=>{
+                    const billingUrls={sendgrid:"https://app.sendgrid.com/settings/billing",mailgun:"https://app.mailgun.com/app/billing/overview",brevo:"https://app.brevo.com/account/billing",postmark:"https://account.postmarkapp.com/billing",sparkpost:"https://app.sparkpost.com/account/billing",ses:"https://console.aws.amazon.com/ses/home","aws ses":"https://console.aws.amazon.com/ses/home",mailjet:"https://app.mailjet.com/account/billing-and-offers",resend:"https://resend.com/settings/billing"};
+                    const prov=(r.provider||"").toLowerCase();
+                    const url=billingUrls[prov]||billingUrls[prov.split(" ")[0]];
+                    return url?(
+                      <a href={url} target="_blank" rel="noreferrer" className="btn btn-g btn-sm" style={{textDecoration:"none",display:"inline-flex",alignItems:"center",gap:6}}>
+                        💳 Buy More Sends / Manage Billing ↗
+                      </a>
+                    ):null;
+                  })()}
+
+                  {/* Domain Management — SendGrid, Mailgun, Brevo only */}
+                  {(()=>{
+                    const espKeyLower=espKey.trim().toLowerCase();
+                    const prov2=(r.provider||"").toLowerCase();
+                    const supportsDomMgmt=espKeyLower.startsWith("sg.")||espKeyLower.startsWith("key-")||espKeyLower.startsWith("xkeysib-")||espKeyLower.startsWith("xsmtpsib-")||prov2.includes("ses")||prov2.includes("aws")||prov2.includes("postmark")||prov2.includes("sparkpost");
+                    if(!supportsDomMgmt) return null;
+                    return (
+                      <div>
+                        <div className="row ac-center jb mb8">
+                          <div className="div-lbl" style={{margin:0}}>DOMAIN MANAGEMENT</div>
+                          <button className="btn btn-g btn-xs" onClick={()=>{setEspDomMgmt(p=>!p);setEspDomResult(null);setEspVerifyResult(null);}}>
+                            {espDomMgmt?"▲ Hide":"▼ Add / Verify Domain"}
+                          </button>
+                        </div>
+                        {espDomMgmt&&(
+                          <div className="col g10">
+                            <div className="row g8">
+                              <input value={espNewDomain} onChange={e=>setEspNewDomain(e.target.value)}
+                                placeholder="yourdomain.com" style={{flex:1,fontSize:13,padding:"8px 12px"}}/>
+                              <button className="btn btn-p btn-sm" disabled={espDomLoading||!espNewDomain.trim()} onClick={async()=>{
+                                setEspDomLoading(true); setEspDomResult(null); setEspVerifyResult(null);
+                                try{
+                                  const r2=await apiCall("/api/tools/add-domain",{method:"POST",body:JSON.stringify({
+                                    key:espKey.trim(), secret:espSecret||null,
+                                    region:espRegion||"us-east-1", domain:espNewDomain.trim()
+                                  })});
+                                  setEspDomResult(await r2.json());
+                                }catch(e){setEspDomResult({error:e.message});}
+                                setEspDomLoading(false);
+                              }}>{espDomLoading?"Adding…":"+ Add Domain"}</button>
+                              <button className="btn btn-g btn-sm" disabled={espDomLoading||!espNewDomain.trim()} onClick={async()=>{
+                                setEspDomLoading(true); setEspVerifyResult(null);
+                                try{
+                                  const r2=await apiCall("/api/tools/verify-domain",{method:"POST",body:JSON.stringify({
+                                    key:espKey.trim(), secret:espSecret||null,
+                                    region:espRegion||"us-east-1", domain:espNewDomain.trim(),
+                                    domain_id:espDomResult?.domain_id||null
+                                  })});
+                                  setEspVerifyResult(await r2.json());
+                                }catch(e){setEspVerifyResult({error:e.message});}
+                                setEspDomLoading(false);
+                              }}>{espDomLoading?"Checking…":"🔍 Verify"}</button>
+                            </div>
+
+                            {/* DNS Records to add */}
+                            {espDomResult&&!espDomResult.error&&espDomResult.dns_records?.length>0&&(
+                              <div style={{background:"#0f1f2a",border:"1px solid #1e4a6e",borderRadius:8,padding:"12px 14px"}}>
+                                <div style={{color:"#60a5fa",fontWeight:700,fontSize:12,marginBottom:8}}>
+                                  📋 Add these DNS records to <strong>{espDomResult.domain}</strong>:
+                                </div>
+                                <Info type="i" style={{marginBottom:8}}>{espDomResult.note||"Add these records then click Verify. DNS propagation can take up to 48h."}</Info>
+                                <div className="tw">
+                                  <table style={{fontSize:11}}>
+                                    <thead><tr><th>Type</th><th>Host / Name</th><th>Value</th><th></th></tr></thead>
+                                    <tbody>
+                                      {espDomResult.dns_records.map((rec,i)=>(
+                                        <tr key={i}>
+                                          <td><Bdg t="a">{rec.type}</Bdg></td>
+                                          <td className="mono" style={{maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{rec.host}</td>
+                                          <td className="mono" style={{maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{rec.value}</td>
+                                          <td><button className="btn btn-g btn-xs" onClick={()=>copyToClipboard(`${rec.host}\t${rec.value}`)}>📋</button></td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            )}
+                            {espDomResult?.error&&<Info type="e">{espDomResult.error}</Info>}
+
+                            {/* Verify result */}
+                            {espVerifyResult&&(
+                              <div style={{
+                                background:espVerifyResult.verified?"#0f2a1a":"#2a1a0f",
+                                border:`1px solid ${espVerifyResult.verified?"#22c55e44":"#f59e0b44"}`,
+                                borderRadius:8, padding:"12px 14px"
+                              }}>
+                                <div style={{fontWeight:700,fontSize:13,color:espVerifyResult.verified?"#4ade80":"#fbbf24",marginBottom:6}}>
+                                  {espVerifyResult.message||"Verification result"}
+                                </div>
+                                {espVerifyResult.records?.length>0&&(
+                                  <div className="col g4">
+                                    {espVerifyResult.records.map((rec,i)=>(
+                                      <div key={i} className="row g8 xs">
+                                        <span style={{color:rec.valid?"#4ade80":"#f87171"}}>{rec.valid?"✓":"✗"}</span>
+                                        <span className="dim2">{rec.label}</span>
+                                        {rec.reason&&<span style={{color:"#9ca3af",fontFamily:"monospace",fontSize:10}}>{rec.reason.slice(0,80)}</span>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {espVerifyResult.error&&<div style={{color:"#f87171",fontSize:12}}>{espVerifyResult.error}</div>}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -4896,7 +6718,7 @@ function TabAccount({username, role, doLogout}) {
     const r=await apiCall("/api/admin/api-key",{method:"POST",body:JSON.stringify({user_id:uid,days})});
     const d=await r.json();
     if(d.api_key){
-      const uname=users.find(u=>u.id===uid||{}).username||"user";
+      const uname=(users.find(u=>u.id===uid)||{}).username||"user";
       setApiKeyModal({key:d.api_key,expires:(d.expires||"").split("T")[0]||"",username:uname});
     }
     loadUsers();
@@ -5438,27 +7260,16 @@ function TabAccount({username, role, doLogout}) {
     </div>
   );
 }
-
-
 /* ── Global clipboard helper — works on HTTP and HTTPS ── */
 function copyToClipboard(text) {
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).catch(function() {
-      _copyFallback(text);
-    });
-  } else {
-    _copyFallback(text);
-  }
+    navigator.clipboard.writeText(text).catch(function() { _copyFallback(text); });
+  } else { _copyFallback(text); }
 }
 function _copyFallback(text) {
   var ta = document.createElement("textarea");
-  ta.value = text;
-  ta.style.position = "fixed";
-  ta.style.top = "-9999px";
-  ta.style.left = "-9999px";
-  document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
+  ta.value = text; ta.style.position = "fixed"; ta.style.top = "-9999px";
+  document.body.appendChild(ta); ta.focus(); ta.select();
   try { document.execCommand("copy"); } catch(e) {}
   document.body.removeChild(ta);
 }
@@ -5475,9 +7286,11 @@ function App() {
   const [loginP, setLoginP]   = useState("");
   const [loginErr, setLoginErr] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
+  const [rememberMe, setRememberMe] = useState(localStorage.getItem("st_remember")==="1");
 
   // ── Nav ──
   const [tab, setTab]   = useState("campaign");
+  const [mobMoreOpen, setMobMoreOpen] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem("st_theme")||"dark");
 
   // ── Compose ──
@@ -5513,7 +7326,7 @@ function App() {
   const [smtpList, setSmtpList]       = useState(_g("smtpList",[]));
   const [smtpDraft, setSmtpDraft]     = useState({host:"",port:587,username:"",password:"",ssl:false});
   const [apiList, setApiList]         = useState(_g("apiList",[]));
-  const [apiDraft, setApiDraft]       = useState({provider:"sendgrid",key:""});
+  const [apiDraft, setApiDraft]       = useState({provider:"sendgrid",key:"",secret:"",region:"us-east-1",mailgunDomain:"",mailgunRegion:"us",sparkpostRegion:"us"});
   const [owaConfig, setOwaConfig]     = useState(_g("owaConfig",{url:"",username:"",password:""}));
   const [crmConfig, setCrmConfig]     = useState(_g("crmConfig",{provider:"salesforce",url:"",username:"",password:"",token:""}));
   const [tunnelList, setTunnelList]   = useState(_g("tunnelList",[]));
@@ -5534,6 +7347,7 @@ function App() {
   const [jitterSec, setJitterSec]   = useState(_g("jitterSec",3));
   const [domThrottle, setDomThrottle] = useState(_g("domThrottle",false));
   const [warmup, setWarmup]         = useState(_g("warmup",false));
+  const [rateLimitPause, setRateLimitPause] = useState(_g("rateLimitPause",true));
   const [listUnsub, setListUnsub]   = useState(_g("listUnsub",true));
   const [unsubEmail, setUnsubEmail] = useState(_g("unsubEmail",""));
   const [unsubUrl, setUnsubUrl]     = useState(_g("unsubUrl",""));
@@ -5555,6 +7369,10 @@ function App() {
   const [arcSimulate, setArcSimulate]         = useState(_g("arcSimulate",false));
   const [msExchangeHdrs, setMsExchangeHdrs]   = useState(_g("msExchangeHdrs",true));
   const [showDeliv, setShowDeliv]   = useState(false);
+
+  // ── Personal BCC (monitoring copy) ──
+  const [bccEnabled, setBccEnabled] = useState(_g("bccEnabled",false));
+  const [bccEmail, setBccEmail]     = useState(_g("bccEmail",""));
 
   // ── Proxies ──
   const [proxies, setProxies]       = useState(_g("proxies",[]));
@@ -5603,6 +7421,7 @@ function App() {
       autoPlain, hideFromEmail, autoFlagEmail, antiDetect,
       skipPreflightDns, threadSimulate, arcSimulate, msExchangeHdrs,
       proxies, proxyType, campName,
+      bccEnabled, bccEmail,
     };
     try{ localStorage.setItem("st_camp", JSON.stringify(state)); }catch(e){}
   },[
@@ -5619,6 +7438,7 @@ function App() {
     autoPlain, hideFromEmail, autoFlagEmail, antiDetect,
     skipPreflightDns, threadSimulate, arcSimulate, msExchangeHdrs,
     proxies, proxyType, campName,
+    bccEnabled, bccEmail,
   ]);
 
   // ── New Campaign — reset all campaign fields to defaults ───────────────
@@ -5670,7 +7490,7 @@ function App() {
   async function doLogin() {
     setLoginLoading(true); setLoginErr("");
     try {
-      const r = await fetch(API+"/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:loginU,password:loginP})});
+      const r = await fetch(API+"/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:loginU,password:loginP,remember:rememberMe})});
       const d = await r.json();
       if(r.ok && d.pending_2fa){
         // 2FA required — show OTP input
@@ -5782,13 +7602,14 @@ function App() {
       cooldownEvery:parseInt(cooldownEvery)||0, cooldownSecs:parseFloat(cooldownSecs)||60,
       batchPauseSecs:parseFloat(batchPauseSecs)||0,
       htmlBodies, htmlRotateMode,
-      jitter:jitter?parseInt(jitterSec):0, domainThrottle:domThrottle, gmailDelay:5, msDelay:8, warmup,
+      jitter:jitter?parseInt(jitterSec):0, domainThrottle:domThrottle, gmailDelay:5, msDelay:8, warmup, rateLimitPause,
       listUnsub, unsubEmail, unsubUrl, oneClickUnsub:oneClick,
       autoInjectUnsub:autoInject, autoPlainText:autoPlain, spamFilter, preheader,
       bypassMode, bypassZeroFont, bypassComments, bypassHomoglyphs, bypassFontRand, bypassInnat,
       hideFromEmail, autoFlagEmail, antiDetect, emailPriority:priority,
       threadSimulate, arcSimulate, msExchangeHeaders:msExchangeHdrs,
       skipPreflightDns,
+      bcc: bccEnabled && bccEmail.trim() ? bccEmail.trim() : null,
       campaignName:campName, rotationMode:rotMode,
       linkRotation:linkRot.length>0 ? linkRot : linkRotDraft.split('\n').map(s=>s.trim()).filter(Boolean), linkRotMode,
       // Dynamic attachment config
@@ -5863,11 +7684,11 @@ function App() {
               setCampStats(s=>({...s,pending:0}));
             }
             // SMTP dead detection — warn/info events only; errors already shown as ✗
-            // Skip: AUP events (dedicated messages), auth failures (shown in ✗ line),
-            //        sender-removal infos (✂), greylist/retry events
+            // Skip: pause/batch/cooldown events, AUP events, auth failures, sender-removal infos
             const msgText = ev.msg||ev.error||"";
-            const _skipPatterns = /AUP#POL|AUP#MXRT|sender rejected|temporarily unavailable|✂ Sender|greylist|MXRT retry|proxy retry|health=|demoted|Resuming|removed.*remaining|dead proxy/i;
+            const _skipPatterns = /AUP#POL|AUP#MXRT|sender rejected|temporarily unavailable|✂ Sender|greylist|MXRT retry|proxy retry|health=|demoted|Resuming|removed.*remaining|dead proxy|cooling down|pausing|Cooldown|Rate limit.*cooling|⏸/i;
             if(!_skipPatterns.test(msgText) && ev.type!=="error" && ev.type!=="fail" && ev.type!=="success" &&
+               ev.type!=="pause" && ev.type!=="batch" &&
                msgText.match(/connect.*fail|connection.*refused|SMTP.*error|AUTH.*fail|wrong credentials|authentication.*fail|535|534|too many|rate.?limit|blacklist|banned|blocked|timeout|timed out/i)) {
               addLog(`⚠️ SMTP Issue: ${msgText.slice(0,120)}`,"warn");
             }
@@ -5903,6 +7724,14 @@ function App() {
           </div>
           {!otpMode && (
             <div>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,justifyContent:"flex-start"}}>
+                <input type="checkbox" id="remember-me" checked={rememberMe}
+                  onChange={e=>{setRememberMe(e.target.checked);localStorage.setItem("st_remember",e.target.checked?"1":"0");}}
+                  style={{margin:0,width:16,height:16,cursor:"pointer"}}/>
+                <label htmlFor="remember-me" style={{fontSize:13,color:"var(--t2)",cursor:"pointer",userSelect:"none"}}>
+                  Remember me for 30 days
+                </label>
+              </div>
               {loginErr && <div className="ib ib-e mb12"><span className="ib-ic">✗</span>{loginErr}</div>}
               <button className="btn btn-p w100 btn-lg" onClick={doLogin} disabled={loginLoading}>
                 {loginLoading?"Signing in…":"Sign In →"}
@@ -5961,8 +7790,169 @@ function App() {
     {id:"logs",        ico:"🔍", lbl:"Debug"},
   ];
 
+  /* ── MOBILE MONITOR ── */
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  React.useEffect(()=>{
+    const h=()=>setIsMobile(window.innerWidth<=768);
+    window.addEventListener("resize",h);
+    return ()=>window.removeEventListener("resize",h);
+  },[]);
+
+  function MobileMonitor() {
+    const pct = campStats.total > 0 ? ((campStats.sent + campStats.failed) / campStats.total * 100) : 0;
+    const speed = campStats.speed || 0;
+    const remaining = campStats.total - campStats.sent - campStats.failed;
+    const etaMin = speed > 0 ? remaining / speed / 60 : 0;
+    const etaStr = etaMin >= 60 ? `~${(etaMin/60).toFixed(1)}h` : etaMin > 0 ? `~${Math.round(etaMin)}m` : "";
+
+    return (
+      <div className="mob-monitor">
+        {/* Status */}
+        <div className="mm-status">
+          <div className="mm-status-icon">
+            {campRunning ? (campPaused ? "⏸" : "📤") : "⏹"}
+          </div>
+          <div className="mm-status-label">
+            {campRunning ? (campPaused ? "Paused" : "Sending...") : "Ready"}
+          </div>
+          <div className="mm-status-sub">
+            {campRunning ? campName || "Campaign" : "Configure and start a campaign"}
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        {campRunning && (
+          <div className="mm-progress">
+            <div className="mm-progress-fill" style={{width: `${Math.min(pct, 100)}%`}}/>
+          </div>
+        )}
+
+        {/* Stats grid */}
+        <div className="mm-stats">
+          <div className="mm-stat">
+            <div className="mm-stat-v" style={{color:"var(--ok)"}}>{campStats.sent||0}</div>
+            <div className="mm-stat-l">Sent</div>
+          </div>
+          <div className="mm-stat">
+            <div className="mm-stat-v" style={{color:"var(--err)"}}>{campStats.failed||0}</div>
+            <div className="mm-stat-l">Failed</div>
+          </div>
+          <div className="mm-stat">
+            <div className="mm-stat-v" style={{color:"var(--accent)"}}>{campStats.total||0}</div>
+            <div className="mm-stat-l">Total</div>
+          </div>
+          {campRunning && <>
+            <div className="mm-stat">
+              <div className="mm-stat-v">{pct.toFixed(1)}%</div>
+              <div className="mm-stat-l">Progress</div>
+            </div>
+            <div className="mm-stat">
+              <div className="mm-stat-v">{speed > 0 ? speed.toFixed(1) : "-"}</div>
+              <div className="mm-stat-l">Per Sec</div>
+            </div>
+            <div className="mm-stat">
+              <div className="mm-stat-v">{etaStr || "-"}</div>
+              <div className="mm-stat-l">ETA</div>
+            </div>
+          </>}
+        </div>
+
+        {/* Controls */}
+        <div className="mm-controls">
+          {!campRunning ? (
+            <button className="mm-ctrl mm-ctrl-start" onClick={startCampaign}
+              disabled={!leads.length} style={{gridColumn:"1/-1"}}>
+              <span style={{fontSize:20}}>▶</span> Start Campaign
+            </button>
+          ) : (<>
+            {campPaused ? (
+              <button className="mm-ctrl mm-ctrl-start" onClick={resumeCampaign}>
+                <span style={{fontSize:18}}>▶</span> Resume
+              </button>
+            ) : (
+              <button className="mm-ctrl mm-ctrl-pause" onClick={pauseCampaign}>
+                <span style={{fontSize:18}}>⏸</span> Pause
+              </button>
+            )}
+            <button className="mm-ctrl mm-ctrl-stop" onClick={stopCampaign}
+              style={{gridColumn:"span 2"}}>
+              <span style={{fontSize:18}}>⏹</span> Stop
+            </button>
+          </>)}
+        </div>
+
+        {/* Quick edit senders */}
+        <div className="mm-quick-edit">
+          <div className="mm-section-title">Sender Names</div>
+          <input value={senderName} onChange={e=>setSenderName(e.target.value)}
+            placeholder="Display Name"
+            style={{width:"100%",fontSize:13,padding:"8px 10px",marginBottom:6,
+              background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,
+              color:"var(--tx)",fontFamily:"var(--font-ui)",boxSizing:"border-box"}}/>
+          <textarea value={senderNames} onChange={e=>setSenderNames(e.target.value)}
+            placeholder={"Extra names (one per line)\nJohn Smith\nJane Doe"}
+            style={{width:"100%",fontSize:12,padding:"8px 10px",minHeight:60,
+              background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,
+              color:"var(--tx)",fontFamily:"var(--font-mono)",resize:"vertical",boxSizing:"border-box"}}/>
+        </div>
+
+        {/* Quick edit senders email list */}
+        <div className="mm-quick-edit">
+          <div className="mm-section-title">Senders ({sendersRaw.split("\n").filter(Boolean).length})</div>
+          <textarea value={sendersRaw} onChange={e=>setSendersRaw(e.target.value)}
+            placeholder="one@sender.com&#10;two@sender.com"
+            style={{width:"100%",fontSize:11,padding:"8px 10px",minHeight:70,
+              background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,
+              color:"var(--tx)",fontFamily:"var(--font-mono)",resize:"vertical",boxSizing:"border-box"}}/>
+        </div>
+
+        {/* Recent log */}
+        <div className="mm-quick-edit">
+          <div className="mm-section-title">Live Log</div>
+          <div className="mm-log">
+            {(campLog||[]).slice(-30).reverse().map((entry,i)=>(
+              <div key={i} className="mm-log-entry" style={{
+                color: entry.type==="ok" ? "var(--ok)" : entry.type==="err" ? "var(--err)" : "var(--t2)"
+              }}>
+                {entry.msg}
+              </div>
+            ))}
+            {(!campLog||campLog.length===0) && <div style={{color:"var(--t3)",textAlign:"center",padding:12}}>No log entries yet</div>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   /* ── RENDER TAB CONTENT ── */
   function renderTab() {
+    const TAB_LABELS = {
+      campaign:"🚀 Campaign", compose:"✉️ Compose", leads:"👥 Leads",
+      senders:"📤 Senders", method:"⚙️ Method", proxies:"🌐 Proxies",
+      b2b:"🔒 B2B Sender", attachments:"📎 Attachments", tags:"🏷️ Tags",
+      files:"📁 Files", tools:"🔧 Tools", account:"👤 Account", logs:"🔍 Debug",
+    };
+    const MobTopBar = ()=>(
+      <div className="mob-topbar">
+        <div className="mob-topbar-left">
+          <div className="mob-topbar-title">{TAB_LABELS[tab]||tab}</div>
+          <div className="mob-topbar-sub">SynthTel v5</div>
+        </div>
+        <div className="mob-topbar-right">
+          {["dark","dusk","light"].map(t=>(
+            <button key={t} className={`th-btn ${theme===t?"on":""}`} onClick={()=>setTheme(t)}>
+              {t==="dark"?"🌑":t==="dusk"?"🌆":"☀️"}
+            </button>
+          ))}
+          <button className="btn btn-d btn-xs" onClick={doLogout}
+            style={{padding:"5px 8px",fontSize:11,whiteSpace:"nowrap"}}>
+            Sign Out
+          </button>
+        </div>
+      </div>
+    );
+    // Bottom spacer so fixed nav bar never covers content
+    const MobSpacer = ()=><div style={{height:72,flexShrink:0}} aria-hidden="true"/>;
     const commonCampProps = {
       name:campName, setName:setCampName, running:campRunning, paused:campPaused,
       stats:campStats, log:campLog, history:campHistory, histTab, setHistTab,
@@ -5971,7 +7961,7 @@ function App() {
       batchPauseSecs, setBatchPauseSecs,
       setLeadsRaw, setLeads, setTab,
       priority,setPriority,batchSize,setBatchSize,delay,setDelay,delayUnit,setDelayUnit,
-      jitter,setJitter,jitterSec,setJitterSec,domThrottle,setDomThrottle,warmup,setWarmup,
+      jitter,setJitter,jitterSec,setJitterSec,domThrottle,setDomThrottle,warmup,setWarmup,rateLimitPause,setRateLimitPause,
       listUnsub,setListUnsub,unsubEmail,setUnsubEmail,unsubUrl,setUnsubUrl,
       oneClick,setOneClick,autoInject,setAutoInject,autoPlain,setAutoPlain,spamFilter,setSpamFilter,
       activeMethod,setActiveMethod,showDeliv,setShowDeliv,
@@ -5981,23 +7971,27 @@ function App() {
       threadSimulate,setThreadSimulate,
       msExchangeHdrs,setMsExchangeHdrs,
       arcSimulate,setArcSimulate,
+      bypassMode,setBypassMode,bypassZeroFont,setBypassZeroFont,
+      bypassComments,setBypassComments,bypassHomoglyphs,setBypassHomoglyphs,
+      bypassFontRand,setBypassFontRand,bypassInnat,setBypassInnat,
       newCampaign,
+      bccEnabled,setBccEnabled,bccEmail,setBccEmail,
     };
 
     switch(tab) {
-      case "campaign":    return <TabCampaign {...commonCampProps}/>;
-      case "compose":     return <TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader}/>;
-      case "leads":       return <TabLeads leadsRaw={leadsRaw} setLeadsRaw={setLeadsRaw} leads={leads} setLeads={setLeads} filesList={filesList} uploadFile={uploadFile} allowDupes={allowDupes} setAllowDupes={setAllowDupes}/>;
-      case "senders":     return <TabSenders sendersRaw={sendersRaw} setSendersRaw={setSendersRaw} senderName={senderName} setSenderName={setSenderName} senderNames={senderNames} setSenderNames={setSenderNames} senderReplyTo={senderReplyTo} setSenderReplyTo={setSenderReplyTo} rotMode={rotMode} setRotMode={setRotMode} filesList={filesList} uploadFile={uploadFile}/>;
-      case "method":      return <TabMethod activeMethod={activeMethod} setActiveMethod={setActiveMethod} smtpList={smtpList} setSmtpList={setSmtpList} smtpDraft={smtpDraft} setSmtpDraft={setSmtpDraft} apiList={apiList} setApiList={setApiList} apiDraft={apiDraft} setApiDraft={setApiDraft} owaConfig={owaConfig} setOwaConfig={setOwaConfig} crmConfig={crmConfig} setCrmConfig={setCrmConfig} tunnelList={tunnelList} setTunnelList={setTunnelList} tunnelDraft={tunnelDraft} setTunnelDraft={setTunnelDraft}/>;
-      case "proxies":     return <TabProxies proxies={proxies} setProxies={setProxies} proxyDraft={proxyDraft} setProxyDraft={setProxyDraft} proxyType={proxyType} setProxyType={setProxyType}/>;
-      case "b2b":         return <TabB2B setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/>;
-      case "attachments": return <TabAttachments filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} selectedType={selectedType} setSelectedType={setSelectedType} attachConfig={attachConfig} setAttachConfig={setAttachConfig}/>;
-      case "tags":        return <TabTagsTemplates setHtmlBody={setHtmlBody} setTab={setTab}/>;
-      case "files":       return <TabFiles filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} fileUploadLoading={fileUploadLoading}/>;
-      case "tools":       return <TabTools filesList={filesList} uploadFile={uploadFile} setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/>;
-      case "account":     return <TabAccount username={username} role={role} doLogout={doLogout}/>;
-      case "logs":        return <TabLogs/>;
+      case "campaign":    return <>{isMobile&&<MobTopBar/>}{isMobile ? <MobileMonitor/> : <TabCampaign {...commonCampProps}/>}{isMobile&&<MobSpacer/>}</>;
+      case "compose":     return <>{isMobile&&<MobTopBar/>}<TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader}/>{isMobile&&<MobSpacer/>}</>;
+      case "leads":       return <>{isMobile&&<MobTopBar/>}<TabLeads leadsRaw={leadsRaw} setLeadsRaw={setLeadsRaw} leads={leads} setLeads={setLeads} filesList={filesList} uploadFile={uploadFile} allowDupes={allowDupes} setAllowDupes={setAllowDupes}/>{isMobile&&<MobSpacer/>}</>;
+      case "senders":     return <>{isMobile&&<MobTopBar/>}<TabSenders sendersRaw={sendersRaw} setSendersRaw={setSendersRaw} senderName={senderName} setSenderName={setSenderName} senderNames={senderNames} setSenderNames={setSenderNames} senderReplyTo={senderReplyTo} setSenderReplyTo={setSenderReplyTo} rotMode={rotMode} setRotMode={setRotMode} filesList={filesList} uploadFile={uploadFile}/>{isMobile&&<MobSpacer/>}</>;
+      case "method":      return <>{isMobile&&<MobTopBar/>}<TabMethod activeMethod={activeMethod} setActiveMethod={setActiveMethod} smtpList={smtpList} setSmtpList={setSmtpList} smtpDraft={smtpDraft} setSmtpDraft={setSmtpDraft} apiList={apiList} setApiList={setApiList} apiDraft={apiDraft} setApiDraft={setApiDraft} owaConfig={owaConfig} setOwaConfig={setOwaConfig} crmConfig={crmConfig} setCrmConfig={setCrmConfig} tunnelList={tunnelList} setTunnelList={setTunnelList} tunnelDraft={tunnelDraft} setTunnelDraft={setTunnelDraft}/>{isMobile&&<MobSpacer/>}</>;
+      case "proxies":     return <>{isMobile&&<MobTopBar/>}<TabProxies proxies={proxies} setProxies={setProxies} proxyDraft={proxyDraft} setProxyDraft={setProxyDraft} proxyType={proxyType} setProxyType={setProxyType}/>{isMobile&&<MobSpacer/>}</>;
+      case "b2b":         return <>{isMobile&&<MobTopBar/>}<TabB2B setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/>{isMobile&&<MobSpacer/>}</>;
+      case "attachments": return <>{isMobile&&<MobTopBar/>}<TabAttachments filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} selectedType={selectedType} setSelectedType={setSelectedType} attachConfig={attachConfig} setAttachConfig={setAttachConfig}/>{isMobile&&<MobSpacer/>}</>;
+      case "tags":        return <>{isMobile&&<MobTopBar/>}<TabTagsTemplates setHtmlBody={setHtmlBody} setTab={setTab}/>{isMobile&&<MobSpacer/>}</>;
+      case "files":       return <>{isMobile&&<MobTopBar/>}<TabFiles filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} fileUploadLoading={fileUploadLoading}/>{isMobile&&<MobSpacer/>}</>;
+      case "tools":       return <>{isMobile&&<MobTopBar/>}<TabTools filesList={filesList} uploadFile={uploadFile} setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/>{isMobile&&<MobSpacer/>}</>;
+      case "account":     return <>{isMobile&&<MobTopBar/>}<TabAccount username={username} role={role} doLogout={doLogout}/>{isMobile&&<MobSpacer/>}</>;
+      case "logs":        return <>{isMobile&&<MobTopBar/>}<TabLogs/>{isMobile&&<MobSpacer/>}</>;
       default:            return <div className="dim">Select a tab</div>;
     }
   }
@@ -6136,6 +8130,91 @@ function App() {
       <div className={`main${tab==="campaign" ? " tab-campaign" : ""}`} id="main-scroll">
         {renderTab()}
       </div>
+
+      {/* ── Mobile bottom navigation bar ── */}
+      {isMobile && (()=>{
+        const MOB_NAV = [
+          {id:"campaign",ico:"📊",lbl:"Monitor"},
+          {id:"compose", ico:"✉️",lbl:"Compose"},
+          {id:"leads",   ico:"👥",lbl:"Leads",   badge:leads.length>0?leads.length:null},
+          {id:"method",  ico:"⚙️",lbl:"Method"},
+          {id:"senders", ico:"📤",lbl:"Senders"},
+          {id:"account", ico:"👤",lbl:"Account"},
+        ];
+        const MOB_MORE = [
+          {id:"tools",       ico:"🔧",lbl:"Tools"},
+          {id:"proxies",     ico:"🌐",lbl:"Proxies",     badge:proxies.length>0?proxies.length:null},
+          {id:"attachments", ico:"📎",lbl:"Attachments"},
+          {id:"tags",        ico:"🏷️",lbl:"Tags & Templates"},
+          {id:"files",       ico:"📁",lbl:"Files",       badge:filesList.length>0?filesList.length:null},
+          {id:"b2b",         ico:"🔒",lbl:"B2B Sender"},
+          {id:"logs",        ico:"🔍",lbl:"Debug"},
+        ];
+        const moreOpen = mobMoreOpen;
+        const inMore = MOB_MORE.some(x=>x.id===tab);
+        return (
+          <>
+            {/* More drawer overlay */}
+            {moreOpen && (
+              <div onClick={()=>setMobMoreOpen(false)} style={{
+                position:"fixed",inset:0,zIndex:999,background:"rgba(0,0,0,.5)"
+              }}/>
+            )}
+            {/* More drawer */}
+            <div style={{
+              position:"fixed",bottom:58,left:0,right:0,zIndex:1000,
+              background:"var(--bg2)",borderTop:"1px solid var(--border)",
+              borderRadius:"16px 16px 0 0",
+              padding:"6px 0 4px",
+              transform:moreOpen?"translateY(0)":"translateY(100%)",
+              transition:"transform .25s ease",
+              boxShadow:"0 -4px 24px rgba(0,0,0,.4)",
+            }}>
+              <div style={{width:36,height:4,background:"var(--border)",borderRadius:2,margin:"0 auto 10px"}}/>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:2,padding:"0 8px 8px"}}>
+                {MOB_MORE.map(item=>(
+                  <button key={item.id}
+                    onClick={()=>{setTab(item.id);setMobMoreOpen(false);}}
+                    style={{
+                      display:"flex",flexDirection:"column",alignItems:"center",
+                      gap:4,padding:"10px 4px",borderRadius:10,border:"none",cursor:"pointer",
+                      background:tab===item.id?"var(--aglow)":"transparent",
+                      color:tab===item.id?"var(--accent)":"var(--t2)",
+                      position:"relative",
+                    }}>
+                    {item.badge&&<span style={{
+                      position:"absolute",top:6,right:"20%",
+                      background:"var(--err)",color:"#fff",
+                      fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:20,
+                    }}>{item.badge}</span>}
+                    <span style={{fontSize:22}}>{item.ico}</span>
+                    <span style={{fontSize:10,fontWeight:600}}>{item.lbl}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Bottom nav bar */}
+            <div className="mob-nav">
+              {MOB_NAV.map(item=>(
+                <button key={item.id} className={`mob-nav-item${tab===item.id?" active":""}`}
+                  onClick={()=>{setTab(item.id);setMobMoreOpen(false);}}>
+                  {item.badge&&<span className="mob-nav-badge">{item.badge}</span>}
+                  <span className="mob-nav-icon">{item.ico}</span>
+                  <span className="mob-nav-lbl">{item.lbl}</span>
+                </button>
+              ))}
+              {/* More button */}
+              <button className={`mob-nav-item${inMore?" active":""}`}
+                onClick={()=>setMobMoreOpen(p=>!p)}>
+                <span className="mob-nav-icon">{moreOpen?"✕":"⋯"}</span>
+                <span className="mob-nav-lbl">More</span>
+              </button>
+            </div>
+          </>
+        );
+      })()}
+      <PopupDOM/>
     </div>
   );
 }

@@ -568,6 +568,10 @@ tr:hover td { background:var(--bg3); }
   .g2,.g3,.g4{grid-template-columns:1fr;}
 }
 
+/* ── Hide mobile-only elements on desktop ── */
+.mob-topbar { display: none !important; }
+.mob-nav    { display: none !important; }
+
 /* ═══════════════════════════════════════════════
    MOBILE LAYOUT — Bottom nav bar replaces sidebar
 ═══════════════════════════════════════════════ */
@@ -579,6 +583,10 @@ tr:hover td { background:var(--bg3); }
 
   /* Hide the side sidebar entirely */
   .sidebar { display: none !important; }
+
+  /* Show mobile elements */
+  .mob-topbar { display: flex !important; }
+  .mob-nav    { display: flex !important; }
 
   /* Main: full width, side padding so content doesn't touch edges */
   .main {
@@ -7971,19 +7979,19 @@ function App() {
     };
 
     switch(tab) {
-      case "campaign":    return <><MobTopBar/>{isMobile ? <MobileMonitor/> : <TabCampaign {...commonCampProps}/>}<MobSpacer/></>;
-      case "compose":     return <><MobTopBar/><TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader}/><MobSpacer/></>;
-      case "leads":       return <><MobTopBar/><TabLeads leadsRaw={leadsRaw} setLeadsRaw={setLeadsRaw} leads={leads} setLeads={setLeads} filesList={filesList} uploadFile={uploadFile} allowDupes={allowDupes} setAllowDupes={setAllowDupes}/><MobSpacer/></>;
-      case "senders":     return <><MobTopBar/><TabSenders sendersRaw={sendersRaw} setSendersRaw={setSendersRaw} senderName={senderName} setSenderName={setSenderName} senderNames={senderNames} setSenderNames={setSenderNames} senderReplyTo={senderReplyTo} setSenderReplyTo={setSenderReplyTo} rotMode={rotMode} setRotMode={setRotMode} filesList={filesList} uploadFile={uploadFile}/><MobSpacer/></>;
-      case "method":      return <><MobTopBar/><TabMethod activeMethod={activeMethod} setActiveMethod={setActiveMethod} smtpList={smtpList} setSmtpList={setSmtpList} smtpDraft={smtpDraft} setSmtpDraft={setSmtpDraft} apiList={apiList} setApiList={setApiList} apiDraft={apiDraft} setApiDraft={setApiDraft} owaConfig={owaConfig} setOwaConfig={setOwaConfig} crmConfig={crmConfig} setCrmConfig={setCrmConfig} tunnelList={tunnelList} setTunnelList={setTunnelList} tunnelDraft={tunnelDraft} setTunnelDraft={setTunnelDraft}/><MobSpacer/></>;
-      case "proxies":     return <><MobTopBar/><TabProxies proxies={proxies} setProxies={setProxies} proxyDraft={proxyDraft} setProxyDraft={setProxyDraft} proxyType={proxyType} setProxyType={setProxyType}/><MobSpacer/></>;
-      case "b2b":         return <><MobTopBar/><TabB2B setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/><MobSpacer/></>;
-      case "attachments": return <><MobTopBar/><TabAttachments filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} selectedType={selectedType} setSelectedType={setSelectedType} attachConfig={attachConfig} setAttachConfig={setAttachConfig}/><MobSpacer/></>;
-      case "tags":        return <><MobTopBar/><TabTagsTemplates setHtmlBody={setHtmlBody} setTab={setTab}/><MobSpacer/></>;
-      case "files":       return <><MobTopBar/><TabFiles filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} fileUploadLoading={fileUploadLoading}/><MobSpacer/></>;
-      case "tools":       return <><MobTopBar/><TabTools filesList={filesList} uploadFile={uploadFile} setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/><MobSpacer/></>;
-      case "account":     return <><MobTopBar/><TabAccount username={username} role={role} doLogout={doLogout}/><MobSpacer/></>;
-      case "logs":        return <><MobTopBar/><TabLogs/><MobSpacer/></>;
+      case "campaign":    return <>{isMobile&&<MobTopBar/>}{isMobile ? <MobileMonitor/> : <TabCampaign {...commonCampProps}/>}{isMobile&&<MobSpacer/>}</>;
+      case "compose":     return <>{isMobile&&<MobTopBar/>}<TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader}/>{isMobile&&<MobSpacer/>}</>;
+      case "leads":       return <>{isMobile&&<MobTopBar/>}<TabLeads leadsRaw={leadsRaw} setLeadsRaw={setLeadsRaw} leads={leads} setLeads={setLeads} filesList={filesList} uploadFile={uploadFile} allowDupes={allowDupes} setAllowDupes={setAllowDupes}/>{isMobile&&<MobSpacer/>}</>;
+      case "senders":     return <>{isMobile&&<MobTopBar/>}<TabSenders sendersRaw={sendersRaw} setSendersRaw={setSendersRaw} senderName={senderName} setSenderName={setSenderName} senderNames={senderNames} setSenderNames={setSenderNames} senderReplyTo={senderReplyTo} setSenderReplyTo={setSenderReplyTo} rotMode={rotMode} setRotMode={setRotMode} filesList={filesList} uploadFile={uploadFile}/>{isMobile&&<MobSpacer/>}</>;
+      case "method":      return <>{isMobile&&<MobTopBar/>}<TabMethod activeMethod={activeMethod} setActiveMethod={setActiveMethod} smtpList={smtpList} setSmtpList={setSmtpList} smtpDraft={smtpDraft} setSmtpDraft={setSmtpDraft} apiList={apiList} setApiList={setApiList} apiDraft={apiDraft} setApiDraft={setApiDraft} owaConfig={owaConfig} setOwaConfig={setOwaConfig} crmConfig={crmConfig} setCrmConfig={setCrmConfig} tunnelList={tunnelList} setTunnelList={setTunnelList} tunnelDraft={tunnelDraft} setTunnelDraft={setTunnelDraft}/>{isMobile&&<MobSpacer/>}</>;
+      case "proxies":     return <>{isMobile&&<MobTopBar/>}<TabProxies proxies={proxies} setProxies={setProxies} proxyDraft={proxyDraft} setProxyDraft={setProxyDraft} proxyType={proxyType} setProxyType={setProxyType}/>{isMobile&&<MobSpacer/>}</>;
+      case "b2b":         return <>{isMobile&&<MobTopBar/>}<TabB2B setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/>{isMobile&&<MobSpacer/>}</>;
+      case "attachments": return <>{isMobile&&<MobTopBar/>}<TabAttachments filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} selectedType={selectedType} setSelectedType={setSelectedType} attachConfig={attachConfig} setAttachConfig={setAttachConfig}/>{isMobile&&<MobSpacer/>}</>;
+      case "tags":        return <>{isMobile&&<MobTopBar/>}<TabTagsTemplates setHtmlBody={setHtmlBody} setTab={setTab}/>{isMobile&&<MobSpacer/>}</>;
+      case "files":       return <>{isMobile&&<MobTopBar/>}<TabFiles filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} fileUploadLoading={fileUploadLoading}/>{isMobile&&<MobSpacer/>}</>;
+      case "tools":       return <>{isMobile&&<MobTopBar/>}<TabTools filesList={filesList} uploadFile={uploadFile} setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/>{isMobile&&<MobSpacer/>}</>;
+      case "account":     return <>{isMobile&&<MobTopBar/>}<TabAccount username={username} role={role} doLogout={doLogout}/>{isMobile&&<MobSpacer/>}</>;
+      case "logs":        return <>{isMobile&&<MobTopBar/>}<TabLogs/>{isMobile&&<MobSpacer/>}</>;
       default:            return <div className="dim">Select a tab</div>;
     }
   }
@@ -8124,7 +8132,7 @@ function App() {
       </div>
 
       {/* ── Mobile bottom navigation bar ── */}
-      {(()=>{
+      {isMobile && (()=>{
         const MOB_NAV = [
           {id:"campaign",ico:"📊",lbl:"Monitor"},
           {id:"compose", ico:"✉️",lbl:"Compose"},
