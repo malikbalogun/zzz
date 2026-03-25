@@ -2848,9 +2848,9 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
 
-            import shutil, subprocess
-            nine_bin = shutil.which("9proxy")
-            if not nine_bin:
+            import shutil
+            _nine_bin = shutil.which("9proxy")
+            if not _nine_bin:
                 self._json(200, {"status": "error", "message": "9proxy is not installed on this server."}); return
 
             # If credentials provided, do login first
@@ -2859,7 +2859,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             if np_user and np_pass:
                 try:
                     result = subprocess.run(
-                        [nine_bin, "auth", "-u", np_user, "-p", np_pass],
+                        [_nine_bin, "auth", "-u", np_user, "-p", np_pass],
                         capture_output=True, text=True, timeout=30
                     )
                     auth_out = (result.stdout + result.stderr).strip()
@@ -2875,15 +2875,15 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 ps_out = ""
             if not ps_out:
                 try:
-                    subprocess.Popen([nine_bin, "-daemon"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    import time; time.sleep(3)
+                    subprocess.Popen([_nine_bin, "-daemon"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(3)
                 except Exception:
                     pass
 
             # Check balance to verify it's working
             try:
                 result = subprocess.run(
-                    [nine_bin, "proxy", "-b"],
+                    [_nine_bin, "proxy", "-b"],
                     capture_output=True, text=True, timeout=15
                 )
                 bal_out = (result.stdout + result.stderr).strip()
@@ -2891,7 +2891,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                     self._json(200, {"status": "needs_login", "message": "9proxy needs login. Enter your 9proxy.com email and password."})
                     return
                 # Parse remaining IPs
-                import re
                 m = re.search(r"(\d+)", bal_out.split("Remaining")[-1] if "Remaining" in bal_out else bal_out)
                 remaining = m.group(1) if m else "?"
                 self._json(200, {"status": "ok", "message": f"9proxy connected — {remaining} IPs remaining"})
@@ -2905,9 +2904,9 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
 
-            import shutil, subprocess
-            nine_bin = shutil.which("9proxy")
-            if not nine_bin:
+            import shutil
+            _nine_bin = shutil.which("9proxy")
+            if not _nine_bin:
                 self._json(200, {"status": "error", "message": "9proxy not installed"}); return
 
             country = data.get("country", "CA")
@@ -2917,7 +2916,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             # Get current port status
             try:
                 result = subprocess.run(
-                    [nine_bin, "port", "-s"],
+                    [_nine_bin, "port", "-s"],
                     capture_output=True, text=True, timeout=10
                 )
                 port_out = result.stdout
@@ -2937,7 +2936,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 # Kill all ports and retry
                 for port in range(60000, 60010):
                     try:
-                        subprocess.run([nine_bin, "port", "-k", str(port)],
+                        subprocess.run([_nine_bin, "port", "-k", str(port)],
                             capture_output=True, timeout=5)
                     except Exception:
                         pass
@@ -2949,7 +2948,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
 
             for port in use_ports:
                 try:
-                    cmd = [nine_bin, "proxy", "-c", country, "-p", str(port)]
+                    cmd = [_nine_bin, "proxy", "-c", country, "-p", str(port)]
                     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                     out = (result.stdout + result.stderr).strip()
                     if result.returncode != 0 and "error" in out.lower():
