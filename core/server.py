@@ -2743,6 +2743,127 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             except Exception as e:
                 self._json(200, {"status": "error", "message": f"SSH failed: {e}"})
 
+        # ── 9Proxy Integration ─────────────────────────────────
+        elif p == "/api/9proxy/verify":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            api_key = (data.get("key") or "").strip()
+            api_url = (data.get("url") or "http://localhost:2090").rstrip("/")
+            if not api_key:
+                self._json(200, {"status": "error", "message": "API key is required"}); return
+            # Try to verify by calling the 9proxy API
+            verified = False
+            err_msg = ""
+            # Try multiple auth patterns
+            attempts = [
+                (f"{api_url}/api/proxy?api_key={api_key}&response_type=2", {}),
+                (f"{api_url}/api/proxy?response_type=2", {"Authorization": f"Bearer {api_key}"}),
+                (f"{api_url}/api/proxy?response_type=2", {"X-Api-Key": api_key}),
+                (f"{api_url}/api/proxy?key={api_key}&response_type=2", {}),
+            ]
+            for url, hdrs in attempts:
+                try:
+                    req = Request(url, headers=hdrs)
+                    resp = urlopen(req, timeout=10)
+                    body = resp.read().decode("utf-8", errors="replace")
+                    # Check for valid response
+                    if resp.status == 200:
+                        try:
+                            j = json.loads(body)
+                            if j.get("error") is True and "balance" in str(j.get("message","")).lower():
+                                self._json(200, {"status": "error", "message": "Insufficient balance — key is valid but no balance remaining"}); return
+                            verified = True
+                            break
+                        except json.JSONDecodeError:
+                            # txt response is also valid
+                            if len(body.strip()) > 0:
+                                verified = True
+                                break
+                except Exception as e:
+                    err_msg = str(e)[:200]
+                    continue
+            if verified:
+                self._json(200, {"status": "ok", "message": "API key verified successfully"})
+            else:
+                self._json(200, {"status": "error", "message": f"Could not verify API key. {err_msg}"})
+
+        elif p == "/api/9proxy/fetch":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            api_key = (data.get("key") or "").strip()
+            api_url = (data.get("url") or "http://localhost:2090").rstrip("/")
+            if not api_key:
+                self._json(200, {"status": "error", "message": "No API key provided"}); return
+            country   = data.get("country", "CA")
+            isp       = data.get("isp", "")
+            count     = int(data.get("count", 10))
+            plan_type = data.get("planType", "premium")
+            # Build query
+            params = [f"response_type=2", f"country={country}", f"count={count}"]
+            if isp:
+                params.append(f"isp={isp}")
+            if plan_type:
+                params.append(f"plan_type={plan_type}")
+            qs = "&".join(params)
+            result_data = None
+            err_msg = ""
+            # Try today_list first, then proxy endpoint
+            endpoints = [
+                f"{api_url}/api/today_list?api_key={api_key}&{qs}",
+                f"{api_url}/api/proxy?api_key={api_key}&{qs}",
+            ]
+            auth_headers_list = [
+                {},
+                {"Authorization": f"Bearer {api_key}"},
+                {"X-Api-Key": api_key},
+            ]
+            for ep in endpoints:
+                for hdrs in auth_headers_list:
+                    try:
+                        # Strip api_key from URL if using header auth
+                        url = ep if not hdrs else ep.replace(f"api_key={api_key}&", "").replace(f"&api_key={api_key}", "")
+                        req = Request(url, headers=hdrs)
+                        resp = urlopen(req, timeout=20)
+                        body = resp.read().decode("utf-8", errors="replace")
+                        if resp.status == 200:
+                            try:
+                                j = json.loads(body)
+                                if j.get("error") is True:
+                                    err_msg = j.get("message", "API error")
+                                    continue
+                                result_data = j
+                                break
+                            except json.JSONDecodeError:
+                                # Parse text format: each line is a proxy
+                                lines = [l.strip() for l in body.strip().split("\n") if l.strip()]
+                                if lines:
+                                    proxies_parsed = []
+                                    for line in lines:
+                                        parts = line.split(":")
+                                        if len(parts) >= 2:
+                                            proxies_parsed.append({
+                                                "address": parts[0] if "." in parts[0] else (parts[2] if len(parts) > 2 and "." in parts[2] else parts[0]),
+                                                "port": parts[1] if parts[1].isdigit() else (parts[3] if len(parts) > 3 and parts[3].isdigit() else "17521"),
+                                                "raw": line
+                                            })
+                                    result_data = {"data": proxies_parsed}
+                                    break
+                    except Exception as e:
+                        err_msg = str(e)[:200]
+                        continue
+                if result_data:
+                    break
+            if result_data:
+                self._json(200, {"status": "ok", "data": result_data.get("data", result_data)})
+            else:
+                self._json(200, {"status": "error", "message": err_msg or "Could not fetch proxies from 9proxy API"})
+
         # ── Validate sender email addresses (MX check) ───────
         elif p == "/api/validate-senders":
             if not (sess := self._auth()): return

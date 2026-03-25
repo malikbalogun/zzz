@@ -4262,6 +4262,137 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
   const [testSmtpHost, setTestSmtpHost] = useState("");
   const [testSmtpPort, setTestSmtpPort] = useState("");
   const [serverIp, setServerIp] = React.useState("");
+
+  // ── 9Proxy state ──
+  const [npApiKey, setNpApiKey] = useState(localStorage.getItem("9proxy_key")||"");
+  const [npApiUrl, setNpApiUrl] = useState(localStorage.getItem("9proxy_url")||"http://localhost:2090");
+  const [npKeyOk, setNpKeyOk] = useState(!!localStorage.getItem("9proxy_key"));
+  const [npVerifying, setNpVerifying] = useState(false);
+  const [npPlan, setNpPlan] = useState("ip");
+  const [npCountry, setNpCountry] = useState("CA");
+  const [npIsp, setNpIsp] = useState("");
+  const [npCount, setNpCount] = useState("10");
+  const [npSmtpHost, setNpSmtpHost] = useState("");
+  const [npFetching, setNpFetching] = useState(false);
+  const [npError, setNpError] = useState("");
+  const [npResult, setNpResult] = useState(null);
+
+  const NP_ISPS = {
+    CA: [
+      {name:"Any ISP",                    value:"",          smtp:""},
+      {name:"Shaw Communications (AS6327)",value:"as6327",   smtp:"smtp.shaw.ca"},
+      {name:"Bell Canada (AS577)",         value:"as577",    smtp:"smtp.bell.net"},
+      {name:"Rogers Communications (AS812)",value:"as812",   smtp:"smtp.rogers.com"},
+      {name:"Telus (AS852)",               value:"as852",    smtp:"smtp.telus.net"},
+      {name:"Eastlink (AS11260)",          value:"as11260",  smtp:"smtp.eastlink.ca"},
+      {name:"SaskTel (AS803)",             value:"as803",    smtp:"smtp.sasktel.net"},
+      {name:"Cogeco (AS15290)",            value:"as15290",  smtp:"smtp.cogeco.ca"},
+      {name:"Videotron (AS5769)",          value:"as5769",   smtp:"smtp.videotron.ca"},
+      {name:"TekSavvy (AS5645)",           value:"as5645",   smtp:"mail.teksavvy.com"},
+      {name:"Bell MTS (AS7122)",           value:"as7122",   smtp:"smtp.mts.net"},
+      {name:"Northwestel (AS7865)",        value:"as7865",   smtp:"smtp.northwestel.net"},
+      {name:"Tbaytel (AS11814)",           value:"as11814",  smtp:"smtp.tbaytel.net"},
+    ],
+    US: [
+      {name:"Any ISP",                    value:"",          smtp:""},
+      {name:"Comcast / Xfinity (AS7922)", value:"as7922",    smtp:"smtp.comcast.net"},
+      {name:"AT&T (AS7018)",              value:"as7018",    smtp:"outbound.att.net"},
+      {name:"Charter / Spectrum (AS20115)",value:"as20115",  smtp:"smtp.charter.net"},
+      {name:"Cox Communications (AS22773)",value:"as22773",  smtp:"smtp.cox.net"},
+      {name:"Verizon (AS701)",            value:"as701",     smtp:"outgoing.verizon.net"},
+      {name:"CenturyLink / Lumen (AS209)",value:"as209",    smtp:"smtp.centurylink.net"},
+      {name:"Frontier (AS5650)",          value:"as5650",    smtp:"smtp.frontier.com"},
+      {name:"Windstream (AS7029)",        value:"as7029",    smtp:"smtp.windstream.net"},
+      {name:"Mediacom (AS30036)",         value:"as30036",   smtp:"smtp.mediacombb.net"},
+      {name:"Consolidated (AS382)",       value:"as382",     smtp:"smtp.consolidated.net"},
+      {name:"Suddenlink / Altice (AS19108)",value:"as19108", smtp:"smtp.suddenlink.net"},
+      {name:"WOW! Internet (AS12083)",    value:"as12083",   smtp:"smtp.wowway.com"},
+      {name:"Atlantic Broadband (AS6128)",value:"as6128",    smtp:"smtp.atlanticbb.net"},
+      {name:"Midcontinent (AS11232)",     value:"as11232",   smtp:"smtp.midco.net"},
+      {name:"RCN (AS6079)",              value:"as6079",     smtp:"smtp.rcn.com"},
+    ]
+  };
+
+  const npIspList = NP_ISPS[npCountry] || NP_ISPS.CA;
+
+  // Auto-fill SMTP host when ISP changes
+  React.useEffect(()=>{
+    const found = npIspList.find(i=>i.value===npIsp);
+    if(found && found.smtp) setNpSmtpHost(found.smtp);
+    else if(!npIsp) setNpSmtpHost("");
+  },[npIsp, npCountry]);
+
+  // Reset ISP when country changes
+  React.useEffect(()=>{ setNpIsp(""); },[npCountry]);
+
+  async function npVerifyKey(){
+    if(!npApiKey.trim()){ showToast("err","Missing","Enter your 9Proxy API key."); return; }
+    setNpVerifying(true); setNpError("");
+    try {
+      const r = await apiCall("/api/9proxy/verify",{method:"POST",body:JSON.stringify({key:npApiKey.trim(), url:npApiUrl.trim()})});
+      const d = await r.json();
+      if(d.status==="ok"){
+        localStorage.setItem("9proxy_key", npApiKey.trim());
+        localStorage.setItem("9proxy_url", npApiUrl.trim());
+        setNpKeyOk(true);
+        showToast("ok","Verified","9Proxy API key is valid.");
+      } else {
+        setNpKeyOk(false);
+        setNpError(d.message||"Verification failed");
+        showToast("err","Invalid Key", d.message||"Could not verify API key.");
+      }
+    } catch(e){ setNpError(e.message); showToast("err","Error",e.message); }
+    setNpVerifying(false);
+  }
+
+  function npRemoveKey(){
+    localStorage.removeItem("9proxy_key");
+    localStorage.removeItem("9proxy_url");
+    setNpApiKey(""); setNpKeyOk(false); setNpError("");
+    showToast("ok","Removed","9Proxy API key removed.");
+  }
+
+  async function npFetchProxies(){
+    if(!npApiKey){ showToast("err","No Key","Add your 9Proxy API key first."); return; }
+    setNpFetching(true); setNpError(""); setNpResult(null);
+    try {
+      const r = await apiCall("/api/9proxy/fetch",{method:"POST",body:JSON.stringify({
+        key:npApiKey.trim(), url:npApiUrl.trim(),
+        country:npCountry, isp:npIsp, count:parseInt(npCount)||10,
+        planType: npPlan==="ip"?"premium":"free"
+      })});
+      const d = await r.json();
+      if(d.status==="ok" && d.data){
+        const items = Array.isArray(d.data) ? d.data : (d.data.data || []);
+        if(items.length===0){ setNpError("No proxies returned — try different filters or check balance."); setNpFetching(false); return; }
+        // Import as ISP proxies
+        const smtpHost = npSmtpHost || "smtp.shaw.ca";
+        const ehlo = smtpHost.split(".").slice(-2).join(".");
+        const newProxies = items.map(function(px, idx){
+          const host = px.address || px.host || px.ip || "127.0.0.1";
+          const port = String(px.port || px.proxy_port || "17521");
+          return {
+            raw: "socks5://" + (px.username||"") + (px.password?":"+px.password:"") + (px.username?"@":"") + host + ":" + port,
+            type: "socks5",
+            status: px.online !== false ? "untested" : "failed",
+            ispSmtpHost: smtpHost,
+            ispSmtpPort: "25",
+            fromDomain: ehlo,
+            host: host,
+            port: port,
+            publicIp: px.public_ip || "",
+            city: px.city || "",
+          };
+        });
+        setProxies(prev=>[...prev, ...newProxies]);
+        setNpResult({count: newProxies.length, port: newProxies[0]?.port || "auto"});
+        showToast("ok","Fetched", newProxies.length+" proxies imported with SMTP "+smtpHost+":25");
+      } else {
+        setNpError(d.message || "API error — check your key and balance");
+      }
+    } catch(e){ setNpError(e.message); }
+    setNpFetching(false);
+  }
   React.useEffect(()=>{
     apiCall("/api/server-ip").then(r=>r.json()).then(d=>{if(d.ip) setServerIp(d.ip);}).catch(()=>{});
   },[]);
@@ -4292,7 +4423,7 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
       </div>
 
       <div className="tab-bar">
-        {[["list","Proxy List"],["builder","Builder"],["deploy","Deploy VPS"]].map(([k,l])=>(
+        {[["list","ISP Proxies"],["9proxy","9Proxy"],["builder","Builder"],["deploy","Deploy VPS"]].map(([k,l])=>(
           <button key={k} className={`tb ${pTab===k?"on":""}`} onClick={()=>setPTab(k)}>{l}</button>
         ))}
       </div>
@@ -4404,6 +4535,131 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
                 </table>
               </div>
             }
+          </div>
+        </div>
+      )}
+
+      {pTab==="9proxy" && (
+        <div>
+          {/* API Key Card */}
+          <div className="card mb14">
+            <div className="card-title">9Proxy API Key</div>
+            {npKeyOk ? (
+              <div>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <span style={{color:"var(--ok)",fontWeight:600}}>API key configured</span>
+                  <button className="btn btn-d btn-xs" onClick={npRemoveKey}>Remove</button>
+                </div>
+                <div className="dim2 xs mt4">Find your API key in the 9proxy dashboard → API section</div>
+              </div>
+            ) : (
+              <div>
+                <div className="dim2 xs mb8">Find your API key in the 9proxy dashboard → API section</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:8,alignItems:"flex-end"}}>
+                  <div>
+                    <label className="lbl">API Key</label>
+                    <input type="password" value={npApiKey} onChange={e=>setNpApiKey(e.target.value)}
+                      placeholder="Paste your 9Proxy API key"
+                      style={{width:"100%",fontSize:14,padding:"10px 12px",boxSizing:"border-box"}}
+                      onKeyDown={e=>{if(e.key==="Enter")npVerifyKey();}}/>
+                  </div>
+                  <button className="btn btn-p" style={{height:42,whiteSpace:"nowrap"}} onClick={npVerifyKey} disabled={npVerifying}>
+                    {npVerifying ? "Verifying..." : "Save & Verify"}
+                  </button>
+                </div>
+                <details style={{marginTop:8}}>
+                  <summary className="dim2 xs" style={{cursor:"pointer"}}>Advanced: Custom API URL</summary>
+                  <div style={{marginTop:6}}>
+                    <label className="lbl">9Proxy API URL</label>
+                    <input value={npApiUrl} onChange={e=>setNpApiUrl(e.target.value)}
+                      placeholder="http://localhost:2090"
+                      style={{width:"100%",fontSize:12,padding:"8px 10px",fontFamily:"var(--font-mono)",boxSizing:"border-box"}}/>
+                    <div className="dim2 xs mt4">Default: http://localhost:2090 (local 9proxy app). Change if your API runs on a different port.</div>
+                  </div>
+                </details>
+                {npError && <div style={{color:"var(--err)",fontSize:12,marginTop:8}}>{npError}</div>}
+              </div>
+            )}
+          </div>
+
+          {/* Fetch Proxies Card */}
+          <div className="card mb14">
+            <div className="card-title">Fetch Proxies</div>
+
+            {/* Plan Type */}
+            <div style={{marginBottom:14}}>
+              <label className="lbl">PLAN TYPE</label>
+              <div style={{display:"flex",gap:0}}>
+                <button className={"btn btn-sm "+(npPlan==="ip"?"btn-p":"btn-g")}
+                  style={{borderRadius:"6px 0 0 6px",minWidth:120}}
+                  onClick={()=>setNpPlan("ip")}>IP-based</button>
+                <button className={"btn btn-sm "+(npPlan==="gb"?"btn-p":"btn-g")}
+                  style={{borderRadius:"0 6px 6px 0",minWidth:120}}
+                  onClick={()=>setNpPlan("gb")}>GB-based</button>
+              </div>
+            </div>
+
+            {/* Country + ISP */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+              <div>
+                <label className="lbl">COUNTRY</label>
+                <select value={npCountry} onChange={e=>setNpCountry(e.target.value)}
+                  style={{width:"100%",fontSize:14,padding:"10px 12px"}}>
+                  <option value="CA">Canada</option>
+                  <option value="US">United States</option>
+                </select>
+              </div>
+              <div>
+                <label className="lbl">ISP</label>
+                <select value={npIsp} onChange={e=>setNpIsp(e.target.value)}
+                  style={{width:"100%",fontSize:14,padding:"10px 12px"}}>
+                  {npIspList.map(i=>(
+                    <option key={i.value} value={i.value}>{i.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Count + ISP SMTP Host */}
+            <div style={{display:"grid",gridTemplateColumns:"120px 1fr 100px",gap:10,marginBottom:14}}>
+              <div>
+                <label className="lbl">COUNT</label>
+                <input type="number" min="1" max="100" value={npCount} onChange={e=>setNpCount(e.target.value)}
+                  style={{width:"100%",fontSize:14,padding:"10px 12px",boxSizing:"border-box"}}/>
+              </div>
+              <div>
+                <label className="lbl">ISP SMTP HOST</label>
+                <select value={npSmtpHost} onChange={e=>setNpSmtpHost(e.target.value)}
+                  style={{width:"100%",fontSize:14,padding:"10px 12px"}}>
+                  <option value="">-- Select ISP SMTP --</option>
+                  {npIspList.filter(i=>i.smtp).map(i=>(
+                    <option key={i.smtp} value={i.smtp}>{i.smtp}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="lbl">SMTP PORT</label>
+                <input value="25" disabled
+                  style={{width:"100%",fontSize:14,padding:"10px 12px",boxSizing:"border-box",opacity:0.7,background:"var(--bg2)",fontWeight:700}}/>
+              </div>
+            </div>
+
+            {/* Proxy Port (auto) */}
+            {npResult && (
+              <div style={{marginBottom:14,padding:"10px 14px",background:"var(--bg2)",borderRadius:8,fontSize:13}}>
+                <span style={{color:"var(--t2)"}}>PROXY PORT (SOCKS5):</span>{" "}
+                <span style={{fontWeight:700,fontFamily:"var(--font-mono)",color:"var(--ok)"}}>{npResult.port}</span>
+                <span style={{color:"var(--t2)",marginLeft:12}}>|</span>
+                <span style={{color:"var(--ok)",marginLeft:12}}>{npResult.count} proxies imported</span>
+              </div>
+            )}
+
+            {/* Fetch button */}
+            <button className="btn btn-p" style={{width:"100%",padding:"12px",fontSize:15}} onClick={npFetchProxies} disabled={npFetching || !npKeyOk}>
+              {npFetching ? "Fetching..." : "Fetch Proxies"}
+            </button>
+            {!npKeyOk && <div className="dim2 xs mt4" style={{textAlign:"center"}}>Add and verify your API key first</div>}
+            {npError && <div style={{color:"var(--err)",fontSize:12,marginTop:10,padding:"8px 12px",background:"rgba(239,68,68,.1)",borderRadius:6}}>{npError}</div>}
           </div>
         </div>
       )}
