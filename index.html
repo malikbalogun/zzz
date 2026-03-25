@@ -7833,6 +7833,14 @@ function App() {
   function resumeCampaign() { pauseRef.current.paused=false; setCampPaused(false); addLog("▶ Resumed","inf"); }
   function stopCampaign()   { pauseRef.current.abort=true;   setCampRunning(false); setCampPaused(false); }
 
+  /* ── MOBILE DETECT (must be before early return to keep hook order stable) ── */
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  React.useEffect(()=>{
+    const h=()=>setIsMobile(window.innerWidth<=768);
+    window.addEventListener("resize",h);
+    return ()=>window.removeEventListener("resize",h);
+  },[]);
+
   /* ── LOGIN SCREEN ── */
   if(!token) return (
     <div data-theme={theme} style={{minHeight:"100vh",width:"100%",background:"var(--bg)"}}>
@@ -7920,13 +7928,6 @@ function App() {
   ];
 
   /* ── MOBILE MONITOR ── */
-  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
-  React.useEffect(()=>{
-    const h=()=>setIsMobile(window.innerWidth<=768);
-    window.addEventListener("resize",h);
-    return ()=>window.removeEventListener("resize",h);
-  },[]);
-
   function MobileMonitor() {
     const pct = campStats.total > 0 ? ((campStats.sent + campStats.failed) / campStats.total * 100) : 0;
     const speed = campStats.speed || 0;
