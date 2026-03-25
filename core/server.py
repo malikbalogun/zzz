@@ -357,6 +357,11 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_ticket_msgs ON ticket_messages(ticket_id)",
             # Add method column to campaign_runs if missing (old DBs don't have it)
             "ALTER TABLE campaign_runs ADD COLUMN method TEXT DEFAULT 'smtp'",
+            """CREATE TABLE IF NOT EXISTS user_drafts (
+                user_id INTEGER PRIMARY KEY,
+                config TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""",
         ]:
             try:
                 conn.execute(migration)
@@ -1120,6 +1125,49 @@ if(code && window.opener){{
                 self._json(404, {"error": "Run not found"}); return
             self._json(200, {"done": run["done"], "results": run["results"]})
 
+        elif p == "/api/draft":
+            if not (sess := self._auth()): return
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    row = conn.execute(
+                        "SELECT config, updated_at FROM user_drafts WHERE user_id=?",
+                        (sess["user_id"],)
+                    ).fetchone()
+                    conn.close()
+                if row:
+                    self._json(200, {"ok": True, "config": json.loads(row[0]), "updated_at": row[1]})
+                else:
+                    self._json(200, {"ok": True, "config": None})
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+
+        elif p == "/api/campaign/status":
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            with active_campaigns_lock:
+                active = ACTIVE_CAMPAIGNS.get(uid, 0)
+                live = LIVE_CAMPAIGN_STATS.get(uid)
+            if live:
+                self._json(200, {"active": True, "active_count": active, "live": live, "latest": None})
+                return
+            latest = None
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    row = conn.execute(
+                        "SELECT id, name, status, sent, failed, total, started_at, finished_at "
+                        "FROM campaign_runs WHERE user_id=? ORDER BY started_at DESC LIMIT 1",
+                        (uid,)
+                    ).fetchone()
+                    conn.close()
+                if row:
+                    latest = {"id":row[0],"name":row[1],"status":row[2],"sent":row[3],
+                              "failed":row[4],"total":row[5],"started_at":row[6],"finished_at":row[7]}
+            except Exception:
+                pass
+            self._json(200, {"active": False, "active_count": active, "live": None, "latest": latest})
+
         else:
             self._json(404, {"error": "Not found"})
 
@@ -1365,6 +1413,27 @@ if(code && window.opener){{
 
             self._stream_end()
 
+        # ── Save draft (cross-device sync) ───────────────────
+        elif p == "/api/draft":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            config = json.dumps(data.get("config", {}))
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute(
+                        "INSERT INTO user_drafts (user_id, config, updated_at) VALUES (?, ?, ?) "
+                        "ON CONFLICT(user_id) DO UPDATE SET config=excluded.config, updated_at=excluded.updated_at",
+                        (sess["user_id"], config, datetime.now().isoformat())
+                    )
+                    conn.commit(); conn.close()
+                self._json(200, {"ok": True})
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+
         # ── Save campaign ────────────────────────────────────
         elif p == "/api/campaigns/save":
             if not (sess := self._auth()): return
@@ -1443,6 +1512,18 @@ if(code && window.opener){{
                 with db_lock:
                     conn = sqlite3.connect(DB_PATH)
                     conn.execute("DELETE FROM saved_campaigns WHERE id=? AND user_id=?", (camp_id, sess["user_id"]))
+                    conn.commit(); conn.close()
+                self._json(200, {"ok": True})
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+
+        # ── Clear campaign history ────────────────────────────
+        elif p == "/api/campaigns/clear":
+            if not (sess := self._auth()): return
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("DELETE FROM campaign_runs WHERE user_id=?", (sess["user_id"],))
                     conn.commit(); conn.close()
                 self._json(200, {"ok": True})
             except Exception as e:
