@@ -2896,34 +2896,45 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
 
-            # Check if 9proxy CLI is installed
             import shutil, subprocess
             nine_bin = shutil.which("9proxy")
             if not nine_bin:
-                self._json(200, {"status": "error", "message": "9proxy is not installed on this server. Install it from 9proxy.com first."}); return
+                self._json(200, {"status": "error", "message": "9proxy is not installed on this server."}); return
 
-            # Check if daemon is running
+            # Check if daemon is running, start if not
             try:
                 ps_out = subprocess.check_output(["pgrep", "-f", "9proxy"], timeout=5).decode().strip()
             except Exception:
                 ps_out = ""
             if not ps_out:
-                self._json(200, {"status": "error", "message": "9proxy daemon is not running. SSH in and run: 9proxy -daemon"}); return
+                try:
+                    subprocess.Popen([nine_bin, "-daemon"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    import time; time.sleep(2)
+                except Exception:
+                    pass
 
-            # Find or start the local HTTP API
+            # If credentials provided, do login first
+            np_user = (data.get("username") or "").strip()
+            np_pass = (data.get("password") or "").strip()
+            if np_user and np_pass:
+                try:
+                    result = subprocess.run(
+                        [nine_bin, "auth", "-u", np_user, "-p", np_pass],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    auth_out = (result.stdout + result.stderr).strip()
+                    if "error" in auth_out.lower() or result.returncode != 0:
+                        self._json(200, {"status": "error", "message": f"Login failed: {auth_out[:200]}"}); return
+                except Exception as e:
+                    self._json(200, {"status": "error", "message": f"Login error: {str(e)[:200]}"}); return
+
+            # Try to start the API
             api_url = self._ensure_9proxy_api()
-            if not api_url:
-                self._json(200, {"status": "error", "message": "Could not start 9proxy API. SSH in and run: 9proxy api -s -p 2090"}); return
-
-            # Test the local API works (no key needed — daemon is already authenticated)
-            try:
-                resp = urlopen(Request(f"{api_url}/api/proxy?response_type=2&count=1"), timeout=10)
-                if resp.status == 200:
-                    self._json(200, {"status": "ok", "message": f"9proxy connected — API running on {api_url}"})
-                    return
-            except Exception as e:
-                pass
-            self._json(200, {"status": "ok", "message": "9proxy daemon is running. API started."})
+            if api_url:
+                self._json(200, {"status": "ok", "message": f"9proxy ready — API on {api_url}"})
+            else:
+                # API couldn't start — might need login
+                self._json(200, {"status": "needs_login", "message": "9proxy needs login. Enter your 9proxy email and password."})
 
         elif p == "/api/9proxy/fetch":
             if not (sess := self._auth()): return

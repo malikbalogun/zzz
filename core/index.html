@@ -4302,9 +4302,11 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
 
   // ── 9Proxy state ──
   const [npApiKey, setNpApiKey] = useState(localStorage.getItem("9proxy_key")||"");
-  const [npApiUrl, setNpApiUrl] = useState(localStorage.getItem("9proxy_url")||"http://localhost:2090");
   const [npKeyOk, setNpKeyOk] = useState(!!localStorage.getItem("9proxy_key"));
   const [npVerifying, setNpVerifying] = useState(false);
+  const [npNeedsLogin, setNpNeedsLogin] = useState(false);
+  const [npUser, setNpUser] = useState("");
+  const [npPass, setNpPass] = useState("");
   const [npPlan, setNpPlan] = useState("ip");
   const [npCountry, setNpCountry] = useState("CA");
   const [npIsp, setNpIsp] = useState("");
@@ -4366,16 +4368,23 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
     if(!npApiKey.trim()){ showToast("err","Missing","Enter your 9Proxy API key."); return; }
     setNpVerifying(true); setNpError("");
     try {
-      const r = await apiCall("/api/9proxy/verify",{method:"POST",body:JSON.stringify({key:npApiKey.trim()})});
+      const payload = {key:npApiKey.trim()};
+      if(npUser.trim()) payload.username = npUser.trim();
+      if(npPass.trim()) payload.password = npPass.trim();
+      const r = await apiCall("/api/9proxy/verify",{method:"POST",body:JSON.stringify(payload)});
       const d = await r.json();
       if(d.status==="ok"){
         localStorage.setItem("9proxy_key", npApiKey.trim());
-        setNpKeyOk(true);
-        showToast("ok","Verified","9Proxy API key is valid.");
+        setNpKeyOk(true); setNpNeedsLogin(false); setNpUser(""); setNpPass("");
+        showToast("ok","Connected", d.message||"9Proxy is ready.");
+      } else if(d.status==="needs_login"){
+        setNpNeedsLogin(true);
+        setNpError(d.message);
+        showToast("warn","Login Required", d.message);
       } else {
         setNpKeyOk(false);
         setNpError(d.message||"Verification failed");
-        showToast("err","Invalid Key", d.message||"Could not verify API key.");
+        showToast("err","Error", d.message||"Could not connect to 9proxy.");
       }
     } catch(e){ setNpError(e.message); showToast("err","Error",e.message); }
     setNpVerifying(false);
@@ -4383,8 +4392,7 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
 
   function npRemoveKey(){
     localStorage.removeItem("9proxy_key");
-    setNpApiKey(""); setNpKeyOk(false); setNpError("");
-    showToast("ok","Removed","9Proxy API key removed.");
+    setNpApiKey(""); setNpKeyOk(false); setNpError(""); setNpNeedsLogin(false);
   }
 
   async function npFetchProxies(){
@@ -4599,11 +4607,34 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
                       onKeyDown={e=>{if(e.key==="Enter")npVerifyKey();}}/>
                   </div>
                   <button className="btn btn-p" style={{height:42,whiteSpace:"nowrap"}} onClick={npVerifyKey} disabled={npVerifying}>
-                    {npVerifying ? "Verifying..." : "Save & Verify"}
+                    {npVerifying ? "Connecting..." : "Save & Connect"}
                   </button>
                 </div>
-                <div className="dim2 xs mt6">The server auto-detects your 9proxy installation. Just paste your API key.</div>
-                {npError && <div style={{color:"var(--err)",fontSize:12,marginTop:8}}>{npError}</div>}
+                {npNeedsLogin && (
+                  <div className="card mt10" style={{padding:14,background:"var(--bg3)"}}>
+                    <div style={{fontWeight:600,fontSize:13,marginBottom:8}}>🔐 9Proxy Login Required</div>
+                    <div className="dim2 xs mb8">Your 9proxy app needs to be logged in. Enter your 9proxy.com email and password.</div>
+                    <div className="g2 mb8">
+                      <div>
+                        <label className="lbl">Email</label>
+                        <input value={npUser} onChange={e=>setNpUser(e.target.value)} placeholder="you@email.com"
+                          style={{width:"100%",padding:"8px 10px",boxSizing:"border-box"}}/>
+                      </div>
+                      <div>
+                        <label className="lbl">Password</label>
+                        <input type="password" value={npPass} onChange={e=>setNpPass(e.target.value)} placeholder="9proxy password"
+                          style={{width:"100%",padding:"8px 10px",boxSizing:"border-box"}}
+                          onKeyDown={e=>{if(e.key==="Enter")npVerifyKey();}}/>
+                      </div>
+                    </div>
+                    <button className="btn btn-p btn-sm" onClick={npVerifyKey} disabled={npVerifying}>
+                      {npVerifying ? "Logging in..." : "Login & Connect"}
+                    </button>
+                    <div className="dim2 xs mt6">If you signed up with Google, set a password at 9proxy.com → Account Settings</div>
+                  </div>
+                )}
+                {!npNeedsLogin && <div className="dim2 xs mt6">The server auto-detects your 9proxy installation.</div>}
+                {npError && !npNeedsLogin && <div style={{color:"var(--err)",fontSize:12,marginTop:8}}>{npError}</div>}
               </div>
             )}
           </div>
