@@ -75,6 +75,45 @@ else
         || echo "    ✗ impacket (SMB auto-deploy disabled, everything else works)"
 fi
 python3 -c "import bcrypt, requests, paramiko, socks; print('  python deps: ok')" 2>/dev/null || echo "  python deps: partial"
+# ── 9Proxy client ──
+if ! command -v 9proxy &>/dev/null; then
+    echo "  Installing 9proxy..."
+    DEB_FILE="/tmp/9proxy-linux-debian-amd64.deb"
+    wget -q -O "$DEB_FILE" "https://static.9proxy-cdn.net/download/latest/linux/9proxy-linux-debian-amd64.deb" 2>/dev/null \
+        || curl -sL -o "$DEB_FILE" "https://static.9proxy-cdn.net/download/latest/linux/9proxy-linux-debian-amd64.deb" 2>/dev/null
+    if [ -f "$DEB_FILE" ] && [ "$(wc -c < "$DEB_FILE")" -gt 1000 ]; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$DEB_FILE" >/dev/null 2>&1 && echo "    ✓ 9proxy" || echo "    ✗ 9proxy (non-critical)"
+        rm -f "$DEB_FILE"
+    else
+        echo "    ✗ 9proxy download failed (non-critical)"
+    fi
+else
+    echo "  ✓ 9proxy (already installed)"
+fi
+if command -v 9proxy &>/dev/null; then
+    systemctl start 9proxyd.service 2>/dev/null || true
+    systemctl enable 9proxyd.service 2>/dev/null || true
+    # Create API service if missing
+    if [ ! -f /etc/systemd/system/9proxy-api.service ]; then
+        cat > /etc/systemd/system/9proxy-api.service << '9PEOF'
+[Unit]
+Description=9Proxy API Server
+After=network.target 9proxyd.service
+Requires=9proxyd.service
+[Service]
+Type=simple
+ExecStart=/usr/bin/9proxy api -p 2090 -s
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+9PEOF
+        systemctl daemon-reload
+    fi
+    systemctl enable 9proxy-api.service 2>/dev/null || true
+    systemctl start 9proxy-api.service 2>/dev/null || true
+    echo "  ✓ 9proxy API: port 2090"
+fi
 cat > /etc/systemd/system/synthtel.service << 'SVCEOF'
 [Unit]
 Description=SynthTel Email Server

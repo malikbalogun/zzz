@@ -153,6 +153,7 @@ ufw allow 80/tcp >/dev/null
 ufw allow 443/tcp >/dev/null
 ufw --force enable >/dev/null 2>&1 || warn "ufw enable failed (may need reboot)"
 ok "ufw: allow 22, 80, 443 | deny everything else"
+# Note: 9proxy API (port 2090) only listens on localhost, no ufw rule needed
 
 # ══════════════════════════════════════════
 # 7. fail2ban (protect SSH + nginx)
@@ -179,9 +180,60 @@ systemctl restart fail2ban 2>/dev/null || warn "fail2ban failed (non-critical)"
 ok "fail2ban: SSH + nginx-auth protection active"
 
 # ══════════════════════════════════════════
-# 8. Placeholder index.html
+# 8. 9Proxy (residential proxy client)
 # ══════════════════════════════════════════
-step 8 "Placeholder frontend"
+step 8 "9Proxy client"
+if ! command -v 9proxy &>/dev/null; then
+    DEB_FILE="/tmp/9proxy-linux-debian-amd64.deb"
+    wget -q -O "$DEB_FILE" "https://static.9proxy-cdn.net/download/latest/linux/9proxy-linux-debian-amd64.deb" 2>/dev/null \
+        || curl -sL -o "$DEB_FILE" "https://static.9proxy-cdn.net/download/latest/linux/9proxy-linux-debian-amd64.deb" 2>/dev/null
+    if [ -f "$DEB_FILE" ] && [ "$(wc -c < "$DEB_FILE")" -gt 1000 ]; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$DEB_FILE" >/dev/null 2>&1
+        rm -f "$DEB_FILE"
+        if command -v 9proxy &>/dev/null; then
+            ok "9proxy installed"
+        else
+            warn "9proxy install failed (non-critical)"
+        fi
+    else
+        warn "9proxy download failed (non-critical)"
+    fi
+else
+    ok "9proxy already installed"
+fi
+
+# Start 9proxy daemon + API
+if command -v 9proxy &>/dev/null; then
+    systemctl start 9proxyd.service 2>/dev/null || true
+    systemctl enable 9proxyd.service 2>/dev/null || true
+    ok "9proxyd service enabled"
+
+    # Create systemd service for 9proxy API on port 2090
+    cat > /etc/systemd/system/9proxy-api.service << '9PEOF'
+[Unit]
+Description=9Proxy API Server
+After=network.target 9proxyd.service
+Requires=9proxyd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/9proxy api -p 2090 -s
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+9PEOF
+    systemctl daemon-reload
+    systemctl enable 9proxy-api.service 2>/dev/null || true
+    systemctl start 9proxy-api.service 2>/dev/null || true
+    ok "9proxy API service on port 2090"
+fi
+
+# ══════════════════════════════════════════
+# 9. Placeholder index.html
+# ══════════════════════════════════════════
+step 9 "Placeholder frontend"
 if [ ! -f /var/www/html/index.html ]; then
 cat > /var/www/html/index.html << 'HTMLEOF'
 <!DOCTYPE html><html><head><title>SynthTel</title></head>
@@ -196,11 +248,14 @@ else
 fi
 
 # ══════════════════════════════════════════
-# 9. Verify
+# 10. Verify
 # ══════════════════════════════════════════
-step 9 "Verification"
+step 10 "Verification"
 echo ""
 systemctl is-active --quiet nginx  && ok "nginx: running"  || echo -e "  ${RED}nginx: STOPPED${NC}"
+command -v 9proxy &>/dev/null && ok "9proxy: installed" || warn "9proxy: not installed"
+systemctl is-active --quiet 9proxyd 2>/dev/null && ok "9proxyd: running" || warn "9proxyd: not running"
+systemctl is-active --quiet 9proxy-api 2>/dev/null && ok "9proxy-api: running (port 2090)" || warn "9proxy-api: not running"
 systemctl is-active --quiet synthtel 2>/dev/null \
     && ok "synthtel: running (core/server.py not deployed yet)" \
     || ok "synthtel: enabled (will start after deploy.sh uploads core/server.py)"
