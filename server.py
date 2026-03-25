@@ -135,6 +135,7 @@ except Exception:
 
 SESSIONS: dict       = {}   # token → {user_id, username, role, expires}
 ACTIVE_CAMPAIGNS: dict = {}  # user_id → count of running campaigns (thread-safe via lock)
+LIVE_CAMPAIGN_STATS: dict = {}  # user_id → {sent, failed, total, name, status, started_at}
 active_campaigns_lock = Lock()
 LOGIN_ATTEMPTS: dict = {}   # ip → {count, last_attempt}
 
@@ -999,7 +1000,16 @@ if(code && window.opener){{
             uid = sess["user_id"]
             with active_campaigns_lock:
                 active = ACTIVE_CAMPAIGNS.get(uid, 0)
-            # Get latest campaign run
+                live = LIVE_CAMPAIGN_STATS.get(uid)
+            # If campaign is actively running, return live stats
+            if live:
+                self._json(200, {
+                    "active": True, "active_count": active,
+                    "live": live,
+                    "latest": None,
+                })
+                return
+            # Otherwise get latest finished campaign run
             latest = None
             try:
                 with db_lock:
@@ -1015,7 +1025,7 @@ if(code && window.opener){{
                               "failed":row[4],"total":row[5],"started_at":row[6],"finished_at":row[7]}
             except Exception:
                 pass
-            self._json(200, {"active": active > 0, "active_count": active, "latest": latest})
+            self._json(200, {"active": False, "active_count": active, "live": None, "latest": latest})
 
         else:
             self._json(404, {"error": "Not found"})
@@ -1149,15 +1159,28 @@ if(code && window.opener){{
             uid = sess["user_id"]
             with active_campaigns_lock:
                 ACTIVE_CAMPAIGNS[uid] = ACTIVE_CAMPAIGNS.get(uid, 0) + 1
+                LIVE_CAMPAIGN_STATS[uid] = {
+                    "sent": 0, "failed": 0, "total": total_count,
+                    "name": camp_name, "status": "running",
+                    "method": data.get("method", "smtp"),
+                    "started_at": started_at,
+                }
 
             try:
                 data["_uid"] = sess["user_id"]
                 last_ping = time.time()
                 for event in process_campaign(data):
-                    if event.get("type") == "success":
+                    etype = event.get("type")
+                    if etype == "success":
                         sent_count += 1
-                    elif event.get("type") == "error":
+                    elif etype == "error":
                         failed_count += 1
+                    # Update live stats for cross-device polling
+                    if etype in ("success", "error"):
+                        with active_campaigns_lock:
+                            if uid in LIVE_CAMPAIGN_STATS:
+                                LIVE_CAMPAIGN_STATS[uid]["sent"] = sent_count
+                                LIVE_CAMPAIGN_STATS[uid]["failed"] = failed_count
                     try:
                         self._stream_chunk(event)
                     except (BrokenPipeError, ConnectionResetError, OSError):
@@ -1183,11 +1206,13 @@ if(code && window.opener){{
                 except Exception:
                     pass
 
-            # Decrement active campaign count
+            # Decrement active campaign count and clear live stats
             with active_campaigns_lock:
                 uid = sess.get("user_id")
                 if uid and ACTIVE_CAMPAIGNS.get(uid, 0) > 0:
                     ACTIVE_CAMPAIGNS[uid] -= 1
+                if uid and ACTIVE_CAMPAIGNS.get(uid, 0) <= 0:
+                    LIVE_CAMPAIGN_STATS.pop(uid, None)
 
             # Update campaign_runs record with final stats
             if run_id:

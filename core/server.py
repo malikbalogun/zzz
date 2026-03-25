@@ -135,6 +135,7 @@ except Exception:
 
 SESSIONS: dict       = {}   # token → {user_id, username, role, expires}
 ACTIVE_CAMPAIGNS: dict = {}  # user_id → count of running campaigns (thread-safe via lock)
+LIVE_CAMPAIGN_STATS: dict = {}  # user_id → {sent, failed, total, name, status, started_at}
 _INBOX_RUNS: dict    = {}   # run_id → {"done": bool, "results": [...]}
 active_campaigns_lock = Lock()
 LOGIN_ATTEMPTS: dict = {}   # ip → {count, last_attempt}
@@ -1252,6 +1253,12 @@ if(code && window.opener){{
             uid = sess["user_id"]
             with active_campaigns_lock:
                 ACTIVE_CAMPAIGNS[uid] = ACTIVE_CAMPAIGNS.get(uid, 0) + 1
+                LIVE_CAMPAIGN_STATS[uid] = {
+                    "sent": 0, "failed": 0, "total": total_count,
+                    "name": camp_name, "status": "running",
+                    "method": data.get("method", "smtp"),
+                    "started_at": started_at,
+                }
 
             # Telegram: send campaign start message (non-blocking)
             tg_msg_id = None
@@ -1279,6 +1286,12 @@ if(code && window.opener){{
                         proxy_dead_count += 1
                     elif etype == "done":
                         stopped = event.get("stopped", False)
+                    # Update live stats for cross-device polling
+                    if etype in ("success", "error", "done"):
+                        with active_campaigns_lock:
+                            if uid in LIVE_CAMPAIGN_STATS:
+                                LIVE_CAMPAIGN_STATS[uid]["sent"] = sent_count
+                                LIVE_CAMPAIGN_STATS[uid]["failed"] = failed_count
                     try:
                         self._stream_chunk(event)
                     except (BrokenPipeError, ConnectionResetError, OSError):
@@ -1317,11 +1330,13 @@ if(code && window.opener){{
                 except Exception:
                     pass
 
-            # Decrement active campaign count
+            # Decrement active campaign count and clear live stats
             with active_campaigns_lock:
                 uid = sess.get("user_id")
                 if uid and ACTIVE_CAMPAIGNS.get(uid, 0) > 0:
                     ACTIVE_CAMPAIGNS[uid] -= 1
+                if uid and ACTIVE_CAMPAIGNS.get(uid, 0) <= 0:
+                    LIVE_CAMPAIGN_STATS.pop(uid, None)
 
             # Telegram: send campaign completion message
             if TG_AVAILABLE:

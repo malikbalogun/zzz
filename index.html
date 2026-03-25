@@ -7497,15 +7497,8 @@ function App() {
       const d = await r.json();
       if(!d.config) return;
       const c = d.config;
-      // Only apply server draft if it's newer than local (or local is empty)
-      const local = (() => { try { return JSON.parse(localStorage.getItem("st_camp")||"{}"); } catch(e) { return {}; } })();
-      const localHasData = local.subject || local.htmlBody || local.leadsRaw || local.sendersRaw;
-      if(localHasData && d.updated_at) {
-        // If local already has data, skip — don't overwrite local edits
-        // User just refreshed same device
-        return;
-      }
-      // Fresh login on new device — apply server draft
+      // Always apply server draft — this ensures cross-device sync works.
+      // The server draft is the source of truth (saved with 3s debounce).
       const _s = (k,fn,d2) => { if(c[k]!==undefined) fn(c[k]); };
       _s("subject",setSubject); _s("extraSubjects",setExtraSubjects); _s("preheader",setPreheader);
       _s("htmlBody",setHtmlBody); _s("plainBody",setPlainBody);
@@ -7538,7 +7531,8 @@ function App() {
     } catch(e) {}
   }
 
-  // ── Poll campaign status (cross-device awareness) ──
+  // ── Poll campaign status (cross-device live monitoring) ──
+  const [remoteRunning, setRemoteRunning] = useState(false);
   useEffect(()=>{
     if(!token) return;
     let active = true;
@@ -7547,18 +7541,35 @@ function App() {
         const r = await apiCall("/api/campaign/status");
         if(!r.ok || !active) return;
         const d = await r.json();
-        if(d.active && !campRunning) {
-          // Campaign running on another device — update stats
-          if(d.latest) {
-            setCampStats(prev=>({...prev, sent:d.latest.sent||0, failed:d.latest.failed||0, total:d.latest.total||0}));
+        if(d.active && d.live) {
+          // Campaign running (possibly on another device) — show live stats
+          setRemoteRunning(true);
+          setCampStats({
+            sent: d.live.sent||0,
+            failed: d.live.failed||0,
+            total: d.live.total||0,
+            pending: (d.live.total||0) - (d.live.sent||0) - (d.live.failed||0),
+          });
+          if(!campRunning) {
+            // Show it's running on another device
+            setCampLog(prev => {
+              if(prev.length && prev[prev.length-1]._remote) return prev;
+              return [...prev, {ts: new Date().toLocaleTimeString(), type:"info", msg:`Campaign "${d.live.name}" is running (started on another device)`, _remote:true}];
+            });
+          }
+        } else {
+          if(remoteRunning) {
+            // Campaign just finished — reload history
+            setRemoteRunning(false);
+            loadHistory();
           }
         }
       } catch(e) {}
     }
-    const iv = setInterval(poll, 10000); // poll every 10s
+    const iv = setInterval(poll, 3000); // poll every 3s for responsive updates
     poll();
     return ()=>{ active=false; clearInterval(iv); };
-  },[token, campRunning]);
+  },[token]);
 
   // ── Load files on login ──
   useEffect(()=>{ if(token){ loadFiles(); loadHistory(); loadDraft(); } },[token]);
