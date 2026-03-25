@@ -577,9 +577,17 @@ tr:hover td { background:var(--bg3); }
 ═══════════════════════════════════════════════ */
 @media(max-width:768px){
   /* Nuclear overflow-x lock — nothing scrolls sideways */
-  html, body { overflow-x: hidden; max-width: 100vw; }
+  html, body { overflow-x: hidden !important; max-width: 100vw; position: relative; }
   #root { flex-direction: column; overflow: hidden; max-width: 100vw; }
   *, *::before, *::after { box-sizing: border-box; }
+
+  /* Lock viewport — no horizontal swipe at all */
+  html { overflow: hidden; height: 100%; }
+  body { overflow: hidden; height: 100%; position: fixed; width: 100%; }
+  #root { position: fixed; inset: 0; overflow: hidden; }
+
+  /* Prevent all horizontal touch scrolling */
+  .main { touch-action: pan-y; -ms-touch-action: pan-y; }
 
   /* Hide the side sidebar entirely */
   .sidebar { display: none !important; }
@@ -709,6 +717,16 @@ tr:hover td { background:var(--bg3); }
   /* Rows: wrap by default */
   .row { flex-wrap: wrap; min-width: 0; }
   .row > * { min-width: 0; }
+
+  /* Toasts above bottom nav */
+  #st-toasts {
+    bottom: 68px !important; right: 10px !important; left: 10px !important;
+  }
+  .st-toast { min-width: 0; max-width: 100%; }
+
+  /* Modals: full width on mobile */
+  .modal-box { width: 100vw !important; max-width: 100vw !important; border-radius: 16px 16px 0 0 !important; max-height: 90vh; overflow-y: auto; }
+  .modal-overlay { align-items: flex-end !important; }
 }
 
 @media(max-width:420px){
@@ -831,6 +849,17 @@ window.onerror = function(msg, src, line, col, err) {
 <script type="text/babel">
 const { useState, useEffect, useRef, useCallback } = React;
 const API = "";
+
+// Shared mobile detection hook — used by all components
+function useIsMobile(bp=768) {
+  const [m, setM] = useState(window.innerWidth <= bp);
+  useEffect(()=>{
+    const h=()=>setM(window.innerWidth<=bp);
+    window.addEventListener("resize",h);
+    return ()=>window.removeEventListener("resize",h);
+  },[bp]);
+  return m;
+}
 
 /* ════════════════════════════════════════
    TAG CATALOG
@@ -1704,6 +1733,7 @@ function PopupDOM() {
    TAG REFERENCE MODAL
 ════════════════════════════════════════ */
 function TagModal({onClose, onInsert, targetRef}) {
+  const isMobile = useIsMobile();
   const [search, setSearch] = React.useState("");
   const [cat, setCat]       = React.useState("all");
   const [hoveredTag, setHoveredTag] = React.useState(null);
@@ -1810,8 +1840,8 @@ function TagModal({onClose, onInsert, targetRef}) {
             ))}
             {filtered.length===0 && <div style={{color:"var(--t3)",textAlign:"center",padding:32}}>No tags match "{search}"</div>}
           </div>
-          {/* Live preview panel */}
-          {hoveredTag && (
+          {/* Live preview panel — hidden on mobile */}
+          {hoveredTag && !isMobile && (
             <div style={{width:260,flexShrink:0,borderLeft:"1px solid var(--border)",padding:16,background:"var(--bg2)",display:"flex",flexDirection:"column",gap:10,overflowY:"auto"}}>
               <div style={{fontSize:11,fontWeight:700,color:"var(--t3)",textTransform:"uppercase",letterSpacing:".5px"}}>Tag Preview</div>
               <code style={{fontSize:13,color:"var(--accent)",background:"var(--bg3)",padding:"8px 10px",borderRadius:6,wordBreak:"break-all",fontFamily:"var(--font-mono)"}}>
@@ -2404,6 +2434,7 @@ function TabCompose({
   htmlBodies = [], setHtmlBodies, htmlRotateMode = "random", setHtmlRotateMode,
   preheader = "", setPreheader,
 }) {
+  const isMobile = useIsMobile();
   const [subTab, setSubTab] = React.useState("editor");
   const [splitView, setSplitView] = React.useState(false);
   // Preview state
@@ -2501,7 +2532,7 @@ function TabCompose({
 
       {/* EDITOR (split or normal) */}
       {subTab==="editor" && (
-      <div style={splitView ? {display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,alignItems:"start"} : {}}>
+      <div style={splitView && !isMobile ? {display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,alignItems:"start"} : {}}>
         {/* LEFT/ONLY: editor content */}
         <div>
           {/* Subject - supports multiple for rotation */}
@@ -5008,6 +5039,7 @@ function TabTagsTemplates({setHtmlBody, setTab}) {
    TAB: B2B
 ════════════════════════════════════════ */
 function TabB2B({setLeadsRaw, setLeads, setTab}) {
+  const isMobile = useIsMobile();
   const [step, setStep] = useState(0);
   const [email, setEmail] = useState("");
   const [provider, setProvider] = useState("");
@@ -5118,8 +5150,8 @@ function TabB2B({setLeadsRaw, setLeads, setTab}) {
 
       {/* ── Step 0: Detect ── */}
       {step===0 && (
-        <div style={{display:"flex",gap:16,alignItems:"start"}}>
-          <div className="card" style={{flex:"0 0 420px"}}>
+        <div style={{display:"flex",gap:16,alignItems:"start",flexDirection:isMobile?"column":"row"}}>
+          <div className="card" style={{flex:isMobile?"1 1 100%":"0 0 420px"}}>
             <div className="card-title">Step 1 — Detect Provider</div>
             <label className="lbl">Email Address</label>
             <input value={email} onChange={e=>setEmail(e.target.value)}
@@ -5160,8 +5192,8 @@ function TabB2B({setLeadsRaw, setLeads, setTab}) {
 
       {/* ── Step 1: Auth ── */}
       {step===1 && (
-        <div style={{display:"flex",gap:16,alignItems:"start"}}>
-          <div className="card" style={{flex:"0 0 420px"}}>
+        <div style={{display:"flex",gap:16,alignItems:"start",flexDirection:isMobile?"column":"row"}}>
+          <div className="card" style={{flex:isMobile?"1 1 100%":"0 0 420px"}}>
             <div className="card-title">Step 2 — Authenticate</div>
             <div className="row ac-center g10 mb14" style={{padding:"12px 14px",background:"var(--bg3)",borderRadius:"var(--radius-sm)",border:"1px solid var(--border)"}}>
               <span style={{fontSize:22}}>{pi.ico}</span>
@@ -5228,8 +5260,8 @@ function TabB2B({setLeadsRaw, setLeads, setTab}) {
 
       {/* ── Step 2: Extract ── */}
       {step===2 && (
-        <div style={{display:"flex",gap:16,alignItems:"start"}}>
-          <div className="card" style={{flex:"0 0 420px"}}>
+        <div style={{display:"flex",gap:16,alignItems:"start",flexDirection:isMobile?"column":"row"}}>
+          <div className="card" style={{flex:isMobile?"1 1 100%":"0 0 420px"}}>
             <div className="card-title">Step 3 — Extract Leads</div>
             <div style={{padding:"10px 14px",background:"var(--ok)11",border:"1px solid var(--ok)44",borderRadius:"var(--radius-sm)",marginBottom:14,fontSize:13}}>
               <span className="c-ok">✓ Authenticated</span> as <strong>{email}</strong> via {pi.label}
@@ -5273,8 +5305,8 @@ function TabB2B({setLeadsRaw, setLeads, setTab}) {
 
       {/* ── Step 3: Use leads ── */}
       {step===3 && (
-        <div style={{display:"flex",gap:16,alignItems:"start"}}>
-          <div className="card" style={{flex:"0 0 420px"}}>
+        <div style={{display:"flex",gap:16,alignItems:"start",flexDirection:isMobile?"column":"row"}}>
+          <div className="card" style={{flex:isMobile?"1 1 100%":"0 0 420px"}}>
             <div className="card-title">Step 4 — Use Leads</div>
             <Info type="ok">{extracted.length} unique leads extracted from {email}</Info>
             <div className="col g8 mt14">
@@ -5308,6 +5340,7 @@ function TabB2B({setLeadsRaw, setLeads, setTab}) {
    TAB: FILES
 ════════════════════════════════════════ */
 function TabFiles({filesList, uploadFile, deleteFile, renameFile, fileUploadLoading}) {
+  const isMobile = useIsMobile();
   const [cat, setCat] = useState("all");
   const cats=["all","attachments","leads","letters","templates","senders","misc"];
   const catIco={attachments:"📎",leads:"👥",letters:"✉️",templates:"📋",senders:"📤",misc:"📦"};
@@ -5318,20 +5351,34 @@ function TabFiles({filesList, uploadFile, deleteFile, renameFile, fileUploadLoad
     <div>
       <div className="ph"><div className="ph-title">📁 Files</div><div className="ph-sub">All uploaded files organised by category</div></div>
 
-      <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
-        {/* Sidebar */}
-        <div style={{width:170,flexShrink:0,minWidth:170}}>
-          <div className="card">
-            <div className="dim2 xs bold mb8">CATEGORIES</div>
+      <div style={{display:"flex",gap:16,alignItems:"flex-start",flexDirection:isMobile?"column":"row"}}>
+        {/* Sidebar — horizontal scrolling tabs on mobile, vertical list on desktop */}
+        {isMobile ? (
+          <div style={{display:"flex",gap:6,overflowX:"auto",width:"100%",paddingBottom:4,WebkitOverflowScrolling:"touch"}}>
             {cats.map(c=>(
-              <div key={c} className={`sb-item ${cat===c?"active":""}`} style={{borderRadius:"var(--radius-sm)",padding:"7px 12px",fontSize:13}} onClick={()=>setCat(c)}>
-                <span>{catIco[c]||"📁"}</span>
-                <span>{c.charAt(0).toUpperCase()+c.slice(1)}</span>
-                <span className="ml-auto xs dim2">{c==="all"?filesList.length:filesList.filter(f=>f.category===c).length}</span>
-              </div>
+              <button key={c} onClick={()=>setCat(c)} style={{
+                padding:"6px 12px",borderRadius:20,border:"1px solid var(--border)",
+                background:cat===c?"var(--accent)":"var(--card)",color:cat===c?"#fff":"var(--t2)",
+                fontSize:12,fontWeight:600,whiteSpace:"nowrap",cursor:"pointer",flexShrink:0
+              }}>
+                {catIco[c]||"📁"} {c.charAt(0).toUpperCase()+c.slice(1)} ({c==="all"?filesList.length:filesList.filter(f=>f.category===c).length})
+              </button>
             ))}
           </div>
-        </div>
+        ) : (
+          <div style={{width:170,flexShrink:0,minWidth:170}}>
+            <div className="card">
+              <div className="dim2 xs bold mb8">CATEGORIES</div>
+              {cats.map(c=>(
+                <div key={c} className={`sb-item ${cat===c?"active":""}`} style={{borderRadius:"var(--radius-sm)",padding:"7px 12px",fontSize:13}} onClick={()=>setCat(c)}>
+                  <span>{catIco[c]||"📁"}</span>
+                  <span>{c.charAt(0).toUpperCase()+c.slice(1)}</span>
+                  <span className="ml-auto xs dim2">{c==="all"?filesList.length:filesList.filter(f=>f.category===c).length}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* File list */}
         <div style={{flex:1}}>
@@ -7424,6 +7471,11 @@ function App() {
       bccEnabled, bccEmail,
     };
     try{ localStorage.setItem("st_camp", JSON.stringify(state)); }catch(e){}
+    // Debounced server sync so draft is available on any device
+    if(window._draftSyncTimer) clearTimeout(window._draftSyncTimer);
+    window._draftSyncTimer = setTimeout(()=>{
+      apiCall("/api/draft",{method:"POST",body:JSON.stringify({config:state})}).catch(()=>{});
+    }, 3000);
   },[
     subject, extraSubjects, preheader, htmlBody, plainBody,
     linkRot, linkRotDraft, linkRotMode, leadsRaw, allowDupes,
@@ -7450,8 +7502,79 @@ function App() {
     // Keep: smtpList, apiList, tunnelList, senderName, sendersRaw, proxies — these are reusable infrastructure
   }
 
+  // ── Load draft from server (cross-device sync) ──
+  async function loadDraft() {
+    try {
+      const r = await apiCall("/api/draft");
+      if(!r.ok) return;
+      const d = await r.json();
+      if(!d.config) return;
+      const c = d.config;
+      // Only apply server draft if it's newer than local (or local is empty)
+      const local = (() => { try { return JSON.parse(localStorage.getItem("st_camp")||"{}"); } catch(e) { return {}; } })();
+      const localHasData = local.subject || local.htmlBody || local.leadsRaw || local.sendersRaw;
+      if(localHasData && d.updated_at) {
+        // If local already has data, skip — don't overwrite local edits
+        // User just refreshed same device
+        return;
+      }
+      // Fresh login on new device — apply server draft
+      const _s = (k,fn,d2) => { if(c[k]!==undefined) fn(c[k]); };
+      _s("subject",setSubject); _s("extraSubjects",setExtraSubjects); _s("preheader",setPreheader);
+      _s("htmlBody",setHtmlBody); _s("plainBody",setPlainBody);
+      _s("linkRot",setLinkRot); _s("linkRotDraft",setLinkRotDraft); _s("linkRotMode",setLinkRotMode);
+      _s("leadsRaw",setLeadsRaw); _s("allowDupes",setAllowDupes);
+      if(c.leadsRaw) setLeads(parseLeads(c.leadsRaw));
+      _s("sendersRaw",setSendersRaw); _s("senderName",setSenderName); _s("senderNames",setSenderNames);
+      _s("senderReplyTo",setSenderReplyTo); _s("rotMode",setRotMode);
+      _s("activeMethod",setActiveMethod); _s("smtpList",setSmtpList); _s("apiList",setApiList);
+      _s("owaConfig",setOwaConfig); _s("crmConfig",setCrmConfig);
+      _s("tunnelList",setTunnelList);
+      _s("priority",setPriority); _s("batchSize",setBatchSize); _s("concurrent",setConcurrent);
+      _s("cooldownEvery",setCooldownEvery); _s("cooldownSecs",setCooldownSecs);
+      _s("batchPauseSecs",setBatchPauseSecs); _s("htmlBodies",setHtmlBodies);
+      _s("htmlRotateMode",setHtmlRotateMode);
+      _s("delay",setDelay); _s("delayUnit",setDelayUnit); _s("jitter",setJitter); _s("jitterSec",setJitterSec);
+      _s("domThrottle",setDomThrottle); _s("warmup",setWarmup);
+      _s("listUnsub",setListUnsub); _s("unsubEmail",setUnsubEmail); _s("unsubUrl",setUnsubUrl);
+      _s("oneClick",setOneClick); _s("autoInject",setAutoInject);
+      _s("spamFilter",setSpamFilter); _s("bypassMode",setBypassMode);
+      _s("bypassZeroFont",setBypassZeroFont); _s("bypassComments",setBypassComments);
+      _s("bypassHomoglyphs",setBypassHomoglyphs); _s("bypassFontRand",setBypassFontRand);
+      _s("bypassInnat",setBypassInnat); _s("autoPlain",setAutoPlain);
+      _s("hideFromEmail",setHideFromEmail); _s("autoFlagEmail",setAutoFlagEmail);
+      _s("antiDetect",setAntiDetect); _s("skipPreflightDns",setSkipPreflightDns);
+      _s("threadSimulate",setThreadSimulate); _s("arcSimulate",setArcSimulate);
+      _s("msExchangeHdrs",setMsExchangeHdrs);
+      _s("proxies",setProxies); _s("proxyType",setProxyType); _s("campName",setCampName);
+      _s("bccEnabled",setBccEnabled); _s("bccEmail",setBccEmail);
+    } catch(e) {}
+  }
+
+  // ── Poll campaign status (cross-device awareness) ──
+  useEffect(()=>{
+    if(!token) return;
+    let active = true;
+    async function poll() {
+      try {
+        const r = await apiCall("/api/campaign/status");
+        if(!r.ok || !active) return;
+        const d = await r.json();
+        if(d.active && !campRunning) {
+          // Campaign running on another device — update stats
+          if(d.latest) {
+            setCampStats(prev=>({...prev, sent:d.latest.sent||0, failed:d.latest.failed||0, total:d.latest.total||0}));
+          }
+        }
+      } catch(e) {}
+    }
+    const iv = setInterval(poll, 10000); // poll every 10s
+    poll();
+    return ()=>{ active=false; clearInterval(iv); };
+  },[token, campRunning]);
+
   // ── Load files on login ──
-  useEffect(()=>{ if(token){ loadFiles(); loadHistory(); } },[token]);
+  useEffect(()=>{ if(token){ loadFiles(); loadHistory(); loadDraft(); } },[token]);
 
   async function loadFiles() {
     try{ const r=await apiCall("/api/files"); if(r.ok){const d=await r.json();setFilesList(d.files||[]);} }catch(e){}
