@@ -717,59 +717,6 @@ class SynthTelHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    _9proxy_api_error = ""  # last error from API start attempt
-
-    def _ensure_9proxy_api(self):
-        """Find or start the 9proxy local HTTP API. Returns base URL or None."""
-        import subprocess, shutil, re, time
-        self._9proxy_api_error = ""
-
-        # Check if API is already listening
-        try:
-            ss_out = subprocess.check_output(["ss", "-tlnp"], timeout=5).decode()
-            for line in ss_out.split("\n"):
-                if "9proxy" in line:
-                    m = re.search(r"127\.0\.0\.1:(\d+)", line)
-                    if m:
-                        port = int(m.group(1))
-                        if port < 60000 or port > 60099:
-                            try:
-                                resp = urlopen(Request(f"http://127.0.0.1:{port}/api/proxy?response_type=2&count=1"), timeout=3)
-                                if resp.status == 200:
-                                    return f"http://127.0.0.1:{port}"
-                            except Exception:
-                                pass
-        except Exception:
-            pass
-
-        # API not running — try to start it
-        nine_bin = shutil.which("9proxy")
-        if not nine_bin:
-            self._9proxy_api_error = "9proxy binary not found"
-            return None
-        try:
-            result = subprocess.run(
-                [nine_bin, "api", "-s", "-p", "2090"],
-                capture_output=True, text=True, timeout=15
-            )
-            api_out = (result.stdout + result.stderr).strip()
-            log.info("9proxy api start: %s", api_out)
-            if "log-in" in api_out.lower() or "login" in api_out.lower():
-                self._9proxy_api_error = "needs_login"
-                return None
-            # Wait for it to come up
-            for _ in range(5):
-                time.sleep(1)
-                try:
-                    resp = urlopen(Request("http://127.0.0.1:2090/api/proxy?response_type=2&count=1"), timeout=3)
-                    if resp.status == 200:
-                        return "http://127.0.0.1:2090"
-                except Exception:
-                    pass
-            self._9proxy_api_error = api_out[:200] if api_out else "API did not start"
-        except Exception as e:
-            self._9proxy_api_error = str(e)[:200]
-        return None
 
     # ── OPTIONS ──────────────────────────────────────────────
 
@@ -2893,7 +2840,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             except Exception as e:
                 self._json(200, {"status": "error", "message": f"SSH failed: {e}"})
 
-        # ── 9Proxy Integration ─────────────────────────────────
+        # ── 9Proxy Integration (CLI-based, no HTTP API needed) ──
         elif p == "/api/9proxy/verify":
             if not (sess := self._auth()): return
             try:
@@ -2906,18 +2853,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             if not nine_bin:
                 self._json(200, {"status": "error", "message": "9proxy is not installed on this server."}); return
 
-            # Check if daemon is running, start if not
-            try:
-                ps_out = subprocess.check_output(["pgrep", "-f", "9proxy"], timeout=5).decode().strip()
-            except Exception:
-                ps_out = ""
-            if not ps_out:
-                try:
-                    subprocess.Popen([nine_bin, "-daemon"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    import time; time.sleep(2)
-                except Exception:
-                    pass
-
             # If credentials provided, do login first
             np_user = (data.get("username") or "").strip()
             np_pass = (data.get("password") or "").strip()
@@ -2928,20 +2863,40 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                         capture_output=True, text=True, timeout=30
                     )
                     auth_out = (result.stdout + result.stderr).strip()
-                    if "error" in auth_out.lower() or result.returncode != 0:
+                    if "error" in auth_out.lower() and result.returncode != 0:
                         self._json(200, {"status": "error", "message": f"Login failed: {auth_out[:200]}"}); return
                 except Exception as e:
                     self._json(200, {"status": "error", "message": f"Login error: {str(e)[:200]}"}); return
 
-            # Try to start the API
-            api_url = self._ensure_9proxy_api()
-            if api_url:
-                self._json(200, {"status": "ok", "message": f"9proxy ready — API on {api_url}"})
-            elif self._9proxy_api_error == "needs_login":
-                self._json(200, {"status": "needs_login", "message": "9proxy needs login. Enter your 9proxy email and password."})
-            else:
-                err = self._9proxy_api_error or "Unknown error"
-                self._json(200, {"status": "error", "message": f"Could not start 9proxy API: {err}"})
+            # Check if daemon is running, start if not
+            try:
+                ps_out = subprocess.check_output(["pgrep", "-f", "9proxy"], timeout=5).decode().strip()
+            except Exception:
+                ps_out = ""
+            if not ps_out:
+                try:
+                    subprocess.Popen([nine_bin, "-daemon"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    import time; time.sleep(3)
+                except Exception:
+                    pass
+
+            # Check balance to verify it's working
+            try:
+                result = subprocess.run(
+                    [nine_bin, "proxy", "-b"],
+                    capture_output=True, text=True, timeout=15
+                )
+                bal_out = (result.stdout + result.stderr).strip()
+                if "log-in" in bal_out.lower() or "login" in bal_out.lower():
+                    self._json(200, {"status": "needs_login", "message": "9proxy needs login. Enter your 9proxy.com email and password."})
+                    return
+                # Parse remaining IPs
+                import re
+                m = re.search(r"(\d+)", bal_out.split("Remaining")[-1] if "Remaining" in bal_out else bal_out)
+                remaining = m.group(1) if m else "?"
+                self._json(200, {"status": "ok", "message": f"9proxy connected — {remaining} IPs remaining"})
+            except Exception as e:
+                self._json(200, {"status": "error", "message": f"Could not check 9proxy: {str(e)[:200]}"})
 
         elif p == "/api/9proxy/fetch":
             if not (sess := self._auth()): return
@@ -2949,63 +2904,70 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            country   = data.get("country", "CA")
-            isp       = data.get("isp", "")
-            count     = int(data.get("count", 10))
-            plan_type = data.get("planType", "premium")
 
-            api_url = self._ensure_9proxy_api()
-            if not api_url:
-                self._json(200, {"status": "error", "message": "9proxy API is not available. Click 'Save & Verify' first to start it."}); return
+            import shutil, subprocess
+            nine_bin = shutil.which("9proxy")
+            if not nine_bin:
+                self._json(200, {"status": "error", "message": "9proxy not installed"}); return
 
-            # Build query — no api_key needed, daemon is already authenticated
-            params = [f"response_type=2", f"country={country}", f"count={count}"]
-            if isp:
-                params.append(f"isp={isp}")
-            if plan_type:
-                params.append(f"plan_type={plan_type}")
-            qs = "&".join(params)
-            result_data = None
-            err_msg = ""
-            endpoints = [
-                f"{api_url}/api/today_list?{qs}",
-                f"{api_url}/api/proxy?{qs}",
-            ]
-            for ep in endpoints:
+            country = data.get("country", "CA")
+            count   = int(data.get("count", 10))
+            count   = min(count, 10)  # max 10 ports (60000-60009)
+
+            # Get current port status
+            try:
+                result = subprocess.run(
+                    [nine_bin, "port", "-s"],
+                    capture_output=True, text=True, timeout=10
+                )
+                port_out = result.stdout
+            except Exception:
+                port_out = ""
+
+            # Find free ports
+            import re
+            free_ports = []
+            for line in port_out.split("\n"):
+                if "Free" in line:
+                    m = re.search(r":(\d+)", line)
+                    if m:
+                        free_ports.append(int(m.group(1)))
+
+            if not free_ports:
+                # Kill all ports and retry
+                for port in range(60000, 60010):
+                    try:
+                        subprocess.run([nine_bin, "port", "-k", str(port)],
+                            capture_output=True, timeout=5)
+                    except Exception:
+                        pass
+                free_ports = list(range(60000, 60010))
+
+            use_ports = free_ports[:count]
+            assigned = []
+            errors = []
+
+            for port in use_ports:
                 try:
-                    req = Request(ep)
-                    resp = urlopen(req, timeout=20)
-                    body = resp.read().decode("utf-8", errors="replace")
-                    if resp.status == 200:
-                        try:
-                            j = json.loads(body)
-                            if j.get("error") is True:
-                                err_msg = j.get("message", "API error")
-                                continue
-                            result_data = j
-                            break
-                        except json.JSONDecodeError:
-                            # Parse text format: each line is a proxy
-                            lines = [l.strip() for l in body.strip().split("\n") if l.strip()]
-                            if lines:
-                                proxies_parsed = []
-                                for line in lines:
-                                    parts = line.split(":")
-                                    if len(parts) >= 2:
-                                        proxies_parsed.append({
-                                            "address": parts[0] if "." in parts[0] else (parts[2] if len(parts) > 2 and "." in parts[2] else parts[0]),
-                                            "port": parts[1] if parts[1].isdigit() else (parts[3] if len(parts) > 3 and parts[3].isdigit() else "17521"),
-                                            "raw": line
-                                        })
-                                result_data = {"data": proxies_parsed}
-                                break
+                    cmd = [nine_bin, "proxy", "-c", country, "-p", str(port)]
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    out = (result.stdout + result.stderr).strip()
+                    if result.returncode != 0 and "error" in out.lower():
+                        errors.append(f"Port {port}: {out[:100]}")
+                    else:
+                        assigned.append({
+                            "host": "127.0.0.1",
+                            "port": str(port),
+                            "address": "127.0.0.1",
+                            "raw": f"socks5://127.0.0.1:{port}",
+                        })
                 except Exception as e:
-                    err_msg = str(e)[:200]
-                    continue
-            if result_data:
-                self._json(200, {"status": "ok", "data": result_data.get("data", result_data)})
+                    errors.append(f"Port {port}: {str(e)[:100]}")
+
+            if assigned:
+                self._json(200, {"status": "ok", "data": assigned})
             else:
-                self._json(200, {"status": "error", "message": err_msg or "Could not fetch proxies from 9proxy API"})
+                self._json(200, {"status": "error", "message": "; ".join(errors) or "No proxies assigned"})
 
         # ── Validate sender email addresses (MX check) ───────
         elif p == "/api/validate-senders":

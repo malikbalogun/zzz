@@ -4365,10 +4365,10 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
   React.useEffect(()=>{ setNpIsp(""); },[npCountry]);
 
   async function npVerifyKey(){
-    if(!npApiKey.trim()){ showToast("err","Missing","Enter your 9Proxy API key."); return; }
     setNpVerifying(true); setNpError("");
     try {
-      const payload = {key:npApiKey.trim()};
+      const payload = {};
+      if(npApiKey.trim()) payload.key = npApiKey.trim();
       if(npUser.trim()) payload.username = npUser.trim();
       if(npPass.trim()) payload.password = npPass.trim();
       const r = await apiCall("/api/9proxy/verify",{method:"POST",body:JSON.stringify(payload)});
