@@ -4366,11 +4366,10 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
     if(!npApiKey.trim()){ showToast("err","Missing","Enter your 9Proxy API key."); return; }
     setNpVerifying(true); setNpError("");
     try {
-      const r = await apiCall("/api/9proxy/verify",{method:"POST",body:JSON.stringify({key:npApiKey.trim(), url:npApiUrl.trim()})});
+      const r = await apiCall("/api/9proxy/verify",{method:"POST",body:JSON.stringify({key:npApiKey.trim()})});
       const d = await r.json();
       if(d.status==="ok"){
         localStorage.setItem("9proxy_key", npApiKey.trim());
-        localStorage.setItem("9proxy_url", npApiUrl.trim());
         setNpKeyOk(true);
         showToast("ok","Verified","9Proxy API key is valid.");
       } else {
@@ -4384,7 +4383,6 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
 
   function npRemoveKey(){
     localStorage.removeItem("9proxy_key");
-    localStorage.removeItem("9proxy_url");
     setNpApiKey(""); setNpKeyOk(false); setNpError("");
     showToast("ok","Removed","9Proxy API key removed.");
   }
@@ -4394,7 +4392,7 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
     setNpFetching(true); setNpError(""); setNpResult(null);
     try {
       const r = await apiCall("/api/9proxy/fetch",{method:"POST",body:JSON.stringify({
-        key:npApiKey.trim(), url:npApiUrl.trim(),
+        key:npApiKey.trim(),
         country:npCountry, isp:npIsp, count:parseInt(npCount)||10,
         planType: npPlan==="ip"?"premium":"free"
       })});
@@ -4604,16 +4602,7 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
                     {npVerifying ? "Verifying..." : "Save & Verify"}
                   </button>
                 </div>
-                <details style={{marginTop:8}}>
-                  <summary className="dim2 xs" style={{cursor:"pointer"}}>Advanced: Custom API URL</summary>
-                  <div style={{marginTop:6}}>
-                    <label className="lbl">9Proxy API URL</label>
-                    <input value={npApiUrl} onChange={e=>setNpApiUrl(e.target.value)}
-                      placeholder="http://localhost:2090"
-                      style={{width:"100%",fontSize:12,padding:"8px 10px",fontFamily:"var(--font-mono)",boxSizing:"border-box"}}/>
-                    <div className="dim2 xs mt4">Default: http://localhost:2090 (local 9proxy app). Change if your API runs on a different port.</div>
-                  </div>
-                </details>
+                <div className="dim2 xs mt6">The server auto-detects your 9proxy installation. Just paste your API key.</div>
                 {npError && <div style={{color:"var(--err)",fontSize:12,marginTop:8}}>{npError}</div>}
               </div>
             )}
