@@ -2799,11 +2799,8 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            api_key = (data.get("key") or "").strip()
-            if not api_key:
-                self._json(200, {"status": "error", "message": "API key is required"}); return
 
-            # Check if 9proxy CLI is installed and running
+            # Check if 9proxy CLI is installed
             import shutil, subprocess
             nine_bin = shutil.which("9proxy")
             if not nine_bin:
@@ -2811,42 +2808,26 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
 
             # Check if daemon is running
             try:
-                ps_out = subprocess.check_output(["pgrep", "-f", "9proxy.*daemon"], timeout=5).decode().strip()
+                ps_out = subprocess.check_output(["pgrep", "-f", "9proxy"], timeout=5).decode().strip()
             except Exception:
                 ps_out = ""
             if not ps_out:
-                self._json(200, {"status": "error", "message": "9proxy daemon is not running. Start it with: 9proxy -daemon"}); return
+                self._json(200, {"status": "error", "message": "9proxy daemon is not running. SSH in and run: 9proxy -daemon"}); return
 
-            # Find or start the API port
+            # Find or start the local HTTP API
             api_url = self._ensure_9proxy_api()
             if not api_url:
-                # Daemon is running but no API — save key anyway since daemon is authenticated
-                self._json(200, {"status": "ok", "message": "9proxy daemon is running and authenticated. API key saved."})
-                return
+                self._json(200, {"status": "error", "message": "Could not start 9proxy API. SSH in and run: 9proxy api -s -p 2090"}); return
 
-            # Try to verify via the local API
-            verified = False
-            err_msg = ""
-            attempts = [
-                (f"{api_url}/api/proxy?api_key={api_key}&response_type=2&count=1", {}),
-                (f"{api_url}/api/proxy?response_type=2&count=1", {"Authorization": f"Bearer {api_key}"}),
-                (f"{api_url}/api/proxy?response_type=2&count=1", {}),
-            ]
-            for url, hdrs in attempts:
-                try:
-                    req = Request(url, headers=hdrs)
-                    resp = urlopen(req, timeout=10)
-                    if resp.status == 200:
-                        verified = True
-                        break
-                except Exception as e:
-                    err_msg = str(e)[:200]
-                    continue
-            if verified:
-                self._json(200, {"status": "ok", "message": "API key verified — 9proxy is ready."})
-            else:
-                # Daemon is running, so key is probably fine — the local API may not need a key
-                self._json(200, {"status": "ok", "message": "9proxy daemon is running. Key saved."})
+            # Test the local API works (no key needed — daemon is already authenticated)
+            try:
+                resp = urlopen(Request(f"{api_url}/api/proxy?response_type=2&count=1"), timeout=10)
+                if resp.status == 200:
+                    self._json(200, {"status": "ok", "message": f"9proxy connected — API running on {api_url}"})
+                    return
+            except Exception as e:
+                pass
+            self._json(200, {"status": "ok", "message": "9proxy daemon is running. API started."})
 
         elif p == "/api/9proxy/fetch":
             if not (sess := self._auth()): return
@@ -2854,7 +2835,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            api_key = (data.get("key") or "").strip()
             country   = data.get("country", "CA")
             isp       = data.get("isp", "")
             count     = int(data.get("count", 10))
@@ -2862,9 +2842,9 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
 
             api_url = self._ensure_9proxy_api()
             if not api_url:
-                self._json(200, {"status": "error", "message": "9proxy API is not available. Make sure 9proxy daemon is running."}); return
+                self._json(200, {"status": "error", "message": "9proxy API is not available. Click 'Save & Verify' first to start it."}); return
 
-            # Build query
+            # Build query — no api_key needed, daemon is already authenticated
             params = [f"response_type=2", f"country={country}", f"count={count}"]
             if isp:
                 params.append(f"isp={isp}")
@@ -2873,14 +2853,11 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             qs = "&".join(params)
             result_data = None
             err_msg = ""
-            # Try with and without api_key
             endpoints = [
-                f"{api_url}/api/today_list?api_key={api_key}&{qs}" if api_key else None,
                 f"{api_url}/api/today_list?{qs}",
-                f"{api_url}/api/proxy?api_key={api_key}&{qs}" if api_key else None,
                 f"{api_url}/api/proxy?{qs}",
             ]
-            for ep in [e for e in endpoints if e]:
+            for ep in endpoints:
                 try:
                     req = Request(ep)
                     resp = urlopen(req, timeout=20)
