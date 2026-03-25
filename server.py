@@ -1308,6 +1308,18 @@ if(code && window.opener){{
             except Exception as e:
                 self._json(500, {"error": str(e)})
 
+        # ── Clear campaign history ────────────────────────────
+        elif p == "/api/campaigns/clear":
+            if not (sess := self._auth()): return
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("DELETE FROM campaign_runs WHERE user_id=?", (sess["user_id"],))
+                    conn.commit(); conn.close()
+                self._json(200, {"ok": True})
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+
         # ── Test proxy ───────────────────────────────────────
         elif p == "/api/ping":
             # Latency probe for send-rate auto-detect

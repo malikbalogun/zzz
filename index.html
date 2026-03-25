@@ -518,7 +518,7 @@ textarea { resize: vertical; min-height: 80px; }
 .div-lbl::before,.div-lbl::after { content:'';flex:1;height:1px;background:var(--border); }
 
 /* ═══════════════ TABLE ═══════════════ */
-.tw { border:1px solid var(--border);border-radius:var(--radius);overflow:hidden; }
+.tw { border:1px solid var(--border);border-radius:var(--radius);overflow:auto; }
 table { width:100%;border-collapse:collapse; }
 th { background:var(--bg3);padding:9px 14px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--t3);border-bottom:1px solid var(--border); }
 td { padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle; }
@@ -1949,7 +1949,7 @@ function TabCampaign({
   bypassMode, setBypassMode, bypassZeroFont, setBypassZeroFont,
   bypassComments, setBypassComments, bypassHomoglyphs, setBypassHomoglyphs,
   bypassFontRand, setBypassFontRand, bypassInnat, setBypassInnat,
-  newCampaign,
+  newCampaign, clearHistory,
   bccEnabled, setBccEnabled, bccEmail, setBccEmail,
 }) {
   const pct = stats.total>0 ? Math.round((stats.sent+stats.failed)/stats.total*100) : 0;
@@ -2292,9 +2292,9 @@ function TabCampaign({
       </div>
 
       {/* ── Log ── */}
-      <div className="card" style={{minHeight:280,display:"flex",flexDirection:"column"}}>
-        <div className="row ac-center jb mb12">
-          <div className="row ac-center g8">
+      <div className="card" style={{minHeight:280,flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        <div className="row ac-center jb mb12" style={{flexShrink:0}}>
+          <div className="row ac-center g8" style={{flexWrap:"wrap",minWidth:0}}>
             <div className="card-title" style={{marginBottom:0}}>📋 Send Log</div>
             <div className="tab-bar" style={{marginBottom:0,borderBottom:"none"}}>
               {[["live","Live"],["sent",`Sent (${sentEntries.length})`],["failed",`Failed (${failedEntries.length})`],["history","History"]].map(([k,l])=>(
@@ -2302,12 +2302,12 @@ function TabCampaign({
               ))}
             </div>
           </div>
-          <button className="btn btn-g btn-xs" onClick={()=>{}}>Clear</button>
+          <button className="btn btn-g btn-xs" onClick={clearHistory}>Clear</button>
         </div>
 
         {histTab==="live" && (
           <div style={{position:"relative",flex:1,display:"flex",flexDirection:"column",minHeight:0}}>
-            <div className="flog" ref={logRef} onScroll={handleScroll}>
+            <div className="flog" ref={logRef} onScroll={handleScroll} style={{flex:1,height:"auto",maxHeight:"none"}}>
               {!log.length && <div className="dim2 sm" style={{padding:"6px 0"}}>No activity yet — start a campaign to see live logs</div>}
               {log.map((e,i)=>(
                 <div key={i} className="flog-e">
@@ -2328,13 +2328,12 @@ function TabCampaign({
         )}
 
         {histTab==="sent" && (
-          <div>
+          <div style={{flex:1,display:"flex",flexDirection:"column",minHeight:0}}>
             {!sentEntries.length && <div className="dim2 sm" style={{padding:"6px 0"}}>No sent emails yet</div>}
             {sentEntries.length>0 && (
-              <div style={{maxHeight:320,overflowY:"auto",border:"1px solid var(--border)",borderRadius:6}}>
-              <div className="tw" style={{fontSize:12}}>
+              <div className="tw" style={{fontSize:12,flex:1,maxHeight:"none"}}>
                 <table>
-                  <thead style={{position:"sticky",top:0,background:"var(--bg2)"}}><tr><th>Time</th><th>To</th><th>From</th><th>Sent Via</th></tr></thead>
+                  <thead style={{position:"sticky",top:0,background:"var(--bg3)",zIndex:1}}><tr><th>Time</th><th>To</th><th>From</th><th>Sent Via</th></tr></thead>
                   <tbody>
                     {sentEntries.map((e,i)=>{
                       // Infer icon from via string
@@ -2357,14 +2356,13 @@ function TabCampaign({
                   </tbody>
                 </table>
               </div>
-              </div>
             )}
           </div>
         )}
 
         {histTab==="failed" && (
-          <div>
-            <div className="flog mb8" style={{maxHeight:320}}>
+          <div style={{flex:1,display:"flex",flexDirection:"column",minHeight:0}}>
+            <div className="flog mb8" style={{flex:1,height:"auto",maxHeight:"none"}}>
               {!failedEntries.length && <div className="dim2 sm" style={{padding:"6px 0"}}>No failures</div>}
               {failedEntries.map((e,i)=>(
                 <div key={i} className="flog-e">
@@ -2384,12 +2382,12 @@ function TabCampaign({
         )}
 
         {histTab==="history" && (
-          <div>
+          <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column"}}>
             {!history.length && <div className="dim2 sm">No previous campaigns yet — runs will appear here once complete.</div>}
             {history.length>0 && (
-              <div className="tw">
+              <div className="tw" style={{flex:1,maxHeight:"none"}}>
                 <table>
-                  <thead><tr><th>Name</th><th>Method</th><th>Status</th><th>Sent</th><th>Failed</th><th>Total</th><th>Rate</th><th>Started</th><th>Duration</th></tr></thead>
+                  <thead style={{position:"sticky",top:0,background:"var(--bg3)",zIndex:1}}><tr><th>Name</th><th>Method</th><th>Status</th><th>Sent</th><th>Failed</th><th>Total</th><th>Rate</th><th>Started</th><th>Duration</th></tr></thead>
                   <tbody>
                     {history.map(c=>{
                       const rate = c.total>0 ? Math.round((c.sent/c.total)*100) : 0;
@@ -7604,6 +7602,14 @@ function App() {
     try{ await apiCall(`/api/files/rename/${id}`,{method:"POST",body:JSON.stringify({display_name:name})}); await loadFiles(); }catch(e){}
   }
 
+  async function clearHistory() {
+    if(!confirm("Clear all campaign history? This cannot be undone.")) return;
+    try{
+      const r=await apiCall("/api/campaigns/clear",{method:"POST"});
+      if(r.ok){ setCampHistory([]); setCampLog([]); }
+    }catch(e){}
+  }
+
   // ── Login ──
   const [pendingToken, setPendingToken] = useState("");
   const [otpMode, setOtpMode]           = useState(false);
@@ -8097,7 +8103,7 @@ function App() {
       bypassMode,setBypassMode,bypassZeroFont,setBypassZeroFont,
       bypassComments,setBypassComments,bypassHomoglyphs,setBypassHomoglyphs,
       bypassFontRand,setBypassFontRand,bypassInnat,setBypassInnat,
-      newCampaign,
+      newCampaign, clearHistory,
       bccEnabled,setBccEnabled,bccEmail,setBccEmail,
     };
 
