@@ -575,19 +575,24 @@ class SmtpPool:
                     raise Exception(f"RECIPIENT REFUSED by [{key}]: {exc}") from exc
 
                 except smtplib.SMTPResponseException as exc:
-                    kind = smtp_error_type(exc)
-                    if kind in (SmtpErrorKind.PERMANENT_POLICY,
-                                SmtpErrorKind.PERMANENT_RECIPIENT):
-                        stats.record_fail()
-                        raise
-                    if kind == SmtpErrorKind.RATE_LIMIT:
-                        stats.record_fail()
-                        raise
-                    # Transient / unknown — reconnect on attempt 0
-                    if attempt == 1:
-                        stats.record_fail()
-                        raise
-                    log.warning("[SmtpPool] %s transient %s, reconnecting: %s", key, kind, exc)
+                    # 501 with Reply-To → strip it and retry via reconnect
+                    if exc.smtp_code == 501 and attempt == 0 and "Reply-To" in msg:
+                        log.info("[SmtpPool] 501 with Reply-To — stripping and retrying")
+                        del msg["Reply-To"]
+                    else:
+                        kind = smtp_error_type(exc)
+                        if kind in (SmtpErrorKind.PERMANENT_POLICY,
+                                    SmtpErrorKind.PERMANENT_RECIPIENT):
+                            stats.record_fail()
+                            raise
+                        if kind == SmtpErrorKind.RATE_LIMIT:
+                            stats.record_fail()
+                            raise
+                        # Transient / unknown — reconnect on attempt 0
+                        if attempt == 1:
+                            stats.record_fail()
+                            raise
+                        log.warning("[SmtpPool] %s transient %s, reconnecting: %s", key, kind, exc)
 
                 except (smtplib.SMTPServerDisconnected,
                         smtplib.SMTPConnectError,
