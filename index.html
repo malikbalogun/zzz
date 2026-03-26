@@ -7573,7 +7573,7 @@ function App() {
         if(!r.ok || !active) return;
         const d = await r.json();
         if(d.active && d.live) {
-          // Campaign running (possibly on another device) — show live stats
+          // Campaign running — silently update stats (no log spam)
           setRemoteRunning(true);
           setCampStats({
             sent: d.live.sent||0,
@@ -7581,13 +7581,6 @@ function App() {
             total: d.live.total||0,
             pending: (d.live.total||0) - (d.live.sent||0) - (d.live.failed||0),
           });
-          if(!campRunning) {
-            // Show it's running on another device
-            setCampLog(prev => {
-              if(prev.length && prev[prev.length-1]._remote) return prev;
-              return [...prev, {ts: new Date().toLocaleTimeString(), type:"info", msg:`Campaign "${d.live.name}" is running (started on another device)`, _remote:true}];
-            });
-          }
         } else {
           if(remoteRunning) {
             // Campaign just finished — reload history
