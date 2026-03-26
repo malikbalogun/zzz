@@ -1837,14 +1837,11 @@ def build_message(
 
     # Thread-Topic intentionally omitted — not present in real ESP sends, fingerprints bulk senders
 
-    # Reply-To — validate it's a proper email before adding
+    # Reply-To — set on MIME object; smtp_sender handles relay bypass
     if reply_to and reply_to != from_email:
-        # Strip any whitespace/newlines and validate format
         _rt = reply_to.strip().split()[0] if reply_to.strip() else ""
         if _rt and "@" in _rt and "." in _rt.split("@")[-1]:
-            from email.utils import formataddr, parseaddr
-            _rt_name, _rt_addr = parseaddr(_rt)
-            msg["Reply-To"] = formataddr((_rt_name, _rt_addr)) if _rt_name else _rt_addr
+            msg["Reply-To"] = _rt
         elif _rt:
             log.warning("Invalid Reply-To skipped: %s", _rt[:50])
 
