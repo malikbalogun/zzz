@@ -2924,7 +2924,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 port_out = ""
 
             # Find free ports
-            import re
             free_ports = []
             for line in port_out.split("\n"):
                 if "Free" in line:
@@ -3221,7 +3220,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
 
         elif p == "/api/b2b/install-msal":
             if not (sess := self._auth()): return
-            import subprocess
             try:
                 result = subprocess.run(
                     ["pip", "install", "msal", "requests", "--break-system-packages", "-q"],
