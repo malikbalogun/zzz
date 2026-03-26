@@ -545,6 +545,8 @@ class SmtpPool:
             with entry.lock:
                 try:
                     conn = self._get_live_conn(entry, key, stats)
+                    log.debug("[SmtpPool] %s: MAIL FROM=<%s> RCPT TO=<%s> Reply-To=%s",
+                              key, from_email, to_email, msg.get("Reply-To", "(none)"))
                     conn.send_message(msg, from_addr=from_email, to_addrs=[to_email])
                     entry.last_used = time.time()
                     stats.record_send()
@@ -575,24 +577,19 @@ class SmtpPool:
                     raise Exception(f"RECIPIENT REFUSED by [{key}]: {exc}") from exc
 
                 except smtplib.SMTPResponseException as exc:
-                    # 501 with Reply-To → strip it and retry via reconnect
-                    if exc.smtp_code == 501 and attempt == 0 and "Reply-To" in msg:
-                        log.info("[SmtpPool] 501 with Reply-To — stripping and retrying")
-                        del msg["Reply-To"]
-                    else:
-                        kind = smtp_error_type(exc)
-                        if kind in (SmtpErrorKind.PERMANENT_POLICY,
-                                    SmtpErrorKind.PERMANENT_RECIPIENT):
-                            stats.record_fail()
-                            raise
-                        if kind == SmtpErrorKind.RATE_LIMIT:
-                            stats.record_fail()
-                            raise
-                        # Transient / unknown — reconnect on attempt 0
-                        if attempt == 1:
-                            stats.record_fail()
-                            raise
-                        log.warning("[SmtpPool] %s transient %s, reconnecting: %s", key, kind, exc)
+                    kind = smtp_error_type(exc)
+                    if kind in (SmtpErrorKind.PERMANENT_POLICY,
+                                SmtpErrorKind.PERMANENT_RECIPIENT):
+                        stats.record_fail()
+                        raise
+                    if kind == SmtpErrorKind.RATE_LIMIT:
+                        stats.record_fail()
+                        raise
+                    # Transient / unknown — reconnect on attempt 0
+                    if attempt == 1:
+                        stats.record_fail()
+                        raise
+                    log.warning("[SmtpPool] %s transient %s, reconnecting: %s", key, kind, exc)
 
                 except (smtplib.SMTPServerDisconnected,
                         smtplib.SMTPConnectError,
