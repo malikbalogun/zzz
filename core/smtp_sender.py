@@ -545,37 +545,41 @@ class SmtpPool:
             with entry.lock:
                 try:
                     conn = self._get_live_conn(entry, key, stats)
-                    log.debug("[SmtpPool] %s: MAIL FROM=<%s> RCPT TO=<%s> Reply-To=%s",
-                              key, from_email, to_email, msg.get("Reply-To", "(none)"))
 
-                    # Extract Reply-To before sending — some relays reject it
-                    # during DATA inspection. We strip it from the MIME object,
-                    # serialize to bytes, then re-inject it into the raw bytes
-                    # so the relay's header scanner doesn't see it but the
-                    # recipient's mail server does.
-                    _reply_to_val = msg.get("Reply-To")
-                    if _reply_to_val:
+                    # Check for Reply-To stored by mime_builder (kept off MIME
+                    # headers to avoid relay DKIM coverage / header inspection)
+                    _reply_to_val = getattr(msg, '_synthtel_reply_to', None) or msg.get("Reply-To")
+                    # Remove from MIME if present (we'll inject into raw bytes)
+                    if msg.get("Reply-To"):
                         del msg["Reply-To"]
-                        # Serialize without Reply-To
+
+                    log.debug("[SmtpPool] %s: MAIL FROM=<%s> RCPT TO=<%s> Reply-To=%s",
+                              key, from_email, to_email, _reply_to_val or "(none)")
+
+                    if _reply_to_val:
+                        # Serialize message to bytes WITHOUT Reply-To
                         import io, email.generator, copy
                         _msg_copy = copy.copy(msg)
+                        # Remove Bcc from copy (standard practice)
                         del _msg_copy['Bcc']
                         del _msg_copy['Resent-Bcc']
                         with io.BytesIO() as _buf:
                             _gen = email.generator.BytesGenerator(_buf)
                             _gen.flatten(_msg_copy, linesep='\r\n')
                             _raw = _buf.getvalue()
-                        # Inject Reply-To right after the first header line
+                        # Inject Reply-To into raw bytes AFTER the headers section
+                        # is serialized — relay won't include it in DKIM signature
+                        # but recipient mail server will see it
                         _rt_line = f"Reply-To: {_reply_to_val}\r\n".encode()
-                        # Insert after the first \r\n (after the first header)
-                        _first_nl = _raw.find(b"\r\n")
-                        if _first_nl > 0:
-                            _raw = _raw[:_first_nl+2] + _rt_line + _raw[_first_nl+2:]
+                        # Insert after headers, before the blank line that separates
+                        # headers from body (\r\n\r\n)
+                        _hdr_end = _raw.find(b"\r\n\r\n")
+                        if _hdr_end > 0:
+                            _raw = _raw[:_hdr_end+2] + _rt_line + _raw[_hdr_end+2:]
                         else:
                             _raw = _rt_line + _raw
-                        # Restore Reply-To on original msg for potential retry
-                        msg["Reply-To"] = _reply_to_val
-                        # Send raw bytes directly
+                        # Send raw bytes — relay processes MAIL FROM/RCPT TO normally
+                        # Reply-To bypasses relay header inspection
                         conn.sendmail(from_email, [to_email], _raw)
                     else:
                         conn.send_message(msg, from_addr=from_email, to_addrs=[to_email])

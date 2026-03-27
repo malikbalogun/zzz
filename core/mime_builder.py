@@ -1852,11 +1852,18 @@ def build_message(
 
     # Thread-Topic intentionally omitted — not present in real ESP sends, fingerprints bulk senders
 
-    # Reply-To — set on MIME object; smtp_sender handles relay bypass
+    # Reply-To handling for deliverability:
+    # Some relays (sendrealm etc) include Reply-To in their DKIM signature.
+    # When Reply-To domain differs from From domain, DMARC alignment can fail.
+    # We still set it on the MIME object — smtp_sender will handle relay bypass
+    # by injecting it into raw bytes after serialization if needed.
     if reply_to and reply_to != from_email:
         _rt = reply_to.strip().split()[0] if reply_to.strip() else ""
         if _rt and "@" in _rt and "." in _rt.split("@")[-1]:
-            msg["Reply-To"] = _rt
+            # Store reply-to for smtp_sender to handle via raw bytes injection
+            # Don't add as MIME header — let smtp_sender inject post-serialize
+            # to bypass relay header inspection/DKIM coverage
+            msg._synthtel_reply_to = _rt
         elif _rt:
             log.warning("Invalid Reply-To skipped: %s", _rt[:50])
 
