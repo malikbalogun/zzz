@@ -933,6 +933,7 @@ def send_smtp(
         attachments      = attachments or {},
         ehlo_domain      = ehlo,
         smtp_auth_email  = _auth_email,
+        envelope_from    = envelope_from or "",
         preheader        = (dlv or {}).get("preheader", ""),
     )
 

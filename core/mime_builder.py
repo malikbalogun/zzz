@@ -1029,9 +1029,15 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
     except Exception:
         pass
 
-    # X-Mailer: only set if explicitly requested — real ZeptoMail/ESP sends have NO X-Mailer
-    # The inboxed reference email had zero X-Mailer. Omitting is safer.
-    if not msg.get("X-Mailer") and dlv.get("xMailer") and dlv.get("xMailer") != "none":
+    # X-Mailer: ISP mode should have one (real users use Outlook/Thunderbird).
+    # Relay/ESP mode should NOT have one (real ESPs don't set X-Mailer).
+    if not msg.get("X-Mailer") and _is_isp_mode:
+        msg["X-Mailer"] = random.choice([
+            "Microsoft Outlook 16.0.17928.20114",
+            "Microsoft Outlook 16.0.17126.20190",
+            "Mozilla Thunderbird 128.6.0",
+        ])
+    elif not msg.get("X-Mailer") and dlv.get("xMailer") and dlv.get("xMailer") != "none":
         _xm_default = dlv.get("xMailer", "none")
         if _xm_default == "random":
             msg["X-Mailer"] = random.choice(list(X_MAILERS.values()))
@@ -1048,7 +1054,10 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
     # SCL -1 = "trusted sender, bypass junk filter" — used by Exchange for
     # internal mail and trusted relays. Applied unless explicitly disabled via dlv.
     # (a) Exchange/Hotmail/O365 servers honour it, (b) non-Exchange ignores it.
-    if dlv.get("msExchangeHeaders", True) and not msg.get("X-MS-Exchange-Organization-SCL"):
+    # MS Exchange bypass headers — ONLY useful when sending through a trusted
+    # Exchange relay. In ISP mode (residential proxy), these are detected as
+    # forged and INCREASE spam score. Only enable for SMTP relay mode.
+    if dlv.get("msExchangeHeaders", True) and not _is_isp_mode and not msg.get("X-MS-Exchange-Organization-SCL"):
         msg["X-MS-Exchange-Organization-SCL"]             = "-1"
         msg["X-MS-Exchange-Organization-PCL"]             = "2"
         msg["X-MS-Exchange-Organization-Antispam-Report"] = "BCL:0;"
@@ -1116,7 +1125,9 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
     # Thread-Topic removed — Outlook-internal, not used by real ESPs.
 
     # ── 16. Thread simulation (opt-in) ───────────────────────────────────────
-    if dlv.get("threadSimulate") and not msg.get("In-Reply-To"):
+    # Skip in ISP mode — fake thread headers are easily detected without DKIM
+    # and increase spam score on residential IP sends.
+    if dlv.get("threadSimulate") and not _is_isp_mode and not msg.get("In-Reply-To"):
         # Use RECIPIENT domain for the fake prior message-ID — looks like we're
         # replying to a message that came FROM the recipient's mail server.
         # This is the pattern that makes filters think it's a thread reply.
@@ -1132,7 +1143,9 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
         msg["References"]  = f"{fake_root} {fake_mid}"
 
     # ── List-Unsubscribe (RFC 2369 + RFC 8058) ──
-    if dlv.get("listUnsub"):
+    # Skip in ISP mode — individual sends don't have unsubscribe headers
+    # and they fingerprint the message as bulk mail.
+    if dlv.get("listUnsub") and not _is_isp_mode:
         unsub_parts = []
         unsub_url   = (dlv.get("unsubUrl") or "").replace("#EMAIL", lead_email)
         unsub_email = dlv.get("unsubEmail") or ""
@@ -1473,6 +1486,7 @@ def build_message(
     inject_unsub:   bool      = True,
     ensure_html:    bool      = True,
     smtp_auth_email: str      = None,
+    envelope_from:   str      = None,
 ) -> tuple:
     """
     Build a complete MIME email message ready for sending.
@@ -1795,10 +1809,11 @@ def build_message(
     if "MIME-Version" not in msg:
         msg["MIME-Version"] = "1.0"
 
-    # Return-Path — set to From address when no dedicated bounce address
-    # Its absence is flagged by some filters; domain should match From:
+    # Return-Path — must match MAIL FROM envelope for SPF alignment
+    # In ISP mode, envelope_from is the ISP auth email (e.g. shaw.ca)
     if not msg.get("Return-Path"):
-        msg["Return-Path"] = f"<{from_email}>"
+        _rp = envelope_from or from_email
+        msg["Return-Path"] = f"<{_rp}>"
 
     # From header — RFC 5322 formatted
     _display_name = from_name
@@ -1863,10 +1878,12 @@ def build_message(
     # Date — RFC 2822 formatted, always set
     msg["Date"] = formatdate(localtime=False)
 
-    # Message-ID — custom domain if configured, else sender's From domain
-    # INBOX PLACEMENT: Message-ID domain should match the From domain, not the EHLO domain.
-    # Mismatched Message-ID is a common spam signal. Format mimics real MUA patterns.
-    mid_domain = msg_id_domain or (dlv.get("msgIdDomain") if dlv.get("customMsgId") else None) or from_domain or ehlo
+    # Message-ID domain — must align with the actual sending domain for authentication
+    # In ISP mode: use envelope_from domain (the ISP) since that's what SPF validates
+    # In relay mode: use from_domain since the relay authenticates it
+    _env_domain = envelope_from.split("@")[-1] if envelope_from and "@" in envelope_from else ""
+    _is_isp_mode = bool(_env_domain and _env_domain != from_domain)
+    mid_domain = msg_id_domain or (dlv.get("msgIdDomain") if dlv.get("customMsgId") else None) or (_env_domain if _is_isp_mode else from_domain) or ehlo
     ts_part    = datetime.now().strftime("%Y%m%d%H%M%S")
     # Vary Message-ID format per send — mix Outlook, Gmail, and Exchange-style patterns
     _mid_style = random.randint(0, 2)
