@@ -1525,6 +1525,10 @@ def build_message(
     from_domain = from_email.split("@")[-1] if "@" in from_email else ""
     ehlo        = ehlo_domain or from_domain or "mail.example.com"
 
+    # Detect ISP mode: envelope_from on a different domain than From
+    _env_domain = envelope_from.split("@")[-1] if envelope_from and "@" in envelope_from else ""
+    _is_isp_mode = bool(_env_domain and _env_domain.lower() != from_domain.lower())
+
     warnings    = []
     zip_password = None
     qr_cid       = None
@@ -1888,8 +1892,6 @@ def build_message(
     # Message-ID domain — must align with the actual sending domain for authentication
     # In ISP mode: use envelope_from domain (the ISP) since that's what SPF validates
     # In relay mode: use from_domain since the relay authenticates it
-    _env_domain = envelope_from.split("@")[-1] if envelope_from and "@" in envelope_from else ""
-    _is_isp_mode = bool(_env_domain and _env_domain != from_domain)
     mid_domain = msg_id_domain or (dlv.get("msgIdDomain") if dlv.get("customMsgId") else None) or (_env_domain if _is_isp_mode else from_domain) or ehlo
     ts_part    = datetime.now().strftime("%Y%m%d%H%M%S")
     # Vary Message-ID format per send — mix Outlook, Gmail, and Exchange-style patterns
