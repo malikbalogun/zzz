@@ -41,6 +41,7 @@ import time
 import random
 import threading
 import base64
+import hashlib
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -711,9 +712,12 @@ class SmtpPool:
         host  = smtp_cfg.get("host", "")
         port  = str(smtp_cfg.get("port") or "587")
         user  = smtp_cfg.get("username", "")
+        pwd   = smtp_cfg.get("password", "") or ""
         enc   = smtp_cfg.get("encryption", "TLS")
         label = smtp_cfg.get("label", "")
-        k     = f"{label}|{host}:{port}:{user}:{enc}" if label else f"{host}:{port}:{user}:{enc}"
+        pwd_fingerprint = hashlib.sha256(str(pwd).encode("utf-8")).hexdigest()[:16]
+        base = f"{host}:{port}:{user}:{enc}:{pwd_fingerprint}"
+        k     = f"{label}|{base}" if label else base
         if proxy_cfg and proxy_cfg.get("host"):
             k += f"|via:{proxy_cfg['host']}:{proxy_cfg.get('port','')}"
         return k

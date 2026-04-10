@@ -844,7 +844,7 @@ if(code && window.opener){{
                           "created_at": r[6], "updated_at": r[7]} for r in rows]
             self._json(200, {"templates": templates})
 
-        elif p.startswith("/api/files"):
+        elif p.startswith("/api/files") and not p.startswith("/api/files/download/"):
             if not (sess := self._auth()): return
             uid = sess["user_id"]
             # List files: /api/files?category=attachments (or all)
@@ -1130,7 +1130,17 @@ if(code && window.opener){{
         p = self.path
         try:
             n = int(self.headers.get("Content-Length", 0))
-            self._body_bytes = self.rfile.read(n) if 0 < n <= MAX_BODY_BYTES else b""
+            if n > MAX_BODY_BYTES:
+                # Drain oversized request body to avoid keep-alive parser desync.
+                remaining = n
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                self._json(413, {"error": f"Payload too large (max {MAX_BODY_BYTES} bytes)"})
+                return
+            self._body_bytes = self.rfile.read(n) if n > 0 else b""
         except Exception:
             self._body_bytes = b""
         try:
@@ -1230,16 +1240,28 @@ if(code && window.opener){{
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
             uid = sess["user_id"]
+            total_count = len(data.get("leads", []))
+            camp_name = data.get("campaignName", "Campaign")
+            started_at = datetime.now().isoformat()
             with active_campaigns_lock:
                 if ACTIVE_CAMPAIGNS.get(uid, 0) > 0:
                     self._json(409, {"error": "A campaign is already running for this user"}); return
+                ACTIVE_CAMPAIGNS[uid] = ACTIVE_CAMPAIGNS.get(uid, 0) + 1
+                LIVE_CAMPAIGN_STATS[uid] = {
+                    "sent": 0, "failed": 0, "total": total_count,
+                    "name": camp_name, "status": "running",
+                    "method": data.get("method", "smtp"),
+                    "started_at": started_at,
+                }
+                CAMPAIGN_CONTROLS[uid] = {
+                    "paused": False,
+                    "abort": False,
+                    "stats": {"sent": 0, "failed": 0, "total": total_count},
+                }
 
             self._stream_start()
             sent_count = 0
             failed_count = 0
-            total_count = len(data.get("leads", []))
-            camp_name = data.get("campaignName", "Campaign")
-            started_at = datetime.now().isoformat()
             run_id = None
 
             # Create campaign_runs record
@@ -1255,21 +1277,6 @@ if(code && window.opener){{
                     conn.close()
             except Exception:
                 pass
-
-            # Track this campaign for the user
-            with active_campaigns_lock:
-                ACTIVE_CAMPAIGNS[uid] = ACTIVE_CAMPAIGNS.get(uid, 0) + 1
-                LIVE_CAMPAIGN_STATS[uid] = {
-                    "sent": 0, "failed": 0, "total": total_count,
-                    "name": camp_name, "status": "running",
-                    "method": data.get("method", "smtp"),
-                    "started_at": started_at,
-                }
-                CAMPAIGN_CONTROLS[uid] = {
-                    "paused": False,
-                    "abort": False,
-                    "stats": {"sent": 0, "failed": 0, "total": total_count},
-                }
 
             # Telegram: send campaign start message (non-blocking)
             tg_msg_id = None
@@ -5025,6 +5032,14 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
         # ── Telegram: campaign control (pause/resume/stop/stats) ─────────────
         elif p == "/api/tg/campaign-control":
             # Called by telegram_bot.py to control campaigns
+            client_ip = (self.client_address[0] if self.client_address else "") or ""
+            if client_ip not in ("127.0.0.1", "::1"):
+                self._json(403, {"error": "Forbidden"}); return
+            internal_secret = os.environ.get("SYNTHTEL_INTERNAL_SECRET", "").strip()
+            if internal_secret:
+                req_secret = self.headers.get("X-SynthTel-Internal-Secret", "").strip()
+                if not req_secret or req_secret != internal_secret:
+                    self._json(403, {"error": "Forbidden"}); return
             try: data = self._read_body()
             except Exception: self._json(400, {"error": "Invalid JSON"}); return
             action  = data.get("action", "")   # pause|resume|stop|stats
@@ -5245,8 +5260,17 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 tid = int(p.split("/")[3])
             except Exception:
                 self._json(400, {"error": "Invalid ticket ID"}); return
+            uid  = sess["user_id"]
+            role = sess["role"]
             with db_lock:
                 conn = sqlite3.connect(DB_PATH)
+                ticket = conn.execute(
+                    "SELECT user_id FROM support_tickets WHERE id=?", (tid,)
+                ).fetchone()
+                if not ticket:
+                    conn.close(); self._json(404, {"error": "Ticket not found"}); return
+                if role not in ("admin","superadmin","moderator") and ticket[0] != uid:
+                    conn.close(); self._json(403, {"error": "Access denied"}); return
                 conn.execute(
                     "UPDATE support_tickets SET status='open', updated_at=? WHERE id=?",
                     (datetime.now().isoformat(), tid)
@@ -5289,6 +5313,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             self._json(200, {"log": tail, "path": LOG_PATH})
 
         elif p.startswith("/api/debug-log"):
+            if not (sess := self._admin()): return
             from urllib.parse import parse_qs, urlparse
             qs = parse_qs(urlparse(self.path).query)
             clear = qs.get("clear", ["0"])[0] == "1"

@@ -245,6 +245,32 @@ def _safe_float(v, default: float = 0.0) -> float:
     except (ValueError, TypeError):
         return default
 
+def _campaign_abort_requested(uid) -> bool:
+    """Best-effort campaign abort check from shared server control map."""
+    if not uid:
+        return False
+    try:
+        from core import server as _server
+        with _server.active_campaigns_lock:
+            ctrl = _server.CAMPAIGN_CONTROLS.get(uid) or {}
+            return bool(ctrl.get("abort", False))
+    except Exception:
+        return False
+
+def _sleep_interruptible(seconds: float, uid) -> bool:
+    """Sleep in short slices so stop requests can interrupt quickly."""
+    try:
+        remaining = max(0.0, float(seconds))
+    except (ValueError, TypeError):
+        remaining = 0.0
+    while remaining > 0:
+        if _campaign_abort_requested(uid):
+            return False
+        chunk = 0.25 if remaining > 0.25 else remaining
+        time.sleep(chunk)
+        remaining -= chunk
+    return True
+
 
 def _parse_smtp_error(error: Exception, lead_email: str = "") -> str:
     err = str(error).lower()
@@ -1149,6 +1175,7 @@ def run_campaign(opts: CampaignOptions) -> Generator:
     method  = opts.method
     dlv     = opts.dlv
     sending = opts.sending
+    campaign_uid = getattr(opts, "uid", None)
 
     # Safety clamp: keep risky synthetic/bypass behavior off by default unless
     # explicitly enabled by expert flags in the payload.
@@ -1552,6 +1579,7 @@ def run_campaign(opts: CampaignOptions) -> Generator:
 
     # ── Run ──────────────────────────────────────────────────
     success = fail = skip = 0
+    stopped = False
     opened_ports: list = getattr(opts, "_opened_ports", [])
 
     # Dead proxy blacklist — proxies that failed are removed from rotation
@@ -1772,6 +1800,12 @@ def run_campaign(opts: CampaignOptions) -> Generator:
         # Process completions and submit more work
         import concurrent.futures as _cf
         while _pending_futures:
+            if stopped:
+                break
+            if _campaign_abort_requested(campaign_uid):
+                stopped = True
+                yield {"type": "warn", "msg": "⛔ Campaign stop requested — halting remaining sends"}
+                break
             done, _ = _cf.wait(list(_pending_futures.keys()), return_when=_cf.FIRST_COMPLETED)
             for fut in done:
                 work_meta = _pending_futures.pop(fut)
@@ -1855,12 +1889,18 @@ def run_campaign(opts: CampaignOptions) -> Generator:
                     if _is_grey:
                         _grey_wait = random.uniform(120, 240)  # 2–4 min: greylists typically clear after 1–5 min
                         yield {"type":"pause","msg":f"⏸ Greylisted — waiting {_grey_wait:.0f}s before retry (greylist typically clears in 1–5 min)"}
-                        time.sleep(_grey_wait)
+                        if not _sleep_interruptible(_grey_wait, campaign_uid):
+                            stopped = True
+                            break
                     for _attempt in range(3):
                         # Between MXRT retry attempts: short backoff to avoid hammering
                         if _attempt > 0:
                             _mxrt_backoff = random.uniform(8, 16) if not _is_grey else random.uniform(60, 120)
-                            time.sleep(_mxrt_backoff)
+                            if not _sleep_interruptible(_mxrt_backoff, campaign_uid):
+                                stopped = True
+                                break
+                        if stopped:
+                            break
                         with _send_lock:
                             _cands = [s for s in opts.senders
                                       if (s.get("fromEmail","") if isinstance(s,dict) else s) not in _dead_senders
@@ -1923,7 +1963,9 @@ def run_campaign(opts: CampaignOptions) -> Generator:
                     yield {"type":"success","index":i+1,"total":total_cap,"email":email_addr,
                            "name":lead.get("name",""),"from":resolved_sender.get("fromEmail",""),
                            "via":via,"link":link_url,"checkpoint":i+1}
-                    if sends_per_sec > 0: time.sleep(1.0/sends_per_sec)
+                    if sends_per_sec > 0 and not _sleep_interruptible(1.0/sends_per_sec, campaign_uid):
+                        stopped = True
+                        break
                 else:
                     fail += 1
                     _append_fail(email_addr)
@@ -1933,7 +1975,9 @@ def run_campaign(opts: CampaignOptions) -> Generator:
                         pause = float(parts[1]) if len(parts)>1 else 60.0
                         msg_  = parts[2] if len(parts)>2 else "API rate limited"
                         yield {"type":"pause","msg":f"⏸ {msg_}"}
-                        time.sleep(pause)
+                        if not _sleep_interruptible(pause, campaign_uid):
+                            stopped = True
+                            break
                         yield {"type":"info","msg":f"▶ Resuming after {pause:.0f}s pause"}
                     elif _is_rate_limit(err):
                         lead_domain = email_addr.split("@")[-1].lower() if "@" in email_addr else ""
@@ -1943,40 +1987,60 @@ def run_campaign(opts: CampaignOptions) -> Generator:
                         elif lead_domain in MS_RATE_DOMAINS:
                             pause = random.uniform(90, 180)
                             yield {"type":"pause","msg":f"⏸ Microsoft rate limit on {lead_domain} — cooling down {pause:.0f}s (MS needs ~2min)"}
-                            time.sleep(pause)
+                            if not _sleep_interruptible(pause, campaign_uid):
+                                stopped = True
+                                break
                         else:
                             pause = random.uniform(15, 45)
                             yield {"type":"pause","msg":f"⏸ Rate limit on {lead_domain} — cooling down {pause:.0f}s"}
-                            time.sleep(pause)
+                            if not _sleep_interruptible(pause, campaign_uid):
+                                stopped = True
+                                break
 
                 # Cooldown
                 if cooldown_every>0 and (i+1)%cooldown_every==0 and (i+1)<total_cap:
                     yield {"type":"pause","msg":f"🧊 Cooldown after {i+1} emails — pausing {cooldown_secs:.0f}s..."}
-                    time.sleep(cooldown_secs)
+                    if not _sleep_interruptible(cooldown_secs, campaign_uid):
+                        stopped = True
+                        break
 
                 # Batch pause
                 if batch_size>0 and (i+1)%batch_size==0 and (i+1)<total_cap:
                     pause_total = batch_pause_secs if batch_pause_secs>0 else base_delay
                     if dlv.get("delayJitter"): pause_total = max(0.5, pause_total+random.uniform(-jitter_range,jitter_range))
                     yield {"type":"batch","msg":f"Batch {(i+1)//batch_size} done — pausing {pause_total:.1f}s..."}
-                    time.sleep(pause_total)
+                    if not _sleep_interruptible(pause_total, campaign_uid):
+                        stopped = True
+                        break
                 elif _workers <= 1:
                     # Sequential mode only — in concurrent mode the network I/O
                     # provides natural pacing; sleeping here would serialize workers
-                    if dlv.get("delayJitter"): time.sleep(max(0.1,random.uniform(0.3,1.5+jitter_range*0.3)))
-                    elif base_delay>0: time.sleep(base_delay)
+                    if dlv.get("delayJitter"):
+                        if not _sleep_interruptible(max(0.1, random.uniform(0.3, 1.5 + jitter_range * 0.3)), campaign_uid):
+                            stopped = True
+                            break
+                    elif base_delay>0:
+                        if not _sleep_interruptible(base_delay, campaign_uid):
+                            stopped = True
+                            break
                     if dlv.get("domainThrottle"):
                         lead_domain = email_addr.split("@")[-1].lower() if "@" in email_addr else ""
                         if lead_domain in MS_RATE_DOMAINS:
                             ms_delay = _safe_float(dlv.get("msDelay", 8), 8.0)
-                            time.sleep(ms_delay + random.uniform(0, 4))
+                            if not _sleep_interruptible(ms_delay + random.uniform(0, 4), campaign_uid):
+                                stopped = True
+                                break
                         elif lead_domain in STRICT_DOMAINS:
                             extra = _safe_float(dlv.get("gmailDelay", 5), 5.0)
-                            time.sleep(extra)
+                            if not _sleep_interruptible(extra, campaign_uid):
+                                stopped = True
+                                break
                         # Per-provider extra delay from email sorter
                         _prov_extra = _get_provider_delay(email_addr)
                         if _prov_extra > 0:
-                            time.sleep(_prov_extra + random.uniform(0, _prov_extra * 0.3))
+                            if not _sleep_interruptible(_prov_extra + random.uniform(0, _prov_extra * 0.3), campaign_uid):
+                                stopped = True
+                                break
 
                 # Check senders still alive
                 with _send_lock:
@@ -1993,7 +2057,7 @@ def run_campaign(opts: CampaignOptions) -> Generator:
                         fut_n, rsen_n, rhtml_n, rplain_n = result_n
                         _pending_futures[fut_n] = (i_n, lead_n, rsen_n, rhtml_n, rplain_n)
 
-        _executor.shutdown(wait=False)
+        _executor.shutdown(wait=not stopped)
 
         # ── Done ─────────────────────────────────────────────
         warmup_msg = ""
@@ -2013,6 +2077,7 @@ def run_campaign(opts: CampaignOptions) -> Generator:
             "fail":    fail,
             "skip":    skip,
             "total":   total_cap,
+            "stopped": stopped,
             "warmup":  warmup_msg,
         }
 
