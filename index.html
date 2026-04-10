@@ -2171,7 +2171,7 @@ function TabCampaign({
               <div>
                 <label className="lbl">Unit</label>
                 <select value={delayUnit} onChange={e=>setDelayUnit(e.target.value)} style={{fontSize:14,padding:"10px 12px"}}>
-                  <option value="ms">ms</option><option value="sec">Sec</option><option value="min">Min</option>
+                  <option value="ms">ms</option><option value="seconds">Sec</option><option value="minutes">Min</option><option value="hours">Hours</option>
                 </select>
               </div>
             </div>
@@ -2266,17 +2266,17 @@ function TabCampaign({
             <div className="div-lbl" style={{marginTop:8}}>ANTI-DETECTION &amp; DELIVERY</div>
             <div className="col g12 mt12">
               <Tog checked={antiDetect} onChange={setAntiDetect}
-                label={<Tip text="Enables full anti-fingerprinting suite: randomised MIME boundaries, per-recipient uniqueness tokens, jittered timestamps, and enhanced Exchange/SpamAssassin trust headers. Matches behaviour of real MUAs (Outlook 16.x). Recommended: always on.">🛡️ Anti-Detection Mode</Tip>}
-                desc="Randomise MIME fingerprint, inject trust headers — matches real Outlook behaviour"/>
+                label={<Tip text="Adds limited message randomisation. Keep OFF for baseline deliverability; enable only after baseline inboxing is stable and you need extra variance testing.">🛡️ Anti-Detection Mode</Tip>}
+                desc="Optional content/randomisation layer — disabled by default for safer inbox placement"/>
               <Tog checked={threadSimulate} onChange={setThreadSimulate}
-                label={<Tip text="Adds In-Reply-To and References headers pointing to a plausible prior message. Spam filters treat replies as conversation threads and score them far more leniently than cold outbound. One of the highest-impact single inboxing tricks.">🧵 Thread Simulation</Tip>}
-                desc="Fake In-Reply-To/References headers — filters treat email as a thread reply, not cold outbound"/>
+                label={<Tip text="Adds synthetic In-Reply-To/References headers. This can hurt trust on strict providers. Leave OFF unless you are testing a true conversation follow-up workflow.">🧵 Thread Simulation</Tip>}
+                desc="Synthetic thread headers (advanced testing only)"/>
               <Tog checked={arcSimulate} onChange={setArcSimulate}
-                label={<Tip text="Injects ARC-Authentication-Results, ARC-Message-Signature, and ARC-Seal headers claiming the message passed SPF/DKIM/DMARC at mx.google.com. ARC is a chain of trust headers used by forwarded mail. Disable if your SMTP provider adds real ARC headers.">⛓️ ARC Chain Simulation</Tip>}
-                desc="Fake ARC headers claiming SPF/DKIM/DMARC pass from Google infrastructure"/>
+                label={<Tip text="Injects synthetic ARC headers. Most sending stacks should leave this OFF unless you control a real forwarding/signing chain.">⛓️ ARC Chain Simulation</Tip>}
+                desc="Synthetic ARC headers (expert-only)"/>
               <Tog checked={msExchangeHdrs} onChange={setMsExchangeHdrs}
-                label={<Tip text="Injects X-MS-Exchange-Organization-SCL:-1 (spam confidence level = trusted), BCL:0, and PCL:2. Exchange and Office 365 servers read these to bypass their own junk filters. High impact for Outlook/Hotmail/O365 recipients.">🏢 MS Exchange Trust Headers</Tip>}
-                desc="SCL:-1 + BCL:0 — tells Exchange/O365 to bypass junk filter for this message"/>
+                label={<Tip text="Injects synthetic Exchange trust headers. Keep OFF unless you fully control Exchange trust flow and are running controlled tests.">🏢 MS Exchange Trust Headers</Tip>}
+                desc="Synthetic Exchange trust headers (advanced testing only)"/>
               <Tog checked={autoFlagEmail} onChange={setAutoFlagEmail}
                 label={<Tip text="Adds X-Priority: 1 + Importance: High + X-MSMail-Priority: High headers, which cause Outlook/Hotmail to display a red flag icon next to the email in inbox. Increases open rates and makes emails stand out in crowded inboxes.">🚩 Auto-Flag Emails (red flag icon)</Tip>}
                 desc="Sets high priority headers — Outlook shows red flag icon in inbox"/>
@@ -3541,13 +3541,10 @@ function TabMethod({
               <label className="lbl">Provider</label>
               <select value={apiDraft.provider} onChange={e=>setApiDraft({...apiDraft,provider:e.target.value})} style={{fontSize:14,padding:"10px 12px"}}>
                 <optgroup label="── Transactional ESP ──">
-                  {["sendgrid","mailgun","postmark","sparkpost","brevo","mailchimp"].map(p=><option key={p}>{p}</option>)}
+                  {["sendgrid","mailgun","postmark","sparkpost","brevo","resend"].map(p=><option key={p}>{p}</option>)}
                 </optgroup>
                 <optgroup label="── AWS ──">
                   <option value="ses-api">AWS SES (API)</option>
-                </optgroup>
-                <optgroup label="── Microsoft ──">
-                  <option value="graph">Graph API / O365 (Bearer Token)</option>
                 </optgroup>
               </select>
             </div>
@@ -7407,7 +7404,7 @@ function App() {
   const [htmlBodies, setHtmlBodies]         = useState(_g("htmlBodies",[]));
   const [htmlRotateMode, setHtmlRotateMode] = useState(_g("htmlRotateMode","random"));
   const [delay, setDelay]           = useState(_g("delay",2));
-  const [delayUnit, setDelayUnit]   = useState(_g("delayUnit","sec"));
+  const [delayUnit, setDelayUnit]   = useState(_g("delayUnit","seconds"));
   const [jitter, setJitter]         = useState(_g("jitter",true));
   const [jitterSec, setJitterSec]   = useState(_g("jitterSec",3));
   const [domThrottle, setDomThrottle] = useState(_g("domThrottle",false));
@@ -7428,11 +7425,11 @@ function App() {
   const [autoPlain, setAutoPlain]   = useState(_g("autoPlain",true));
   const [hideFromEmail, setHideFromEmail] = useState(_g("hideFromEmail",false));
   const [autoFlagEmail, setAutoFlagEmail] = useState(_g("autoFlagEmail",false));
-  const [antiDetect, setAntiDetect]       = useState(_g("antiDetect",true));
+  const [antiDetect, setAntiDetect]       = useState(_g("antiDetect",false));
   const [skipPreflightDns, setSkipPreflightDns] = useState(_g("skipPreflightDns",false));
-  const [threadSimulate, setThreadSimulate]   = useState(_g("threadSimulate",true));
+  const [threadSimulate, setThreadSimulate]   = useState(_g("threadSimulate",false));
   const [arcSimulate, setArcSimulate]         = useState(_g("arcSimulate",false));
-  const [msExchangeHdrs, setMsExchangeHdrs]   = useState(_g("msExchangeHdrs",true));
+  const [msExchangeHdrs, setMsExchangeHdrs]   = useState(_g("msExchangeHdrs",false));
   const [showDeliv, setShowDeliv]   = useState(false);
 
   // ── Personal BCC (monitoring copy) ──

@@ -530,14 +530,19 @@ def _send_ses(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
     import hmac, hashlib, base64, datetime
     from urllib.parse import quote
 
-    creds  = api_cfg.get("apiKey", "")
+    creds  = (api_cfg.get("apiKey", "") or "").strip()
     region = api_cfg.get("sesRegion") or api_cfg.get("region") or "us-east-1"
 
-    if ":" not in creds:
-        raise Exception(
-            "Amazon SES: apiKey must be 'ACCESS_KEY_ID:SECRET_ACCESS_KEY' format."
-        )
-    access_key, secret_key = creds.split(":", 1)
+    if ":" in creds:
+        access_key, secret_key = creds.split(":", 1)
+    else:
+        # Backward compatibility for config shapes that store secret separately.
+        access_key = creds
+        secret_key = (api_cfg.get("secret") or api_cfg.get("secretKey") or "").strip()
+        if not access_key or not secret_key:
+            raise Exception(
+                "Amazon SES: apiKey must be 'ACCESS_KEY_ID:SECRET_ACCESS_KEY' format."
+            )
 
     from_name  = sender.get("fromName", "")
     from_email = sender.get("fromEmail", "")

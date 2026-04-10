@@ -183,7 +183,21 @@ def _preflight_isp_tunnel(tun: dict) -> tuple:
     return False, f"SOCKS5 {host}:{port} unreachable: {err}"
 
 
-DELAY_UNITS = {"seconds": 1, "minutes": 60, "hours": 3600}
+DELAY_UNITS = {
+    "seconds": 1,
+    "minutes": 60,
+    "hours": 3600,
+    # Frontend aliases (backward compatibility)
+    "ms": 0.001,
+    "millisecond": 0.001,
+    "milliseconds": 0.001,
+    "sec": 1,
+    "second": 1,
+    "min": 60,
+    "minute": 60,
+    "hr": 3600,
+    "hour": 3600,
+}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -465,7 +479,20 @@ class CampaignOptions:
         if method == "isp":
             method = "tunnel"
 
-        smtps   = data.get("smtps")   or data.get("smtpServers", [])
+        raw_smtps = data.get("smtps") or data.get("smtpServers", [])
+        smtps = []
+        for s in (raw_smtps or []):
+            if not isinstance(s, dict):
+                continue
+            enc = str(s.get("encryption", "")).upper().strip()
+            if not enc:
+                enc = "SSL" if bool(s.get("ssl", False)) else "TLS"
+            smtps.append({
+                **s,
+                "username": s.get("username", s.get("user", "")),
+                "password": s.get("password", s.get("pass", "")),
+                "encryption": enc,
+            })
         _raw_apis = data.get("apis") or data.get("apiKeys", [])
         # Frontend stores key as {provider, key} but api_sender expects {provider, apiKey}
         # Also auto-detect provider from key format in case dropdown was wrong when saved
@@ -506,8 +533,28 @@ class CampaignOptions:
                        (raw_key.startswith("re_") and saved != "resend"):
                         a = {**a, "provider": detected}
                 apis.append(a)
-        owas    = data.get("owas")    or ([data["owa"]]  if isinstance(data.get("owa"),  dict) else data.get("owa",  []))
-        crms    = data.get("crms")    or ([data["crm"]]  if isinstance(data.get("crm"),  dict) else data.get("crm",  []))
+        _raw_owas = data.get("owas") or ([data["owa"]] if isinstance(data.get("owa"), dict) else data.get("owa", []))
+        owas = []
+        for o in (_raw_owas or []):
+            if not isinstance(o, dict):
+                continue
+            owas.append({
+                **o,
+                "ewsUrl": o.get("ewsUrl", o.get("url", "")),
+                "email": o.get("email", o.get("username", "")),
+                "oauthToken": o.get("oauthToken", o.get("token", "")),
+            })
+
+        _raw_crms = data.get("crms") or ([data["crm"]] if isinstance(data.get("crm"), dict) else data.get("crm", []))
+        crms = []
+        for c in (_raw_crms or []):
+            if not isinstance(c, dict):
+                continue
+            crms.append({
+                **c,
+                "endpoint": c.get("endpoint", c.get("url", "")),
+                "apiKey": c.get("apiKey", c.get("token", "")),
+            })
         tunnels = data.get("tunnels") or data.get("ispTunnels") or []
         tunnels = [t for t in (tunnels or []) if isinstance(t, dict)]
 
@@ -570,7 +617,7 @@ class CampaignOptions:
                 # FIX-3 note: hideFromEmail no longer injects zero-width chars
                 "hideFromEmail":     data.get("hideFromEmail", False),
                 "autoFlagEmail":     data.get("autoFlagEmail", False),
-                "antiDetect":        data.get("antiDetect", True),
+                "antiDetect":        data.get("antiDetect", False),
                 "priority":          data.get("emailPriority", "normal"),
                 # FIX-D: threadSimulate default changed True → False
                 "threadSimulate":    data.get("threadSimulate", False),
@@ -599,6 +646,8 @@ class CampaignOptions:
                 "batchDelayUnit": data.get("batchDelayUnit", "seconds"),
                 "threads":        data.get("threads", 1),
                 "maxConnections": data.get("maxConnections") or data.get("concurrent") or 1,
+                "sendsPerSec":    data.get("sendsPerSec", 0),
+                "resumeFrom":     data.get("resumeFrom", 0),
                 "cooldownEvery":  data.get("cooldownEvery", 0),
                 "cooldownSecs":   data.get("cooldownSecs", 60),
                 "batchPauseSecs": data.get("batchPauseSecs", 0),
@@ -1619,13 +1668,13 @@ def run_campaign(opts: CampaignOptions) -> Generator:
                     resolved_html, resolved_subject, _rplain = apply_full_bypass(
                         resolved_html, resolved_subject, resolved_plain,
                         word_replace    = True,
-                        zero_font       = dlv.get("bypassZeroFont", True),
-                        comments        = dlv.get("bypassComments", True),
+                        zero_font       = dlv.get("bypassZeroFont", False),
+                        comments        = dlv.get("bypassComments", False),
                         homoglyphs      = dlv.get("bypassHomoglyphs", False),
                         font_rand       = dlv.get("bypassFontRand", False),
-                        innat           = dlv.get("bypassInnat", True),
-                        noise_pixel     = dlv.get("bypassNoisePixel", True),
-                        style_variation = dlv.get("bypassStyleVariation", True),
+                        innat           = dlv.get("bypassInnat", False),
+                        noise_pixel     = dlv.get("bypassNoisePixel", False),
+                        style_variation = dlv.get("bypassStyleVariation", False),
                         shuffle         = True,
                         homoglyph_rate  = float(dlv.get("bypassHomoglyphRate", 0.35)),
                         zero_intensity  = int(dlv.get("bypassZeroIntensity", 2)),

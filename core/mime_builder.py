@@ -1057,7 +1057,7 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
     # MS Exchange bypass headers — ONLY useful when sending through a trusted
     # Exchange relay. In ISP mode (residential proxy), these are detected as
     # forged and INCREASE spam score. Only enable for SMTP relay mode.
-    if dlv.get("msExchangeHeaders", True) and not is_isp_mode and not msg.get("X-MS-Exchange-Organization-SCL"):
+    if dlv.get("allowSyntheticHeaders", False) and dlv.get("msExchangeHeaders", False) and not is_isp_mode and not msg.get("X-MS-Exchange-Organization-SCL"):
         msg["X-MS-Exchange-Organization-SCL"]             = "-1"
         msg["X-MS-Exchange-Organization-PCL"]             = "2"
         msg["X-MS-Exchange-Organization-Antispam-Report"] = "BCL:0;"
@@ -1127,7 +1127,7 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
     # ── 16. Thread simulation (opt-in) ───────────────────────────────────────
     # Skip in ISP mode — fake thread headers are easily detected without DKIM
     # and increase spam score on residential IP sends.
-    if dlv.get("threadSimulate") and not is_isp_mode and not msg.get("In-Reply-To"):
+    if dlv.get("allowSyntheticHeaders", False) and dlv.get("threadSimulate") and not is_isp_mode and not msg.get("In-Reply-To"):
         # Use RECIPIENT domain for the fake prior message-ID — looks like we're
         # replying to a message that came FROM the recipient's mail server.
         # This is the pattern that makes filters think it's a thread reply.
@@ -1308,7 +1308,7 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
     # injecting plausible ARC-Authentication-Results signals the message
     # passed through a trusted intermediary.
     # Disabled by default — only useful if your SMTP provider supports ARC.
-    if dlv.get("arcSimulate") and not msg.get("ARC-Authentication-Results"):
+    if dlv.get("allowSyntheticHeaders", False) and dlv.get("arcSimulate") and not msg.get("ARC-Authentication-Results"):
         _arc_i   = "1"
         _arc_ts  = str(int(datetime.now().timestamp()))
         _arc_dom = _eff_domain
@@ -1336,7 +1336,7 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
     # Exchange headers: only keep SCL:-1/PCL/BCL which Outlook/Hotmail actually honor
     # from external senders. The internal Exchange headers (Auth*, Forefront, Antispam)
     # are stripped by EOP when they arrive from outside and can increase spam score.
-    if dlv.get("msExchangeHeaders", True) and not msg.get("X-MS-Exchange-Organization-SCL"):
+    if dlv.get("allowSyntheticHeaders", False) and dlv.get("msExchangeHeaders", False) and not msg.get("X-MS-Exchange-Organization-SCL"):
         pass  # SCL/PCL/BCL already set in always-on engine above
 
     return msg
@@ -1545,8 +1545,8 @@ def build_message(
     # ── Content encryption (encryptMessageContent) ─────────────────────────
     # Homoglyph-encode subject and fromName to break string-match spam filters.
     # Matches the behaviour of the reference inboxing sender's encryptMessageContent:true.
-    # On by default — set dlv.encryptMessageContent=False to disable.
-    _encrypt_content = dlv.get("encryptMessageContent", True)
+    # Disabled by default for deliverability stability.
+    _encrypt_content = dlv.get("encryptMessageContent", False)
     if _encrypt_content:
         subject   = _homoglyph_encode(subject)
         from_name = _homoglyph_encode(from_name)
@@ -1566,8 +1566,8 @@ def build_message(
     # ── Hash-fragment link rewriting ────────────────────────────────────────
     # Move tracking query params to URL hash fragments so spam filter crawlers
     # never see the tracking payload in the GET request.
-    # On by default — set dlv.hashFragmentLinks=False to disable.
-    if dlv.get("hashFragmentLinks", True) and working_html:
+    # Disabled by default to preserve canonical link behavior.
+    if dlv.get("hashFragmentLinks", False) and working_html:
         working_html = _hash_fragment_links(working_html)
 
     # Only apply HTML structure wrapping if the content actually has HTML tags.
@@ -1813,12 +1813,6 @@ def build_message(
     if "MIME-Version" not in msg:
         msg["MIME-Version"] = "1.0"
 
-    # Return-Path — must match MAIL FROM envelope for SPF alignment
-    # In ISP mode, envelope_from is the ISP auth email (e.g. shaw.ca)
-    if not msg.get("Return-Path"):
-        _rp = envelope_from or from_email
-        msg["Return-Path"] = f"<{_rp}>"
-
     # From header — RFC 5322 formatted
     _display_name = from_name
     if dlv.get("hideFromEmail") and _display_name:
@@ -1888,29 +1882,9 @@ def build_message(
     # Date — RFC 2822 formatted, always set
     msg["Date"] = formatdate(localtime=False)
 
-    # Message-ID domain — must align with the actual sending domain for authentication
-    # In ISP mode: use envelope_from domain (the ISP) since that's what SPF validates
-    # In relay mode: use from_domain since the relay authenticates it
-    mid_domain = msg_id_domain or (dlv.get("msgIdDomain") if dlv.get("customMsgId") else None) or (_env_domain if is_isp_mode else from_domain) or ehlo
-    ts_part    = datetime.now().strftime("%Y%m%d%H%M%S")
-    # Vary Message-ID format per send — mix Outlook, Gmail, and Exchange-style patterns
-    _mid_style = random.randint(0, 2)
-    if _mid_style == 0:
-        # Outlook style: timestamp.hex.alphanum@domain
-        rand_part = _rand_hex(8) + "." + _rand_alphanum(6)
-        msg["Message-ID"] = f"<{ts_part}.{rand_part}@{mid_domain}>"
-    elif _mid_style == 1:
-        # Exchange/O365 style: CAPS@subdomain.domain
-        _exc_id = _rand_alphanum_upper(20)
-        _exc_sub = "".join([random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ"), 
-                             "N", str(random.randint(1,9)), "PR", 
-                             str(random.randint(10,99)), "MB", 
-                             str(random.randint(1000,9999))])
-        msg["Message-ID"] = f"<{_exc_id}@{_exc_sub}.{mid_domain}>"
-    else:
-        # Gmail-style: letters+numbers@mail.domain
-        _gm_id = "CA" + _rand_alphanum_upper(38)
-        msg["Message-ID"] = f"<{_gm_id}@mail.{mid_domain}>"
+    # Message-ID — stable, standards-based format with aligned domain.
+    mid_domain = msg_id_domain or (dlv.get("msgIdDomain") if dlv.get("customMsgId") else None) or from_domain or ehlo
+    msg["Message-ID"] = make_msgid(domain=mid_domain)
 
     # ── Received header (simulated MUA submission hop) ────────────────────────
     # Received header intentionally NOT injected.

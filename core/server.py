@@ -2599,18 +2599,19 @@ fi
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            crm      = data.get("crm", {})
-            provider = crm.get("provider", "hubspot")
-            api_key  = crm.get("apiKey", "")
+            crm      = data.get("crm", data)
+            provider = (crm.get("provider") or data.get("type") or "hubspot").lower()
+            api_key  = crm.get("apiKey") or crm.get("token", "")
             if not api_key:
                 self._json(200, {"status": "error", "message": "No API key configured"}); return
             try:
+                endpoint = (crm.get("endpoint") or crm.get("url") or "").rstrip("/")
                 urls = {
                     "hubspot":    ("GET", "https://api.hubapi.com/crm/v3/objects/contacts?limit=1",
                                    {"Authorization": f"Bearer {api_key}"}),
-                    "salesforce": ("GET", crm.get("endpoint","").rstrip("/") + "/services/data/v58.0/limits",
+                    "salesforce": ("GET", endpoint + "/services/data/v58.0/limits",
                                    {"Authorization": f"Bearer {api_key}"}),
-                    "dynamics":   ("GET", crm.get("endpoint","").rstrip("/") + "/api/data/v9.2/WhoAmI",
+                    "dynamics":   ("GET", endpoint + "/api/data/v9.2/WhoAmI",
                                    {"Authorization": f"Bearer {api_key}"}),
                 }
                 if provider in urls:
@@ -2618,8 +2619,8 @@ fi
                     req = Request(url, headers=hdrs)
                     resp = urlopen(req, timeout=10)
                     self._json(200, {"status": "ok", "message": f"{provider.title()} API connected ({resp.status})"})
-                elif crm.get("endpoint"):
-                    req = Request(crm["endpoint"], headers={"Authorization": f"Bearer {api_key}"})
+                elif endpoint:
+                    req = Request(endpoint, headers={"Authorization": f"Bearer {api_key}"})
                     resp = urlopen(req, timeout=10)
                     self._json(200, {"status": "ok", "message": f"Custom CRM endpoint responded ({resp.status})"})
                 else:
