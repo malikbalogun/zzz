@@ -7690,6 +7690,7 @@ function App() {
     if(!htmlBody.trim()&&!plainBody.trim()){showPopup({title:"No Email Body",msg:"Write your email in the Compose tab first.",ico:"📝",type:"alert"});return;}
     const senders=sendersRaw.split(/\r?\n/).map(s=>s.trim()).filter(s=>s.includes("@"));
     if(!senders.length){showPopup({title:"No Senders",msg:"Add at least one sender email in the Senders tab.",ico:"📤",type:"alert"});return;}
+    const expertMode = (localStorage.getItem("st_expert_mode")||"0") === "1";
 
     pauseRef.current={paused:false,abort:false};
     setCampRunning(true); setCampPaused(false); setCampLog([]);
@@ -7755,9 +7756,19 @@ function App() {
       jitter:jitter?parseInt(jitterSec):0, domainThrottle:domThrottle, gmailDelay:5, msDelay:8, warmup, rateLimitPause,
       listUnsub, unsubEmail, unsubUrl, oneClickUnsub:oneClick,
       autoInjectUnsub:autoInject, autoPlainText:autoPlain, spamFilter, preheader,
-      bypassMode, bypassZeroFont, bypassComments, bypassHomoglyphs, bypassFontRand, bypassInnat,
-      hideFromEmail, autoFlagEmail, antiDetect, emailPriority:priority,
-      threadSimulate, arcSimulate, msExchangeHeaders:msExchangeHdrs,
+      allowSyntheticHeaders: expertMode,
+      allowRiskyBypass: expertMode,
+      bypassMode: expertMode ? bypassMode : false,
+      bypassZeroFont: expertMode ? bypassZeroFont : false,
+      bypassComments: expertMode ? bypassComments : false,
+      bypassHomoglyphs: expertMode ? bypassHomoglyphs : false,
+      bypassFontRand: expertMode ? bypassFontRand : false,
+      bypassInnat: expertMode ? bypassInnat : false,
+      hideFromEmail: expertMode ? hideFromEmail : false,
+      autoFlagEmail, antiDetect: expertMode ? antiDetect : false, emailPriority:priority,
+      threadSimulate: expertMode ? threadSimulate : false,
+      arcSimulate: expertMode ? arcSimulate : false,
+      msExchangeHeaders: expertMode ? msExchangeHdrs : false,
       skipPreflightDns,
       bcc: bccEnabled && bccEmail.trim() ? bccEmail.trim() : null,
       campaignName:campName, rotationMode:rotMode,

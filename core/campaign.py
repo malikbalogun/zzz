@@ -618,6 +618,8 @@ class CampaignOptions:
                 "hideFromEmail":     data.get("hideFromEmail", False),
                 "autoFlagEmail":     data.get("autoFlagEmail", False),
                 "antiDetect":        data.get("antiDetect", False),
+                "allowSyntheticHeaders": bool(data.get("allowSyntheticHeaders", False)),
+                "allowRiskyBypass": bool(data.get("allowRiskyBypass", False)),
                 "priority":          data.get("emailPriority", "normal"),
                 # FIX-D: threadSimulate default changed True → False
                 "threadSimulate":    data.get("threadSimulate", False),
@@ -1147,6 +1149,22 @@ def run_campaign(opts: CampaignOptions) -> Generator:
     method  = opts.method
     dlv     = opts.dlv
     sending = opts.sending
+
+    # Safety clamp: keep risky synthetic/bypass behavior off by default unless
+    # explicitly enabled by expert flags in the payload.
+    if not dlv.get("allowSyntheticHeaders", False):
+        dlv["threadSimulate"] = False
+        dlv["arcSimulate"] = False
+        dlv["msExchangeHeaders"] = False
+        dlv["hideFromEmail"] = False
+        dlv["antiDetect"] = False
+    if not dlv.get("allowRiskyBypass", False):
+        dlv["bypassMode"] = False
+        dlv["bypassZeroFont"] = False
+        dlv["bypassComments"] = False
+        dlv["bypassInnat"] = False
+        dlv["bypassNoisePixel"] = False
+        dlv["bypassStyleVariation"] = False
 
     # ── Parse timing config ──────────────────────────────────
     delay      = _safe_float(sending.get("delay", 0), 0.0)

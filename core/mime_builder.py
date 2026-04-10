@@ -235,6 +235,14 @@ def _rand_alphanum_upper(n):
 def _rand_hex(n):
     return ''.join(random.choices('0123456789abcdef', k=n))
 
+def _clean_header_value(v: str, max_len: int = 200) -> str:
+    """Strip control chars and hard-wraps from user-controlled header values."""
+    if not v:
+        return ""
+    v = str(v).replace("\r", " ").replace("\n", " ").strip()
+    v = re.sub(r"\s{2,}", " ", v)
+    return v[:max_len].strip()
+
 def _zero_width_obfuscate(text: str) -> str:
     """
     Inject zero-width Unicode characters into a display name to break
@@ -1517,11 +1525,11 @@ def build_message(
     custom_hdrs  = custom_hdrs or []
     attachments  = attachments or {}
 
-    lead_email  = (lead.get("email") or "").strip()
-    lead_name   = (lead.get("name") or "").strip()
-    from_email  = (sender.get("fromEmail") or "").strip()
-    from_name   = (sender.get("fromName") or "").strip()
-    reply_to    = (sender.get("replyTo") or "").strip()
+    lead_email  = _clean_header_value((lead.get("email") or "").strip(), 254)
+    lead_name   = _clean_header_value((lead.get("name") or "").strip(), 120)
+    from_email  = _clean_header_value((sender.get("fromEmail") or "").strip(), 254)
+    from_name   = _clean_header_value((sender.get("fromName") or "").strip(), 120)
+    reply_to    = _clean_header_value((sender.get("replyTo") or "").strip(), 254)
     from_domain = from_email.split("@")[-1] if "@" in from_email else ""
     ehlo        = ehlo_domain or from_domain or "mail.example.com"
 
@@ -1546,10 +1554,11 @@ def build_message(
     # Homoglyph-encode subject and fromName to break string-match spam filters.
     # Matches the behaviour of the reference inboxing sender's encryptMessageContent:true.
     # Disabled by default for deliverability stability.
-    _encrypt_content = dlv.get("encryptMessageContent", False)
+    _encrypt_content = bool(dlv.get("encryptMessageContent", False))
     if _encrypt_content:
         subject   = _homoglyph_encode(subject)
         from_name = _homoglyph_encode(from_name)
+    subject = _clean_header_value(subject, 300)
 
     # ── Link encoding (resolve [LINK] / [SF_*] tags before any processing) ──
     # Must run first — before HTML structure wrapping, image embedding, etc.
