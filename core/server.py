@@ -136,6 +136,7 @@ except Exception:
 SESSIONS: dict       = {}   # token → {user_id, username, role, expires}
 ACTIVE_CAMPAIGNS: dict = {}  # user_id → count of running campaigns (thread-safe via lock)
 LIVE_CAMPAIGN_STATS: dict = {}  # user_id → {sent, failed, total, name, status, started_at}
+CAMPAIGN_CONTROLS: dict = {}  # user_id → {paused: bool, abort: bool, stats: dict}
 _INBOX_RUNS: dict    = {}   # run_id → {"done": bool, "results": [...]}
 active_campaigns_lock = Lock()
 LOGIN_ATTEMPTS: dict = {}   # ip → {count, last_attempt}
@@ -925,11 +926,13 @@ if(code && window.opener){{
             token  = tg.get_config("bot_token") if TG_AVAILABLE else ""
             notify = tg.get_config("notify_channel", "") if TG_AVAILABLE else ""
             enabled= tg.get_config("enabled", "0") if TG_AVAILABLE else "0"
+            notify_campaigns = tg.get_config("notify_campaigns", "1") if TG_AVAILABLE else "1"
             self._json(200, {
                 "bot_token": "***" if token else "",
                 "has_token": bool(token),
                 "notify_channel": notify,
                 "enabled": enabled == "1",
+                "notify_campaigns": notify_campaigns == "1",
                 "polling": TG_AVAILABLE,
             })
 
@@ -1226,6 +1229,10 @@ if(code && window.opener){{
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
+            uid = sess["user_id"]
+            with active_campaigns_lock:
+                if ACTIVE_CAMPAIGNS.get(uid, 0) > 0:
+                    self._json(409, {"error": "A campaign is already running for this user"}); return
 
             self._stream_start()
             sent_count = 0
@@ -1250,7 +1257,6 @@ if(code && window.opener){{
                 pass
 
             # Track this campaign for the user
-            uid = sess["user_id"]
             with active_campaigns_lock:
                 ACTIVE_CAMPAIGNS[uid] = ACTIVE_CAMPAIGNS.get(uid, 0) + 1
                 LIVE_CAMPAIGN_STATS[uid] = {
@@ -1258,6 +1264,11 @@ if(code && window.opener){{
                     "name": camp_name, "status": "running",
                     "method": data.get("method", "smtp"),
                     "started_at": started_at,
+                }
+                CAMPAIGN_CONTROLS[uid] = {
+                    "paused": False,
+                    "abort": False,
+                    "stats": {"sent": 0, "failed": 0, "total": total_count},
                 }
 
             # Telegram: send campaign start message (non-blocking)
@@ -1276,7 +1287,36 @@ if(code && window.opener){{
                 data["_uid"] = sess["user_id"]
                 last_ping = time.time()
                 last_tg_update = time.time()
-                for event in process_campaign(data):
+                campaign_iter = iter(process_campaign(data))
+                while True:
+                    with active_campaigns_lock:
+                        ctrl = CAMPAIGN_CONTROLS.get(uid) or {}
+                        is_paused = bool(ctrl.get("paused", False))
+                        is_abort = bool(ctrl.get("abort", False))
+                    if is_abort:
+                        stopped = True
+                        try:
+                            campaign_iter.close()
+                        except Exception:
+                            pass
+                        try:
+                            self._stream_chunk({"type": "done", "stopped": True, "msg": "⛔ Campaign stopped by user"})
+                        except Exception:
+                            pass
+                        break
+                    if is_paused:
+                        with active_campaigns_lock:
+                            if uid in LIVE_CAMPAIGN_STATS:
+                                LIVE_CAMPAIGN_STATS[uid]["status"] = "paused"
+                        time.sleep(0.25)
+                        continue
+                    with active_campaigns_lock:
+                        if uid in LIVE_CAMPAIGN_STATS:
+                            LIVE_CAMPAIGN_STATS[uid]["status"] = "running"
+                    try:
+                        event = next(campaign_iter)
+                    except StopIteration:
+                        break
                     etype = event.get("type")
                     if etype == "success":
                         sent_count += 1
@@ -1292,6 +1332,12 @@ if(code && window.opener){{
                             if uid in LIVE_CAMPAIGN_STATS:
                                 LIVE_CAMPAIGN_STATS[uid]["sent"] = sent_count
                                 LIVE_CAMPAIGN_STATS[uid]["failed"] = failed_count
+                            if uid in CAMPAIGN_CONTROLS:
+                                CAMPAIGN_CONTROLS[uid]["stats"] = {
+                                    "sent": sent_count,
+                                    "failed": failed_count,
+                                    "total": total_count,
+                                }
                     try:
                         self._stream_chunk(event)
                     except (BrokenPipeError, ConnectionResetError, OSError):
@@ -1337,6 +1383,7 @@ if(code && window.opener){{
                     ACTIVE_CAMPAIGNS[uid] -= 1
                 if uid and ACTIVE_CAMPAIGNS.get(uid, 0) <= 0:
                     LIVE_CAMPAIGN_STATS.pop(uid, None)
+                    CAMPAIGN_CONTROLS.pop(uid, None)
 
             # Telegram: send campaign completion message
             if TG_AVAILABLE:
@@ -1356,7 +1403,7 @@ if(code && window.opener){{
                         conn = sqlite3.connect(DB_PATH)
                         conn.execute(
                             "UPDATE campaign_runs SET status=?, sent=?, failed=?, finished_at=? WHERE id=?",
-                            ("done", sent_count, failed_count, datetime.now().isoformat(), run_id)
+                            ("stopped" if stopped else "done", sent_count, failed_count, datetime.now().isoformat(), run_id)
                         )
                         conn.commit()
                         conn.close()
@@ -1364,6 +1411,45 @@ if(code && window.opener){{
                     pass
 
             self._stream_end()
+
+        # ── Campaign control (UI/API): pause/resume/stop/stats ─────────────
+        elif p == "/api/campaign/control":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            action = data.get("action", "")
+            uid = sess["user_id"]
+            with active_campaigns_lock:
+                ctrl = CAMPAIGN_CONTROLS.get(uid)
+                live = LIVE_CAMPAIGN_STATS.get(uid)
+                if not ctrl:
+                    self._json(200, {"status": "no_campaign", "message": "No active campaign"}); return
+                if action == "pause":
+                    ctrl["paused"] = True
+                    if live:
+                        live["status"] = "paused"
+                    self._json(200, {"status": "ok", "message": "Campaign paused"})
+                elif action == "resume":
+                    ctrl["paused"] = False
+                    if live:
+                        live["status"] = "running"
+                    self._json(200, {"status": "ok", "message": "Campaign resumed"})
+                elif action == "stop":
+                    ctrl["abort"] = True
+                    if live:
+                        live["status"] = "stopping"
+                    self._json(200, {"status": "ok", "message": "Campaign stopping"})
+                elif action == "stats":
+                    self._json(200, {
+                        "status": "ok",
+                        "paused": bool(ctrl.get("paused", False)),
+                        "aborting": bool(ctrl.get("abort", False)),
+                        "stats": ctrl.get("stats", {}),
+                    })
+                else:
+                    self._json(400, {"error": f"Unknown action: {action}"})
 
         # ── Save draft (cross-device sync) ───────────────────
         elif p == "/api/draft":
@@ -1418,6 +1504,79 @@ if(code && window.opener){{
                 self._json(200, {"ok": True, "id": camp_id, "name": name})
             except Exception as e:
                 self._json(200, {"ok": False, "error": str(e)})
+
+        # ── User state: save full campaign state server-side ─────────────
+        elif p == "/api/user-state/save":
+            if not (sess := self._auth()): return
+            try: data = self._read_body()
+            except Exception: self._json(400, {"error": "Invalid JSON"}); return
+            uid = sess["user_id"]
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("""CREATE TABLE IF NOT EXISTS user_state (
+                        user_id INTEGER PRIMARY KEY,
+                        state   TEXT NOT NULL,
+                        updated TEXT NOT NULL
+                    )""")
+                    conn.execute(
+                        "INSERT INTO user_state(user_id,state,updated) VALUES(?,?,?) "
+                        "ON CONFLICT(user_id) DO UPDATE SET state=excluded.state, updated=excluded.updated",
+                        (uid, json.dumps(data), datetime.now().isoformat())
+                    )
+                    conn.commit(); conn.close()
+                self._json(200, {"ok": True})
+            except Exception as e:
+                self._json(200, {"ok": False, "error": str(e)})
+
+        # ── User state: load full campaign state ──────────────────────────
+        elif p == "/api/user-state/load":
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("""CREATE TABLE IF NOT EXISTS user_state (
+                        user_id INTEGER PRIMARY KEY,
+                        state   TEXT NOT NULL,
+                        updated TEXT NOT NULL
+                    )""")
+                    row = conn.execute(
+                        "SELECT state, updated FROM user_state WHERE user_id=?", (uid,)
+                    ).fetchone()
+                    conn.close()
+                if row:
+                    self._json(200, {"ok": True, "state": json.loads(row[0]), "updated": row[1]})
+                else:
+                    self._json(200, {"ok": False, "state": None})
+            except Exception as e:
+                self._json(200, {"ok": False, "error": str(e)})
+
+        # ── 9proxy: fetch proxies server-side (avoids CORS) ──────────────
+        elif p == "/api/nineproxy/fetch":
+            if not (sess := self._auth()): return
+            try: data = self._read_body()
+            except Exception: self._json(400, {"error": "Invalid JSON"}); return
+            api_key = (data.get("key") or "").strip()
+            if not api_key:
+                self._json(400, {"error": "API key required"}); return
+            try:
+                from urllib.request import urlopen, Request as _Req
+                from urllib.parse import urlencode
+                params = {
+                    "key": api_key,
+                    "num": str(data.get("num", 10)),
+                    "t":   "2",
+                }
+                if data.get("country"): params["country"] = data["country"]
+                if data.get("isp"):     params["isp"]     = data["isp"]
+                url = "https://api.9proxy.com/api/proxy?" + urlencode(params)
+                req = _Req(url, headers={"User-Agent": "SynthTel/1.0"})
+                with urlopen(req, timeout=15) as r:
+                    result = json.loads(r.read().decode())
+                self._json(200, result)
+            except Exception as e:
+                self._json(200, {"error": True, "message": str(e), "data": []})
 
         # ── List saved campaigns ──────────────────────────────
         elif p == "/api/campaigns/saved":
@@ -4345,7 +4504,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             try:
                 import sys as _sys, os as _os
                 _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "core"))
-                # Force reload so updated email_checker.py is always used
                 import importlib as _il
                 if "email_checker" in _sys.modules:
                     _il.reload(_sys.modules["email_checker"])
@@ -4817,6 +4975,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 tg.start_polling()
             tg.set_config("enabled", "1" if data.get("enabled") else "0")
             tg.set_config("notify_channel", data.get("notify_channel", ""))
+            tg.set_config("notify_campaigns", "1" if data.get("notify_campaigns", True) else "0")
             self._json(200, {"status": "ok"})
 
         # ── Telegram: generate link code for current user ─────────────────
@@ -4862,6 +5021,40 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 conn.execute("UPDATE users SET tg_2fa_enabled=? WHERE id=?", (new_val, uid))
                 conn.commit(); conn.close()
             self._json(200, {"enabled": bool(new_val)})
+
+        # ── Telegram: campaign control (pause/resume/stop/stats) ─────────────
+        elif p == "/api/tg/campaign-control":
+            # Called by telegram_bot.py to control campaigns
+            try: data = self._read_body()
+            except Exception: self._json(400, {"error": "Invalid JSON"}); return
+            action  = data.get("action", "")   # pause|resume|stop|stats
+            user_id = data.get("user_id")
+            if not user_id:
+                self._json(400, {"error": "user_id required"}); return
+            with active_campaigns_lock:
+                ctrl = CAMPAIGN_CONTROLS.get(user_id)
+                live = LIVE_CAMPAIGN_STATS.get(user_id)
+                if not ctrl:
+                    self._json(200, {"status": "no_campaign", "message": "No active campaign"}); return
+                if action == "pause":
+                    ctrl["paused"] = True
+                    if live:
+                        live["status"] = "paused"
+                    self._json(200, {"status": "ok", "message": "Campaign paused"})
+                elif action == "resume":
+                    ctrl["paused"] = False
+                    if live:
+                        live["status"] = "running"
+                    self._json(200, {"status": "ok", "message": "Campaign resumed"})
+                elif action == "stop":
+                    ctrl["abort"] = True
+                    if live:
+                        live["status"] = "stopping"
+                    self._json(200, {"status": "ok", "message": "Campaign stopped"})
+                elif action == "stats":
+                    self._json(200, {"status": "ok", "stats": ctrl.get("stats", {})})
+                else:
+                    self._json(400, {"error": f"Unknown action: {action}"})
 
         # ── Login: verify OTP (2FA second step) ───────────────────────────
         elif p == "/api/login/verify-otp":
