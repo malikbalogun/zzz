@@ -402,6 +402,15 @@ def send_direct_mx(
     if health.is_dead(from_email):
         raise Exception(f"Sender {from_email} is dead — too many from-address rejections")
 
+    # Direct-to-MX: we own the TCP connection end-to-end — no relay in between
+    # to inspect or reject headers. Apply Reply-To directly as a real header.
+    # mime_builder stores it in _synthtel_reply_to to give smtp_sender a chance
+    # to decide whether to inject (relay mode) or skip (ISP SMTP mode). Here we
+    # just apply it — recipient's MX will never object to a Reply-To header.
+    _reply_to_val = getattr(msg, '_synthtel_reply_to', None)
+    if _reply_to_val and not msg.get('Reply-To'):
+        msg['Reply-To'] = _reply_to_val
+
     # Resolve MX
     mx_hosts = mx_cache.get(domain)
     if not mx_hosts:

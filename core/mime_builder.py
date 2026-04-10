@@ -954,7 +954,7 @@ def _build_generic_attachment(file_path, filename=None):
 # ADVANCED INBOXING HEADERS
 # ═══════════════════════════════════════════════════════════
 
-def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain, ehlo_domain):
+def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain, ehlo_domain, is_isp_mode=False):
     """
     Apply all deliverability and advanced inboxing headers to msg.
     
@@ -1031,7 +1031,7 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
 
     # X-Mailer: ISP mode should have one (real users use Outlook/Thunderbird).
     # Relay/ESP mode should NOT have one (real ESPs don't set X-Mailer).
-    if not msg.get("X-Mailer") and _is_isp_mode:
+    if not msg.get("X-Mailer") and is_isp_mode:
         msg["X-Mailer"] = random.choice([
             "Microsoft Outlook 16.0.17928.20114",
             "Microsoft Outlook 16.0.17126.20190",
@@ -1057,7 +1057,7 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
     # MS Exchange bypass headers — ONLY useful when sending through a trusted
     # Exchange relay. In ISP mode (residential proxy), these are detected as
     # forged and INCREASE spam score. Only enable for SMTP relay mode.
-    if dlv.get("msExchangeHeaders", True) and not _is_isp_mode and not msg.get("X-MS-Exchange-Organization-SCL"):
+    if dlv.get("msExchangeHeaders", True) and not is_isp_mode and not msg.get("X-MS-Exchange-Organization-SCL"):
         msg["X-MS-Exchange-Organization-SCL"]             = "-1"
         msg["X-MS-Exchange-Organization-PCL"]             = "2"
         msg["X-MS-Exchange-Organization-Antispam-Report"] = "BCL:0;"
@@ -1127,7 +1127,7 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
     # ── 16. Thread simulation (opt-in) ───────────────────────────────────────
     # Skip in ISP mode — fake thread headers are easily detected without DKIM
     # and increase spam score on residential IP sends.
-    if dlv.get("threadSimulate") and not _is_isp_mode and not msg.get("In-Reply-To"):
+    if dlv.get("threadSimulate") and not is_isp_mode and not msg.get("In-Reply-To"):
         # Use RECIPIENT domain for the fake prior message-ID — looks like we're
         # replying to a message that came FROM the recipient's mail server.
         # This is the pattern that makes filters think it's a thread reply.
@@ -1145,7 +1145,7 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
     # ── List-Unsubscribe (RFC 2369 + RFC 8058) ──
     # Skip in ISP mode — individual sends don't have unsubscribe headers
     # and they fingerprint the message as bulk mail.
-    if dlv.get("listUnsub") and not _is_isp_mode:
+    if dlv.get("listUnsub") and not is_isp_mode:
         unsub_parts = []
         unsub_url   = (dlv.get("unsubUrl") or "").replace("#EMAIL", lead_email)
         unsub_email = dlv.get("unsubEmail") or ""
@@ -1527,7 +1527,7 @@ def build_message(
 
     # Detect ISP mode: envelope_from on a different domain than From
     _env_domain = envelope_from.split("@")[-1] if envelope_from and "@" in envelope_from else ""
-    _is_isp_mode = bool(_env_domain and _env_domain.lower() != from_domain.lower())
+    is_isp_mode = bool(_env_domain and _env_domain.lower() != from_domain.lower())
 
     warnings    = []
     zip_password = None
@@ -1824,13 +1824,14 @@ def build_message(
     if dlv.get("hideFromEmail") and _display_name:
         _display_name = _zero_width_obfuscate(_display_name)
     if _display_name:
-        # Always encode as UTF-8 if we injected ZW chars, else try ASCII first
+        import email.utils as _eu
         _needs_utf8 = dlv.get("hideFromEmail") or not all(ord(c) < 128 for c in _display_name)
         if _needs_utf8:
             from email.header import Header as _Hdr
             msg["From"] = f"{_Hdr(_display_name, 'utf-8').encode()} <{from_email}>"
         else:
-            msg["From"] = f'"{_display_name}" <{from_email}>'
+            # formataddr handles RFC 5322 quoting/escaping of special chars
+            msg["From"] = _eu.formataddr((_display_name, from_email))
     else:
         msg["From"] = from_email
 
@@ -1856,11 +1857,9 @@ def build_message(
 
     # Thread-Topic intentionally omitted — not present in real ESP sends, fingerprints bulk senders
 
-    # Reply-To handling for deliverability:
-    # Some relays (sendrealm etc) include Reply-To in their DKIM signature.
-    # When Reply-To domain differs from From domain, DMARC alignment can fail.
-    # We still set it on the MIME object — smtp_sender will handle relay bypass
-    # by injecting it into raw bytes after serialization if needed.
+    # Reply-To handling:
+    # Store on msg object — smtp_sender injects it into raw bytes post-serialization
+    # to bypass relay DKIM coverage. Works for both ISP relay and direct MX modes.
     if reply_to and reply_to != from_email:
         _rt = reply_to.strip().split()[0] if reply_to.strip() else ""
         if _rt and "@" in _rt and "." in _rt.split("@")[-1]:
@@ -1892,7 +1891,7 @@ def build_message(
     # Message-ID domain — must align with the actual sending domain for authentication
     # In ISP mode: use envelope_from domain (the ISP) since that's what SPF validates
     # In relay mode: use from_domain since the relay authenticates it
-    mid_domain = msg_id_domain or (dlv.get("msgIdDomain") if dlv.get("customMsgId") else None) or (_env_domain if _is_isp_mode else from_domain) or ehlo
+    mid_domain = msg_id_domain or (dlv.get("msgIdDomain") if dlv.get("customMsgId") else None) or (_env_domain if is_isp_mode else from_domain) or ehlo
     ts_part    = datetime.now().strftime("%Y%m%d%H%M%S")
     # Vary Message-ID format per send — mix Outlook, Gmail, and Exchange-style patterns
     _mid_style = random.randint(0, 2)
@@ -1922,7 +1921,7 @@ def build_message(
     # detectable forgery. Let the MTA add it.
 
     # ── Deliverability headers ──
-    _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain, ehlo)
+    _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain, ehlo, is_isp_mode=is_isp_mode)
 
     # ── Custom user-defined headers (protected headers skipped with warning) ──
     for ch in custom_hdrs:

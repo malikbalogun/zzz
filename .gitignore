@@ -1,3 +1,11 @@
 __pycache__/
 *.pyc
 *.pyo
+# runtime/secrets
+synthtel.db
+synthtel.log
+synthtel.log.*
+index.html.1
+libs/output.log
+core/__pycache__/
+*.pyc

@@ -580,7 +580,13 @@ class SmtpPool:
                             _raw = _rt_line + _raw
                         # Send raw bytes — relay processes MAIL FROM/RCPT TO normally
                         # Reply-To bypasses relay header inspection
-                        conn.sendmail(from_email, [to_email], _raw)
+                        try:
+                            conn.sendmail(from_email, [to_email], _raw)
+                        except Exception as _rt_err:
+                            # Some ISP relays reject the raw send; fall back to
+                            # send_message without Reply-To so the email still delivers
+                            log.warning("[SmtpPool] %s: sendmail with Reply-To failed (%s), retrying without Reply-To", key, _rt_err)
+                            conn.send_message(msg, from_addr=from_email, to_addrs=[to_email])
                     else:
                         conn.send_message(msg, from_addr=from_email, to_addrs=[to_email])
                     entry.last_used = time.time()

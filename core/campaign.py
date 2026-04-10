@@ -851,17 +851,19 @@ def _send_one(
         # in smtp_sender._open_connection — so proxy works transparently with all encryption modes.
         try:
             via_used = send_smtp(
-                smtp_cfg       = server,
-                sender         = sender,
-                lead           = lead,
-                resolved_html  = html,
-                resolved_plain = plain,
-                resolved_subj  = subject,
-                dlv            = dlv,
-                custom_headers = hdrs,
-                proxy_cfg      = proxy_cfg,
-                pool           = pool,
-                attachments    = opts.attachments or {},
+                smtp_cfg        = server,
+                sender          = sender,
+                lead            = lead,
+                resolved_html   = html,
+                resolved_plain  = plain,
+                resolved_subj   = subject,
+                dlv             = dlv,
+                custom_headers  = hdrs,
+                proxy_cfg       = proxy_cfg,
+                pool            = pool,
+                attachments     = opts.attachments or {},
+                envelope_from   = server.get("envelope_from", ""),
+                smtp_auth_email = server.get("smtp_auth_email", ""),
             )
             return True, "", via_used or via
         except Exception as exc:
