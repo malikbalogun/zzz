@@ -7745,6 +7745,7 @@ function App() {
       replyTos:senderReplyTo.split("\n").map(s=>s.trim()).filter(Boolean),
       _uid: (()=>{try{const u=JSON.parse(atob((localStorage.getItem("st_token")||"").split(".")[1]||"{}"));return u.sub||u.id||u.user_id||"";}catch(e){return "";}})(),
       method:effectiveMethod, smtpServers:smtpList, apiKeys:apiList,
+      inboxProfile:true,
       owa:owaConfig, crm:crmConfig, tunnels:effectiveTunnels,
       // Only include ispTunnels if actually using ISP method — prevents auto-switch to tunnel
       ...(effectiveMethod==="isp" ? {ispTunnels} : {}),

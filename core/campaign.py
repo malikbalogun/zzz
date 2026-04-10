@@ -408,6 +408,7 @@ class CampaignOptions:
         attachments:    dict  = None,
         proxy:          dict  = None,
         uid:            str   = None,
+        inbox_profile:  bool  = True,
         skip_preflight_dns: bool = False,
         bcc_mode:           bool  = False,
         bcc_max:            int   = 5,
@@ -416,6 +417,7 @@ class CampaignOptions:
         b2b_cfg:            dict  = None,
     ):
         self.uid            = uid
+        self.inbox_profile  = bool(inbox_profile)
         self.method         = method if method in VALID_METHODS else "smtp"
         self.smtps          = smtps   or []
         self.apis           = apis    or []
@@ -686,6 +688,7 @@ class CampaignOptions:
             attachments    = data.get("attachments") or {},
             proxy          = cls._build_proxy_cfg(data),
             uid            = data.get("_uid"),
+            inbox_profile  = bool(data.get("inboxProfile", True)),
             skip_preflight_dns = bool(data.get("skipPreflightDns", False)),
             bcc_mode           = bool(data.get("bccMode", False)),
             bcc_max            = int(data.get("bccMax", 5)),
@@ -1176,6 +1179,7 @@ def run_campaign(opts: CampaignOptions) -> Generator:
     dlv     = opts.dlv
     sending = opts.sending
     campaign_uid = getattr(opts, "uid", None)
+    inbox_profile = bool(getattr(opts, "inbox_profile", True))
 
     # Safety clamp: keep risky synthetic/bypass behavior off by default unless
     # explicitly enabled by expert flags in the payload.
@@ -1192,6 +1196,28 @@ def run_campaign(opts: CampaignOptions) -> Generator:
         dlv["bypassInnat"] = False
         dlv["bypassNoisePixel"] = False
         dlv["bypassStyleVariation"] = False
+
+    # Inbox profile: enforce conservative defaults that favor placement over tricks.
+    if inbox_profile:
+        dlv["autoPlain"] = True
+        dlv["domainThrottle"] = True
+        dlv["rateLimitPause"] = True
+        dlv["priority"] = "normal"
+        dlv["autoFlagEmail"] = False
+        dlv["spamFilter"] = False
+        dlv["antiDetect"] = False
+        dlv["hideFromEmail"] = False
+        dlv["threadSimulate"] = False
+        dlv["arcSimulate"] = False
+        dlv["msExchangeHeaders"] = False
+        if dlv.get("unsubUrl") or dlv.get("unsubEmail"):
+            dlv["listUnsub"] = True
+            if dlv.get("unsubUrl"):
+                dlv["oneClickUnsub"] = True
+        else:
+            dlv["oneClickUnsub"] = False
+        if opts.skip_preflight_dns:
+            opts.skip_preflight_dns = False
 
     # ── Parse timing config ──────────────────────────────────
     delay      = _safe_float(sending.get("delay", 0), 0.0)
@@ -1226,6 +1252,11 @@ def run_campaign(opts: CampaignOptions) -> Generator:
         }
     else:
         max_emails = len(opts.leads)
+
+    if inbox_profile:
+        yield {"type": "info", "msg": "🛡 Inbox profile enabled — enforcing safe headers, plain-text MIME, and conservative pacing"}
+        if len(opts.leads) >= 500 and not (dlv.get("unsubUrl") or dlv.get("unsubEmail")):
+            yield {"type": "warn", "msg": "⚠ Bulk send without unsubscribe URL/email can reduce Gmail/Yahoo inbox placement"}
 
     total_cap = min(len(opts.leads), max_emails) if dlv.get("warmup") else len(opts.leads)
 

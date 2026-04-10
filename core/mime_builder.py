@@ -1190,14 +1190,16 @@ def _apply_deliverability_headers(msg, dlv, lead_email, from_email, from_domain,
         msg["Organization"] = dlv["organization"]
 
     # ── X-Priority / Importance ──
-    pri = dlv.get("priority", "normal")
-    if pri == "high":
-        msg["X-Priority"] = "1"
-        msg["Importance"] = "High"
-    elif pri == "low":
-        msg["X-Priority"] = "5"
-        msg["Importance"] = "Low"
-    # normal: no priority headers (default inbox treatment)
+    # Only set here if not already set above (autoFlag/high-priority branch).
+    if not msg.get("X-Priority"):
+        pri = dlv.get("priority", "normal")
+        if pri == "high":
+            msg["X-Priority"] = "1"
+            msg["Importance"] = "High"
+        elif pri == "low":
+            msg["X-Priority"] = "5"
+            msg["Importance"] = "Low"
+        # normal: no priority headers (default inbox treatment)
 
     # ── X-Entity-Ref-ID (Gmail deduplication) ──
     if dlv.get("entityRef"):
