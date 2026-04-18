@@ -892,13 +892,15 @@ if(code && window.opener){{
             with db_lock:
                 conn = sqlite3.connect(DB_PATH)
                 row = conn.execute(
-                    "SELECT filename,orig_name,mime_type FROM user_files WHERE id=? AND user_id=?",
+                    "SELECT filename,orig_name,mime_type,category FROM user_files WHERE id=? AND user_id=?",
                     (fid, uid)
                 ).fetchone()
                 conn.close()
             if not row:
                 self._json(404, {"error": "File not found"}); return
-            fpath = os.path.join(FILES_DIR, str(uid), row[0])
+            # Files are written to FILES_DIR/<uid>/<category>/<filename> by
+            # /api/files/upload — include the category segment when reading.
+            fpath = os.path.join(FILES_DIR, str(uid), row[3], row[0])
             if not os.path.exists(fpath):
                 self._json(404, {"error": "File missing from disk"}); return
             with open(fpath, "rb") as f:
@@ -1132,6 +1134,48 @@ if(code && window.opener){{
             except Exception:
                 pass
             self._json(200, {"active": False, "active_count": active, "live": None, "latest": latest})
+
+        # ── Server log tail ─────────────────────────────────────────
+        elif p.startswith("/api/logs"):
+            if not (sess := self._auth()): return
+            try:
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                lines = int(qs.get("lines", [100])[0])
+                lines = min(lines, 500)
+            except Exception:
+                lines = 100
+            try:
+                with open(LOG_PATH, "r", errors="replace") as f:
+                    all_lines = f.readlines()
+                tail = "".join(all_lines[-lines:])
+            except Exception as e:
+                tail = f"[Log file not found or unreadable: {e}]"
+            self._json(200, {"log": tail, "path": LOG_PATH})
+
+        # ── Admin in-memory debug ring buffer ───────────────────────
+        elif p.startswith("/api/debug-log"):
+            if not (sess := self._admin()): return
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            clear = qs.get("clear", ["0"])[0] == "1"
+            with _dbg_lock:
+                entries = list(_DEBUG_BUF)
+                if clear: _DEBUG_BUF.clear()
+            self._json(200, {"entries": entries, "count": len(entries)})
+
+        # ── Public IP of this server (for proxy whitelists) ─────────
+        elif p == "/api/server-ip":
+            if not (sess := self._auth()): return
+            try:
+                from urllib.request import urlopen as _uo
+                _ip = _uo("https://api.ipify.org", timeout=5).read().decode().strip()
+            except Exception:
+                try:
+                    _ip = _uo("https://ifconfig.me/ip", timeout=5).read().decode().strip()
+                except Exception:
+                    _ip = "unknown"
+            self._json(200, {"ip": _ip})
 
         else:
             self._json(404, {"error": "Not found"})
@@ -3994,6 +4038,66 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             self._json(200, {"id": file_id, "name": orig_name, "filename": filename,
                               "size": len(file_bytes), "category": category})
 
+        # ── POST aliases the frontend uses for file delete/rename ─────
+        # The canonical handlers live under DELETE /api/files/{id} and
+        # PATCH /api/files/{id}, but index.html issues these as POSTs
+        # (legacy XMLHttpRequest workaround), so accept both.
+        elif p.startswith("/api/files/delete/"):
+            if not (sess := self._auth()): return
+            try:
+                fid = int(p.split("/")[4])
+            except Exception:
+                self._json(400, {"error": "Invalid file ID"}); return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                row = conn.execute(
+                    "SELECT filename,category FROM user_files WHERE id=? AND user_id=?",
+                    (fid, uid)
+                ).fetchone()
+                if row:
+                    conn.execute("DELETE FROM user_files WHERE id=?", (fid,))
+                    conn.commit()
+                conn.close()
+            if row:
+                fpath = os.path.join(FILES_DIR, str(uid), row[1], row[0])
+                try:
+                    os.remove(fpath)
+                except Exception:
+                    pass
+                self._json(200, {"status": "ok"})
+            else:
+                self._json(404, {"error": "File not found"})
+
+        elif p.startswith("/api/files/rename/"):
+            if not (sess := self._auth()): return
+            try:
+                fid = int(p.split("/")[4])
+            except Exception:
+                self._json(400, {"error": "Invalid file ID"}); return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            uid = sess["user_id"]
+            new_name = (data.get("display_name") or data.get("name") or "")[:255]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                row = conn.execute(
+                    "SELECT id FROM user_files WHERE id=? AND user_id=?", (fid, uid)
+                ).fetchone()
+                if row:
+                    conn.execute(
+                        "UPDATE user_files SET display_name=? WHERE id=?",
+                        (new_name, fid)
+                    )
+                    conn.commit()
+                conn.close()
+            if row:
+                self._json(200, {"status": "ok", "display_name": new_name})
+            else:
+                self._json(404, {"error": "File not found"})
+
         # ── Save user config ─────────────────────────────────
         elif p == "/api/configs/save":
             if not (sess := self._auth()): return
@@ -5306,33 +5410,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 "📢 <b>Message from Admin</b>\n\n" + msg)
             self._json(200, {"status": "ok"})
 
-        elif p.startswith("/api/logs"):
-            if not (sess := self._auth()): return
-            try:
-                from urllib.parse import parse_qs, urlparse
-                qs = parse_qs(urlparse(self.path).query)
-                lines = int(qs.get("lines", [100])[0])
-                lines = min(lines, 500)
-            except Exception:
-                lines = 100
-            try:
-                with open(LOG_PATH, "r", errors="replace") as f:
-                    all_lines = f.readlines()
-                tail = "".join(all_lines[-lines:])
-            except Exception as e:
-                tail = f"[Log file not found or unreadable: {e}]"
-            self._json(200, {"log": tail, "path": LOG_PATH})
-
-        elif p.startswith("/api/debug-log"):
-            if not (sess := self._admin()): return
-            from urllib.parse import parse_qs, urlparse
-            qs = parse_qs(urlparse(self.path).query)
-            clear = qs.get("clear", ["0"])[0] == "1"
-            with _dbg_lock:
-                entries = list(_DEBUG_BUF)
-                if clear: _DEBUG_BUF.clear()
-            self._json(200, {"entries": entries, "count": len(entries)})
-
         elif p == "/api/debug-tags":
             if not (sess := self._auth()): return
             try:
@@ -5357,19 +5434,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 "link_replaced": "#LINK" not in resolved,
                 "note": "If link_replaced is false, links_cfg was empty — check you clicked Apply in the UI"
             })
-
-        elif p == "/api/server-ip":
-            # Returns this server's public IP — needed to know what to whitelist in proxy dashboards
-            if not (sess := self._auth()): return
-            try:
-                from urllib.request import urlopen as _uo
-                _ip = _uo("https://api.ipify.org", timeout=5).read().decode().strip()
-            except Exception:
-                try:
-                    _ip = _uo("https://ifconfig.me/ip", timeout=5).read().decode().strip()
-                except Exception:
-                    _ip = "unknown"
-            self._json(200, {"ip": _ip})
 
         else:
             self._json(404, {"error": "Not found"})
