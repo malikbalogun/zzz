@@ -429,7 +429,7 @@ def _cleanup_loop():
         if expired:
             log.info("Cleanup: purged %d expired sessions", len(expired))
         stale = [ip for ip, a in LOGIN_ATTEMPTS.items()
-                 if (now - a["last_attempt"]).total_seconds() > LOCKOUT_MINUTES * 240]
+                 if (now - a["last_attempt"]).total_seconds() > LOCKOUT_MINUTES * 60]
         for ip in stale:
             LOGIN_ATTEMPTS.pop(ip, None)
 
