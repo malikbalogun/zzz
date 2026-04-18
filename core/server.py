@@ -4189,7 +4189,11 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                     self._json(400, {"error": "accessKey and secretKey required"}); return
                 # AWS SES SMTP password derivation (official algorithm)
                 # https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html
-                import hmac, hashlib, base64
+                # NOTE: do NOT re-import base64 here — that creates a
+                # function-local binding that shadows the module-level
+                # import and makes other branches in this function
+                # (e.g. /api/files/upload) hit UnboundLocalError.
+                import hmac, hashlib
                 DATE      = "11111111"
                 SERVICE   = "ses"
                 MSG       = "SendRawEmail"
