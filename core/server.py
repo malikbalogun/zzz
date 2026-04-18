@@ -149,6 +149,16 @@ sessions_lock = Lock()
 # DATABASE & AUTH
 # ═══════════════════════════════════════════════════════════════
 
+def get_db() -> sqlite3.Connection:
+    """Open a fresh SQLite connection to the SynthTel DB.
+
+    Used by core.campaign.process_campaign() to lazy-load ISP / tunnel
+    rows when the frontend hasn't shipped them in the payload.
+    Caller is responsible for closing the returned connection.
+    """
+    return sqlite3.connect(DB_PATH)
+
+
 def init_db():
     """Create tables and restore active sessions on startup."""
     with db_lock:
