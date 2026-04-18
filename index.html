@@ -7603,15 +7603,32 @@ function App() {
   }
 
   async function uploadFile(file, category) {
+    // Backend /api/files/upload expects a JSON body with a base64 'data'
+    // field — read the file, base64-encode it in chunks (so big files
+    // don't blow the call stack), then POST as JSON.
     setFileUploadLoading(true);
-    const fd = new FormData();
-    fd.append(category, file, file.name||"file.bin");
-    const tk = localStorage.getItem("st_token");
     try {
-      const r = await fetch(API+"/api/files/upload",{method:"POST",headers:{"Authorization":"Bearer "+tk},body:fd});
-      const d = await r.json();
-      if((d.uploaded||[]).length) await loadFiles();
-    } catch(e){}
+      const buf  = await file.arrayBuffer();
+      const view = new Uint8Array(buf);
+      let bin = "";
+      const CHUNK = 0x8000; // 32 KB chunks for String.fromCharCode.apply
+      for (let i = 0; i < view.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, view.subarray(i, i + CHUNK));
+      }
+      const b64 = btoa(bin);
+      const r = await apiCall("/api/files/upload", {
+        method: "POST",
+        body: JSON.stringify({
+          category,
+          name: file.name || "file.bin",
+          mime: file.type || "application/octet-stream",
+          data: b64,
+        }),
+      });
+      if (r.ok) await loadFiles();
+    } catch (e) {
+      console.error("uploadFile failed:", e);
+    }
     setFileUploadLoading(false);
   }
 

@@ -4012,12 +4012,20 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             orig_name = data.get("name", "file")[:255]
             mime_type = data.get("mime", "application/octet-stream")[:100]
             b64_data  = data.get("data", "")
-            if not b64_data:
+            if not b64_data or not isinstance(b64_data, str):
                 self._json(400, {"error": "No file data"}); return
+            # Tolerate data-URL prefix and stray whitespace, and re-pad if
+            # the client trimmed trailing '=' (some uploaders do).
+            if b64_data.startswith("data:") and "," in b64_data:
+                b64_data = b64_data.split(",", 1)[1]
+            b64_clean = "".join(b64_data.split())
+            pad = (-len(b64_clean)) % 4
+            if pad:
+                b64_clean += "=" * pad
             try:
-                file_bytes = base64.b64decode(b64_data)
-            except Exception:
-                self._json(400, {"error": "Invalid base64 data"}); return
+                file_bytes = base64.b64decode(b64_clean, validate=False)
+            except Exception as _b64e:
+                self._json(400, {"error": f"Invalid base64 data: {str(_b64e)[:80]}"}); return
             if len(file_bytes) > 20 * 1024 * 1024:
                 self._json(400, {"error": "File too large (max 20MB)"}); return
             user_dir = os.path.join(FILES_DIR, str(uid), category)
