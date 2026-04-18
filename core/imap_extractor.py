@@ -395,3 +395,9 @@ def _extract_imap(conn, prov, limit, filter_generic):
         return _build_result(results,total_inbox,prov,f"{prov.get('host','')}:{prov.get('port',993)}")
     except Exception as exc:
         return {"ok":False,"error":str(exc)[:200]}
+
+
+# ── Backwards-compat alias ──────────────────────────────────────────
+# core/server.py imports this name; the canonical implementation is
+# extract_inbox_simple above.
+extract_from_inbox = extract_inbox_simple

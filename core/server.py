@@ -3808,14 +3808,15 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 self._json(400, {"error": "Invalid JSON"}); return
             try:
                 from core.imap_extractor import extract_from_inbox
+                # Note: extract_from_inbox/extract_inbox_simple does its own
+                # provider detection, so imap_host/imap_port from the
+                # frontend are informational only (not forwarded here).
                 result = extract_from_inbox(
-                    email       = data.get("email", ""),
-                    password    = data.get("password", ""),
-                    access_token= data.get("accessToken", ""),
-                    imap_host   = data.get("imapHost"),
-                    imap_port   = int(data.get("imapPort", 993) or 993),
-                    limit       = int(data.get("limit", 500) or 500),
-                    filter_generic = data.get("filterGeneric", True),
+                    email_addr     = data.get("email", ""),
+                    password       = data.get("password", ""),
+                    token          = data.get("accessToken", ""),
+                    limit          = int(data.get("limit", 500) or 500),
+                    filter_generic = bool(data.get("filterGeneric", True)),
                 )
                 self._json(200, result)
             except ImportError:
