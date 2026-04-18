@@ -3370,3 +3370,143 @@ class B2BSession:
             "raw_count":      len(self._s.get("raw_results", [])),
             "lead_count":     len(self._s.get("leads", [])),
         }
+
+
+# ═══════════════════════════════════════════════════════════════
+# BACKWARDS-COMPAT SHIM
+# ═══════════════════════════════════════════════════════════════
+# Earlier versions of this codebase exposed a class called B2BSender and
+# a helper b2b_from_cfg() in a module named core.b2b_sender. The module
+# was renamed to core.b2b_manager and the class was redesigned as
+# B2BSession, but several call sites in core/server.py and core/campaign.py
+# still imported the old names. This shim restores them so those imports
+# keep working without forcing every call site to be rewritten.
+
+class B2BSender(B2BSession):
+    """Compatibility wrapper around B2BSession.
+
+    Accepts (token, mailbox, refresh_token, expires_in) — the shape used by
+    the legacy /api/b2b/connect|folders|threads handlers and by
+    core.campaign.process_campaign() when method == "b2b".
+    """
+
+    def __init__(self, token: str = "", mailbox: str = "",
+                 refresh_token: str = "", expires_in: int = 3600,
+                 **_ignored):
+        super().__init__()
+        if mailbox:
+            self._s["email"] = mailbox
+            try:
+                self._s["provider"] = detect(mailbox)
+            except Exception:
+                self._s["provider"] = {"type": "unknown", "name": "Unknown"}
+        if token:
+            self._s["ms_token"]         = token
+            self._s["ms_token_expires"] = time.time() + max(60, int(expires_in))
+            self._s["ms_refresh"]       = refresh_token or None
+
+    # ── Microsoft "/me" probe used by /api/b2b/connect ──────────
+    def get_me(self) -> dict:
+        tok = self._s.get("ms_token")
+        if not tok:
+            mail = self._s.get("email", "")
+            return {"displayName": mail, "mail": mail,
+                    "userPrincipalName": mail}
+        try:
+            import urllib.request as _ur
+            import json as _j
+            req = _ur.Request(
+                "https://graph.microsoft.com/v1.0/me",
+                headers={"Authorization": f"Bearer {tok}",
+                         "Accept": "application/json"},
+            )
+            with _ur.urlopen(req, timeout=10) as r:
+                data = _j.loads(r.read())
+                self._s["email"] = data.get("mail") or \
+                    data.get("userPrincipalName") or self._s.get("email", "")
+                return data
+        except Exception as e:
+            mail = self._s.get("email", "")
+            return {"displayName": mail, "mail": mail,
+                    "error": str(e)[:200]}
+
+    # ── Thread digest used by /api/b2b/threads ──────────────────
+    def list_threads(self, folder: str = "Inbox", limit: int = 50,
+                     since_days: int = 30) -> list:
+        import datetime as _dt
+        date_after = (_dt.datetime.utcnow() -
+                      _dt.timedelta(days=int(since_days or 30))) \
+            .strftime("%Y-%m-%dT00:00:00Z")
+        out: list = []
+        try:
+            for ev in self.extract(folders=[folder], limit=int(limit or 50),
+                                   filter_generic=False, date_after=date_after):
+                if ev.get("type") == "extracted":
+                    out = (ev.get("results") or [])[:int(limit or 50)]
+        except Exception:
+            pass
+        return out
+
+    # ── Campaign generator used by core.campaign (method="b2b") ─
+    def run_campaign(self, threads: list, html: str, leads: list,
+                     delay_range=(3.0, 8.0), max_sends: int = 0,
+                     subject: str = "", from_name: str = "", from_email: str = "",
+                     attachments: list = None, mode: str = "reply",
+                     plain: str = "", batch_size: int = 0, batch_delay: float = 30.0):
+        delay  = (float(delay_range[0]) + float(delay_range[1])) / 2.0
+        jitter = max(0.0, (float(delay_range[1]) - float(delay_range[0])) / 2.0)
+        # If we have IMAP-discovered threads with message-ids, use them as
+        # the lead list in reply mode; otherwise fall back to plain leads.
+        b2b_leads: list = []
+        if leads:
+            for L in leads:
+                if isinstance(L, B2BLead):
+                    b2b_leads.append(L)
+                else:
+                    b2b_leads.append(B2BLead(
+                        email       = (L.get("email") if isinstance(L, dict) else str(L)) or "",
+                        name        = (L.get("name", "") if isinstance(L, dict) else ""),
+                        score       = int(L.get("score", 0)) if isinstance(L, dict) else 0,
+                    ))
+        elif threads:
+            for t in threads:
+                b2b_leads.append(B2BLead(
+                    email        = t.get("from_email") or t.get("email", ""),
+                    name         = t.get("from_name", ""),
+                    last_subject = t.get("subject", ""),
+                    message_id   = t.get("message_id", ""),
+                    score        = int(t.get("score", 0)),
+                ))
+        cap = int(max_sends or len(b2b_leads))
+        yield from self.send(
+            leads       = b2b_leads,
+            html        = html,
+            subject     = subject,
+            plain       = plain,
+            mode        = mode,
+            from_name   = from_name,
+            from_email  = from_email,
+            attachments = attachments or [],
+            delay       = delay,
+            jitter      = jitter,
+            batch_size  = int(batch_size or 0),
+            batch_delay = float(batch_delay or 30.0),
+            max_sends   = cap,
+        )
+
+
+def b2b_from_cfg(cfg: dict) -> "B2BSender":
+    """Build a B2BSender from the dict shape the campaign payload uses.
+
+    Accepts the keys shipped by index.html's B2B method tab as well as
+    the variants stored by the saved-config flow.
+    """
+    cfg = cfg or {}
+    return B2BSender(
+        token         = cfg.get("token") or cfg.get("accessToken")
+                       or cfg.get("access_token") or "",
+        mailbox       = cfg.get("mailbox") or cfg.get("email")
+                       or cfg.get("from_email") or "",
+        refresh_token = cfg.get("refreshToken") or cfg.get("refresh_token") or "",
+        expires_in    = int(cfg.get("expiresIn") or cfg.get("expires_in") or 3600),
+    )

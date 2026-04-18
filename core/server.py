@@ -4245,7 +4245,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
             try:
-                from core.b2b_sender import B2BSender
+                from core.b2b_manager import B2BSender
                 token  = data.get("token") or data.get("accessToken", "")
                 mailbox = data.get("mailbox") or data.get("email") or "me"
                 b2b    = B2BSender(token=token, mailbox=mailbox)
@@ -4266,7 +4266,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
             try:
-                from core.b2b_sender import B2BSender
+                from core.b2b_manager import B2BSender
                 token   = data.get("token", "")
                 mailbox = data.get("mailbox") or "me"
                 b2b     = B2BSender(token=token, mailbox=mailbox)
@@ -4282,7 +4282,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
             try:
-                from core.b2b_sender import B2BSender
+                from core.b2b_manager import B2BSender
                 token   = data.get("token", "")
                 mailbox = data.get("mailbox") or "me"
                 folder  = data.get("folder", "Inbox")

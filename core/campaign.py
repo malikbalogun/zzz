@@ -74,7 +74,10 @@ except ImportError:
     _HAS_SORTER = False
 
 try:
-    from core.b2b_sender import B2BSender, b2b_from_cfg
+    # NOTE: the module was renamed from core.b2b_sender to core.b2b_manager.
+    # core.b2b_manager exposes a B2BSender + b2b_from_cfg compatibility shim
+    # so this import keeps working unchanged for downstream callers.
+    from core.b2b_manager import B2BSender, b2b_from_cfg
     _HAS_B2B = True
 except ImportError:
     _HAS_B2B = False
@@ -1264,7 +1267,7 @@ def run_campaign(opts: CampaignOptions) -> Generator:
     # ── B2B shortcut — handled entirely separately via B2BSender ─────────────
     if method == "b2b":
         if not _HAS_B2B:
-            yield {"type": "error", "msg": "B2B module not available — missing core/b2b_sender.py"}
+            yield {"type": "error", "msg": "B2B module not available — core.b2b_manager could not be imported (run `pip install msal requests`)"}
             return
         if not opts.b2b_cfg:
             yield {"type": "error", "msg": "B2B: no mailbox configured — add B2B credentials in Method → B2B tab"}
