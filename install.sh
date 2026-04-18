@@ -44,9 +44,26 @@ ok "System packages installed"
 # 2. Python dependencies
 # ══════════════════════════════════════════
 step 2 "Python packages"
+# Core deps required by the server / sender modules. fpdf2 / Pillow /
+# qrcode are needed by core/mime_builder.py for QR codes and PDF
+# attachments. mime_builder has an auto-install fallback, but we install
+# upfront so first-use isn't a surprise.
 pip3 install --break-system-packages -q \
-    bcrypt msal requests dnspython pysocks paramiko
-ok "Python packages: bcrypt msal requests dnspython pysocks paramiko"
+    bcrypt msal requests dnspython pysocks paramiko \
+    fpdf2 Pillow qrcode
+ok "Python packages: bcrypt msal requests dnspython pysocks paramiko fpdf2 Pillow qrcode"
+
+# impacket is optional (used by the SMB / Windows auto-deploy path).
+# Pip-built impacket is fragile on bare Debian, so try apt first.
+if apt-get install -y -qq python3-impacket >/dev/null 2>&1; then
+    ok "impacket installed via apt"
+else
+    if pip3 install --break-system-packages -q --no-build-isolation impacket >/dev/null 2>&1; then
+        ok "impacket installed via pip"
+    else
+        warn "impacket install skipped — SMB auto-deploy disabled (everything else works)"
+    fi
+fi
 
 # ══════════════════════════════════════════
 # 3. Directory structure
