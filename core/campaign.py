@@ -2250,6 +2250,73 @@ def process_campaign(data: dict) -> Generator:
     logging.getLogger("synthtel").info("[RAW] method=%s tunnels_raw=%s ispTunnels_raw=%s",
         data.get("method"), data.get("tunnels"), data.get("ispTunnels"))
 
+    # ── ISP method: synthesise tunnels from the normal proxy pool ───────
+    # If the user picked the "Normal proxy pool + ISP SMTP host" mode in
+    # the UI (or an integration sets data.proxies + data.ispSmtpHost
+    # without populating the per-row ispTunnels), build one synthetic ISP
+    # tunnel per proxy in the pool. This means a single ISP SMTP target
+    # (e.g. smtp.shaw.ca) can be paired with any number of generic
+    # SOCKS5/HTTP proxies without forcing the user to duplicate every
+    # proxy into the ISP-only datastore.
+    if (data.get("method") == "isp"
+            and not data.get("ispTunnels")
+            and not data.get("tunnels")
+            and data.get("proxies")
+            and data.get("ispSmtpHost")):
+        try:
+            import re as _ipre
+            _isp_host = str(data["ispSmtpHost"]).strip()
+            _isp_port = str(data.get("ispSmtpPort", "25")).strip() or "25"
+            _isp_dom  = data.get("ispFromDomain", "") or ""
+            _isp_env  = data.get("ispEnvelopeFrom", "") or ""
+            _synth = []
+            for p in (data["proxies"] or []):
+                if isinstance(p, dict):
+                    h     = (p.get("host") or "").strip()
+                    pt    = (p.get("type") or "socks5").lower()
+                    try:    pr = int(p.get("port") or 0)
+                    except: pr = 0
+                    u  = p.get("username") or ""
+                    pw = p.get("password") or ""
+                else:
+                    m = _ipre.match(
+                        r'^(?:(socks5|socks4|http|https)://)?(?:([^:@]+):([^@]+)@)?([\w.\-]+):(\d+)$',
+                        str(p).strip())
+                    if not m: continue
+                    pt, u, pw, h, pr = m.groups()
+                    pt = (pt or "socks5").lower(); pr = int(pr)
+                    u = u or ""; pw = pw or ""
+                if not h or not pr:
+                    continue
+                _synth.append({
+                    "tunnelType":    "isp",
+                    "label":         f"{h} → {_isp_host}",
+                    "sshHost":       "",
+                    "rdpSshPort":    22,
+                    "sshUser":       "",
+                    "sshPass":       "",
+                    "socksHost":     h,
+                    "socksPort":     pr,
+                    "proxyHost":     h,
+                    "proxyPort":     str(pr),
+                    "proxyUser":     u,
+                    "proxyPass":     pw,
+                    "proxyType":     pt,
+                    "ispSmtpHost":   _isp_host,
+                    "ispSmtpPort":   _isp_port,
+                    "fromDomain":    _isp_dom,
+                    "smtpFromEmail": _isp_env,
+                })
+            if _synth:
+                data["ispTunnels"] = _synth
+                logging.getLogger("synthtel").info(
+                    "[ISP] synthesised %d tunnel(s) from normal proxy pool — ISP SMTP=%s:%s",
+                    len(_synth), _isp_host, _isp_port,
+                )
+        except Exception as _e:
+            logging.getLogger("synthtel").warning(
+                "[ISP] failed to synthesise tunnels from normal pool: %s", _e)
+
     # If no tunnels from frontend, fetch from DB using user session
     if not data.get("tunnels") and not data.get("ispTunnels") and data.get("method") in ("isp","tunnel"):
         try:
