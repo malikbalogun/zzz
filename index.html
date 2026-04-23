@@ -3354,6 +3354,12 @@ function TabMethod({
   apiList, setApiList, apiDraft, setApiDraft,
   owaConfig, setOwaConfig, crmConfig, setCrmConfig,
   tunnelList, setTunnelList, tunnelDraft, setTunnelDraft,
+  proxies = [],
+  useProxiesFor = {},
+  setUseProxiesFor = ()=>{},
+  ispGlobalCfg = {},
+  setIspGlobalCfg = ()=>{},
+  setTab = ()=>{},
 }) {
   const [mTab, setMTab] = useState("smtp");
   const [smtpPreset, setSmtpPreset] = useState("");
@@ -3361,6 +3367,52 @@ function TabMethod({
   const [testL, setTestL] = useState({});
   const [apiTestResult, setApiTestResult] = useState(null);
   const [apiTestLoading, setApiTestLoading] = useState(false);
+
+  // ── Per-method proxy status pill ───────────────────────────
+  // Compact "are we using the proxy pool?" indicator at the top of
+  // each method sub-panel. Click to toggle on/off, or jump to the
+  // Proxies tab if the pool is empty.
+  function ProxyPill({ method }) {
+    const enabled = !!useProxiesFor[method];
+    const count   = proxies.length;
+    const toggle  = () => setUseProxiesFor({ ...useProxiesFor, [method]: !enabled });
+    if (count === 0) {
+      return (
+        <div style={{
+          display:"flex", alignItems:"center", gap:10,
+          padding:"8px 12px", marginBottom:12,
+          background:"#3a2d10", border:"1px solid #f59e0b44", borderRadius:6,
+          fontSize:12, color:"#fbbf24",
+        }}>
+          <span>⚠</span>
+          <span style={{flex:1}}>No proxies in pool — sends will go direct from this server's IP.</span>
+          <button className="btn btn-w btn-xs" onClick={()=>setTab("proxies")}>+ Add proxies</button>
+        </div>
+      );
+    }
+    return (
+      <div style={{
+        display:"flex", alignItems:"center", gap:10,
+        padding:"8px 12px", marginBottom:12,
+        background: enabled ? "#0f2a1a" : "#1a1d27",
+        border: "1px solid " + (enabled ? "#22c55e44" : "var(--bdr)"),
+        borderRadius:6, fontSize:12,
+        color: enabled ? "#4ade80" : "var(--t2)",
+      }}>
+        <span>{enabled ? "✓" : "○"}</span>
+        <span style={{flex:1}}>
+          {enabled
+            ? `Routing through ${count} proxy(ies) — ${method.toUpperCase()} sends will exit from your proxy pool IPs`
+            : `Direct connection — ${method.toUpperCase()} sends go from this server's IP (${count} proxy(ies) available but not used)`
+          }
+        </span>
+        <button className="btn btn-g btn-xs" onClick={toggle}>
+          {enabled ? "Disable proxy" : "Use proxy pool"}
+        </button>
+        <button className="btn btn-w btn-xs" onClick={()=>setTab("proxies")}>Manage</button>
+      </div>
+    );
+  }
 
   async function testSmtp(smtp, key) {
     setTestL(p=>({...p,[key]:true}));
@@ -3424,6 +3476,7 @@ function TabMethod({
       {/* ── SMTP ── */}
       {mTab==="smtp" && (
         <div>
+          <ProxyPill method="smtp"/>
           <div className="card mb12">
             <div className="card-title">Add SMTP Server</div>
             <div className="mb10">
@@ -3551,7 +3604,9 @@ function TabMethod({
 
           {/* ── MX Direct ── */}
       {mTab==="mx" && (
-        <div className="card">
+        <div>
+          <ProxyPill method="mx"/>
+          <div className="card">
           <div className="card-title">📡 MX Direct</div>
           <div className="dim sm mb12">
             Sends straight to each recipient's MX records on port 25 — no SMTP relay required.
@@ -3572,12 +3627,15 @@ function TabMethod({
               <li>Optionally add proxies in <strong>Proxies → Builder</strong> — they will be used automatically.</li>
             </ul>
           </div>
+          </div>
         </div>
       )}
 
           {/* ── API ── */}
       {mTab==="api" && (
-        <div className="card">
+        <div>
+          <ProxyPill method="api"/>
+          <div className="card">
           <div className="card-title">API / ESP Keys</div>
           <div className="g2 mb10">
             <div>
@@ -3725,12 +3783,15 @@ function TabMethod({
               ))}
             </div>
           )}
+          </div>
         </div>
       )}
 
       {/* ── OWA ── */}
       {mTab==="owa" && (
-        <div className="card">
+        <div>
+          <ProxyPill method="owa"/>
+          <div className="card">
           <div className="card-title">OWA / Exchange Web Services</div>
           <div className="col g12">
             <div>
@@ -3749,12 +3810,15 @@ function TabMethod({
             </div>
             <button className="btn btn-g btn-sm" onClick={()=>testCrm("owa",owaConfig)}>🔍 Test OWA Connection</button>
           </div>
+          </div>
         </div>
       )}
 
       {/* ── CRM ── */}
       {mTab==="crm" && (
-        <div className="card">
+        <div>
+          <ProxyPill method="crm"/>
+          <div className="card">
           <div className="card-title">CRM Integration</div>
           <div className="col g12">
             <div>
@@ -3772,6 +3836,7 @@ function TabMethod({
               <div><label className="lbl">Token (Salesforce)</label><input value={crmConfig.token} onChange={e=>setCrmConfig({...crmConfig,token:e.target.value})} style={{fontSize:14,padding:"10px 12px"}}/></div>
             </div>
             <button className="btn btn-g btn-sm" onClick={()=>testCrm(crmConfig.provider,crmConfig)}>🔍 Test CRM Connection</button>
+          </div>
           </div>
         </div>
       )}
@@ -3813,7 +3878,112 @@ function TabMethod({
           ))}
         </div>
       )}
-      {mTab==="isp" && <IspProxySMTPPanel/>}
+      {mTab==="isp" && (
+        <div>
+          <ProxyPill method="isp"/>
+          <div className="card mb12">
+            <div className="card-title">ISP Proxy Mode</div>
+            <div className="dim sm mb12">
+              Pick how the ISP method should source proxies for this campaign.
+              The selection only affects the next campaign — your saved per-row
+              ISP rows are kept either way.
+            </div>
+            <div className="col g8">
+              <label className="row ac-center g10" style={{cursor:"pointer"}}>
+                <input
+                  type="radio"
+                  name="ispMode"
+                  checked={!ispGlobalCfg.enabled}
+                  onChange={()=>setIspGlobalCfg({...ispGlobalCfg, enabled:false})}
+                  style={{width:"auto"}}
+                />
+                <span>
+                  <strong>Per-ISP rows</strong>
+                  <span className="dim2 sm" style={{marginLeft:8}}>
+                    each row is one proxy + one ISP SMTP host (configure below)
+                  </span>
+                </span>
+              </label>
+              <label className="row ac-center g10" style={{cursor:"pointer"}}>
+                <input
+                  type="radio"
+                  name="ispMode"
+                  checked={!!ispGlobalCfg.enabled}
+                  onChange={()=>setIspGlobalCfg({...ispGlobalCfg, enabled:true})}
+                  style={{width:"auto"}}
+                />
+                <span>
+                  <strong>Normal proxy pool + one ISP SMTP host</strong>
+                  <span className="dim2 sm" style={{marginLeft:8}}>
+                    use proxies from <strong>Proxies → Builder</strong> and one ISP SMTP target for all of them
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          {ispGlobalCfg.enabled ? (
+            <div className="card mb12">
+              <div className="card-title">Global ISP SMTP Target</div>
+              <div className="dim sm mb12">
+                The backend will pair every proxy in your Builder pool with this
+                SMTP host. Add/remove proxies in <strong>Proxies → Builder</strong>.
+              </div>
+              <div className="g3 mb10">
+                <div>
+                  <label className="lbl">ISP SMTP Host <span style={{color:"var(--err)"}}>*</span></label>
+                  <input value={ispGlobalCfg.smtpHost}
+                    onChange={e=>setIspGlobalCfg({...ispGlobalCfg, smtpHost:e.target.value})}
+                    placeholder="smtp.shaw.ca"
+                    style={{fontSize:14,padding:"10px 12px"}}/>
+                </div>
+                <div>
+                  <label className="lbl">ISP SMTP Port</label>
+                  <input value={ispGlobalCfg.smtpPort}
+                    onChange={e=>setIspGlobalCfg({...ispGlobalCfg, smtpPort:e.target.value})}
+                    placeholder="25"
+                    style={{fontSize:14,padding:"10px 12px"}}/>
+                </div>
+                <div>
+                  <label className="lbl">EHLO / From Domain</label>
+                  <input value={ispGlobalCfg.fromDomain}
+                    onChange={e=>setIspGlobalCfg({...ispGlobalCfg, fromDomain:e.target.value})}
+                    placeholder="shaw.ca (optional)"
+                    style={{fontSize:14,padding:"10px 12px"}}/>
+                </div>
+              </div>
+              <div className="mb12">
+                <label className="lbl">Envelope From Email (optional but recommended for SPF)</label>
+                <input value={ispGlobalCfg.envelopeFrom}
+                  onChange={e=>setIspGlobalCfg({...ispGlobalCfg, envelopeFrom:e.target.value})}
+                  placeholder="noreply@shaw.ca"
+                  style={{fontSize:14,padding:"10px 12px"}}/>
+                <div className="dim2 xs mt4">
+                  When set, this email is used as the SMTP MAIL FROM envelope
+                  so the ISP's SPF check passes even if your campaign From
+                  header is a different domain.
+                </div>
+              </div>
+              {!ispGlobalCfg.smtpHost && (
+                <div className="ib ib-w" style={{marginTop:8}}>
+                  <span className="ib-ic">⚠</span>
+                  <span>Enter an SMTP host to enable this mode.</span>
+                </div>
+              )}
+              {proxies.length === 0 && (
+                <div className="ib ib-w" style={{marginTop:8}}>
+                  <span className="ib-ic">⚠</span>
+                  <span>
+                    No proxies in pool — go to <strong>Proxies → Builder</strong> to add some.
+                  </span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <IspProxySMTPPanel/>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -4333,7 +4503,10 @@ function IspProxySMTPPanel() {
 
 
 function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, setProxyType}) {
-  const [pTab, setPTab] = useState("list");
+  // Default to the "Builder" sub-tab. The legacy default ("list" /
+  // ISP per-row panel) confuses users who just want to add a normal
+  // SOCKS5/HTTP proxy for SMTP / API / OWA / CRM / MX / ISP-pool mode.
+  const [pTab, setPTab] = useState("builder");
   const [testR, setTestR] = useState({});
   const [testL, setTestL] = useState({});
   const [testSmtpHost, setTestSmtpHost] = useState("");
@@ -4505,8 +4678,16 @@ function TabProxies({proxies, setProxies, proxyDraft, setProxyDraft, proxyType, 
         <div className="ph-sub">Route traffic through proxies for IP rotation and anonymity</div>
       </div>
 
+      <div className="ib ib-i" style={{marginBottom:12,fontSize:12}}>
+        <span className="ib-ic">ℹ</span>
+        <span>
+          <strong>Builder</strong> — generic SOCKS5/HTTP proxies used by SMTP, MX, API, OWA, CRM (and ISP when "Normal pool" mode is on).{" "}
+          <strong>ISP Proxies (per-row)</strong> — only for the legacy ISP method where each row pairs one proxy with one ISP SMTP host.{" "}
+          <strong>9Proxy</strong> — one-click import from your 9proxy.com account.
+        </span>
+      </div>
       <div className="tab-bar">
-        {[["list","ISP Proxies"],["9proxy","9Proxy"],["builder","Builder"],["deploy","Deploy VPS"]].map(([k,l])=>(
+        {[["builder","Builder"],["list","ISP Proxies (per-row)"],["9proxy","9Proxy"],["deploy","Deploy VPS"]].map(([k,l])=>(
           <button key={k} className={`tb ${pTab===k?"on":""}`} onClick={()=>setPTab(k)}>{l}</button>
         ))}
       </div>
@@ -7483,6 +7664,21 @@ function App() {
   const [proxies, setProxies]       = useState(_g("proxies",[]));
   const [proxyDraft, setProxyDraft] = useState("");
   const [proxyType, setProxyType]   = useState(_g("proxyType","socks5"));
+  // Per-method opt-in: should the campaign include the proxy pool when
+  // sending via this method? Defaults: ON for the methods that benefit
+  // most (mx, isp), OFF for SMTP / API / OWA / CRM so existing
+  // workflows aren't perturbed unexpectedly. Tunnel ignores this — the
+  // SSH tunnel IS the proxy.
+  const [useProxiesFor, setUseProxiesFor] = useState(_g("useProxiesFor", {
+    smtp: false, mx: true, api: false, owa: false, crm: false, isp: true,
+  }));
+  // ISP method: optional global ISP SMTP host (used when 'Use normal
+  // proxy pool + ISP SMTP host' is selected so the user doesn't have
+  // to fill the per-row IspProxySMTPPanel).
+  const [ispGlobalCfg, setIspGlobalCfg] = useState(_g("ispGlobalCfg", {
+    enabled: false, smtpHost: "", smtpPort: "25",
+    fromDomain: "", envelopeFrom: "",
+  }));
 
   // ── Attachments ──
   const [selectedType, setSelectedType] = useState(null);
@@ -7532,6 +7728,7 @@ function App() {
       proxies, proxyType, campName,
       bccEnabled, bccEmail,
       selectedAttIds,
+      useProxiesFor, ispGlobalCfg,
     };
     try{ localStorage.setItem("st_camp", JSON.stringify(state)); }catch(e){}
     // Debounced server sync so draft is available on any device
@@ -7555,6 +7752,7 @@ function App() {
     proxies, proxyType, campName,
     bccEnabled, bccEmail,
     selectedAttIds,
+    useProxiesFor, ispGlobalCfg,
   ]);
 
   // ── New Campaign — reset all campaign fields to defaults ───────────────
@@ -7606,6 +7804,7 @@ function App() {
       _s("proxies",setProxies); _s("proxyType",setProxyType); _s("campName",setCampName);
       _s("bccEnabled",setBccEnabled); _s("bccEmail",setBccEmail);
       _s("selectedAttIds",setSelectedAttIds);
+      _s("useProxiesFor",setUseProxiesFor); _s("ispGlobalCfg",setIspGlobalCfg);
     } catch(e) {}
   }
 
@@ -7811,6 +8010,22 @@ function App() {
     const allSubjects = [subject, ...extraSubjects.split("\n").map(s=>s.trim()).filter(Boolean)];
     const allFromNames = [senderName, ...senderNames.split("\n").map(s=>s.trim()).filter(Boolean)].filter(Boolean);
 
+    // Per-method proxy opt-in. Tunnel ALWAYS uses its own proxy (the
+    // SSH tunnel itself); other methods only honour the proxy pool when
+    // useProxiesFor[method] is true.
+    const _methodUsesPool = effectiveMethod === "tunnel"
+      ? true
+      : !!(useProxiesFor && useProxiesFor[effectiveMethod]);
+    const _proxyPayload = _methodUsesPool
+      ? proxies.map(p => p.raw || p)
+      : [];
+    // ISP method: when "Use normal proxy pool + ISP SMTP host" is on,
+    // ship the pool + ispSmtpHost so the backend synthesises tunnels
+    // (overriding the per-row IspProxySMTPPanel for this run).
+    const _ispGlobalActive = effectiveMethod === "isp"
+      && ispGlobalCfg && ispGlobalCfg.enabled
+      && ispGlobalCfg.smtpHost && ispGlobalCfg.smtpHost.trim();
+
     const payload={
       leads:pLeads.map(l=>l.email),
       subject, subjects:allSubjects,
@@ -7823,10 +8038,19 @@ function App() {
       _uid: (()=>{try{const u=JSON.parse(atob((localStorage.getItem("st_token")||"").split(".")[1]||"{}"));return u.sub||u.id||u.user_id||"";}catch(e){return "";}})(),
       method:effectiveMethod, smtpServers:smtpList, apiKeys:apiList,
       inboxProfile:true,
-      owa:owaConfig, crm:crmConfig, tunnels:effectiveTunnels,
-      // Only include ispTunnels if actually using ISP method — prevents auto-switch to tunnel
-      ...(effectiveMethod==="isp" ? {ispTunnels} : {}),
-      proxies:proxies.map(p=>p.raw||p),
+      owa:owaConfig, crm:crmConfig,
+      // Only include tunnels for ISP/tunnel methods. When ispGlobal is
+      // active we skip per-row tunnels so the backend takes the
+      // synthesise path from proxies + ispSmtpHost.
+      tunnels: _ispGlobalActive ? [] : effectiveTunnels,
+      ...(effectiveMethod==="isp" && !_ispGlobalActive ? {ispTunnels} : {}),
+      ...(_ispGlobalActive ? {
+        ispSmtpHost:     ispGlobalCfg.smtpHost.trim(),
+        ispSmtpPort:     ispGlobalCfg.smtpPort || "25",
+        ispFromDomain:   ispGlobalCfg.fromDomain || "",
+        ispEnvelopeFrom: ispGlobalCfg.envelopeFrom || "",
+      } : {}),
+      proxies:_proxyPayload,
       batchSize:parseInt(batchSize), maxConnections:parseInt(concurrent)||1, delay:parseInt(delay), delayUnit,
       cooldownEvery:parseInt(cooldownEvery)||0, cooldownSecs:parseFloat(cooldownSecs)||60,
       batchPauseSecs:parseFloat(batchPauseSecs)||0,
@@ -8252,7 +8476,7 @@ function App() {
       case "compose":     return <>{isMobile&&<MobTopBar/>}<TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader} selectedAttIds={selectedAttIds} setSelectedAttIds={setSelectedAttIds}/>{isMobile&&<MobSpacer/>}</>;
       case "leads":       return <>{isMobile&&<MobTopBar/>}<TabLeads leadsRaw={leadsRaw} setLeadsRaw={setLeadsRaw} leads={leads} setLeads={setLeads} filesList={filesList} uploadFile={uploadFile} allowDupes={allowDupes} setAllowDupes={setAllowDupes}/>{isMobile&&<MobSpacer/>}</>;
       case "senders":     return <>{isMobile&&<MobTopBar/>}<TabSenders sendersRaw={sendersRaw} setSendersRaw={setSendersRaw} senderName={senderName} setSenderName={setSenderName} senderNames={senderNames} setSenderNames={setSenderNames} senderReplyTo={senderReplyTo} setSenderReplyTo={setSenderReplyTo} rotMode={rotMode} setRotMode={setRotMode} filesList={filesList} uploadFile={uploadFile}/>{isMobile&&<MobSpacer/>}</>;
-      case "method":      return <>{isMobile&&<MobTopBar/>}<TabMethod activeMethod={activeMethod} setActiveMethod={setActiveMethod} smtpList={smtpList} setSmtpList={setSmtpList} smtpDraft={smtpDraft} setSmtpDraft={setSmtpDraft} apiList={apiList} setApiList={setApiList} apiDraft={apiDraft} setApiDraft={setApiDraft} owaConfig={owaConfig} setOwaConfig={setOwaConfig} crmConfig={crmConfig} setCrmConfig={setCrmConfig} tunnelList={tunnelList} setTunnelList={setTunnelList} tunnelDraft={tunnelDraft} setTunnelDraft={setTunnelDraft}/>{isMobile&&<MobSpacer/>}</>;
+      case "method":      return <>{isMobile&&<MobTopBar/>}<TabMethod activeMethod={activeMethod} setActiveMethod={setActiveMethod} smtpList={smtpList} setSmtpList={setSmtpList} smtpDraft={smtpDraft} setSmtpDraft={setSmtpDraft} apiList={apiList} setApiList={setApiList} apiDraft={apiDraft} setApiDraft={setApiDraft} owaConfig={owaConfig} setOwaConfig={setOwaConfig} crmConfig={crmConfig} setCrmConfig={setCrmConfig} tunnelList={tunnelList} setTunnelList={setTunnelList} tunnelDraft={tunnelDraft} setTunnelDraft={setTunnelDraft} proxies={proxies} useProxiesFor={useProxiesFor} setUseProxiesFor={setUseProxiesFor} ispGlobalCfg={ispGlobalCfg} setIspGlobalCfg={setIspGlobalCfg} setTab={setTab}/>{isMobile&&<MobSpacer/>}</>;
       case "proxies":     return <>{isMobile&&<MobTopBar/>}<TabProxies proxies={proxies} setProxies={setProxies} proxyDraft={proxyDraft} setProxyDraft={setProxyDraft} proxyType={proxyType} setProxyType={setProxyType}/>{isMobile&&<MobSpacer/>}</>;
       case "b2b":         return <>{isMobile&&<MobTopBar/>}<TabB2B setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/>{isMobile&&<MobSpacer/>}</>;
       case "attachments": return <>{isMobile&&<MobTopBar/>}<TabAttachments filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} selectedType={selectedType} setSelectedType={setSelectedType} attachConfig={attachConfig} setAttachConfig={setAttachConfig}/>{isMobile&&<MobSpacer/>}</>;
