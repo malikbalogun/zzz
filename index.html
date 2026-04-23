@@ -3396,6 +3396,7 @@ function TabMethod({
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:12}}>
           {[
             {id:"smtp",   ico:"📨", name:"SMTP Relay",      desc:"Your own SMTP servers"},
+            {id:"mx",     ico:"📡", name:"MX Direct",       desc:"Direct to recipient MX:25 (no relay)"},
             {id:"api",    ico:"🔌", name:"API / ESP",       desc:"SendGrid, Mailchimp, etc."},
             {id:"owa",    ico:"📮", name:"OWA / Exchange",  desc:"Exchange Web Services"},
             {id:"crm",    ico:"🗄️", name:"CRM Integration", desc:"Salesforce, HubSpot, etc."},
@@ -3415,7 +3416,7 @@ function TabMethod({
 
       {/* Config tabs */}
       <div className="tab-bar">
-        {["smtp","api","owa","crm","tunnel","isp"].map(t=>(
+        {["smtp","mx","api","owa","crm","tunnel","isp"].map(t=>(
           <button key={t} className={`tb ${mTab===t?"on":""}`} onClick={()=>setMTab(t)}>{t.toUpperCase()}</button>
         ))}
       </div>
@@ -3545,6 +3546,32 @@ function TabMethod({
               </div>
             </div>
           )}
+        </div>
+      )}
+
+          {/* ── MX Direct ── */}
+      {mTab==="mx" && (
+        <div className="card">
+          <div className="card-title">📡 MX Direct</div>
+          <div className="dim sm mb12">
+            Sends straight to each recipient's MX records on port 25 — no SMTP relay required.
+            <br/>If a proxy pool is configured, sends route through SOCKS5/HTTP proxy first.
+          </div>
+          <div className="ib ib-i" style={{marginBottom:12}}>
+            <span className="ib-ic">⚠</span>
+            <span>
+              MX direct only works if your VPS allows outbound port 25.
+              Most cloud providers (AWS / GCP / Azure / DigitalOcean) block port 25 by default.
+              If you hit "Connection refused" or "Network unreachable", route through a proxy that allows it.
+            </span>
+          </div>
+          <div className="dim sm">
+            <strong>No per-server config needed.</strong> Make sure to:
+            <ul style={{marginTop:6,marginBottom:0,paddingLeft:18}}>
+              <li>Add at least one valid sender in the <strong>Senders</strong> tab.</li>
+              <li>Optionally add proxies in <strong>Proxies → Builder</strong> — they will be used automatically.</li>
+            </ul>
+          </div>
         </div>
       )}
 

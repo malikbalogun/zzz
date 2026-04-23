@@ -124,7 +124,7 @@ MS_RATE_DOMAINS = frozenset({
     "hotmail.co.uk", "hotmail.fr", "outlook.co.uk",
 })
 
-VALID_METHODS = frozenset({"smtp", "api", "owa", "crm", "tunnel", "b2b"})
+VALID_METHODS = frozenset({"smtp", "mx", "api", "owa", "crm", "tunnel", "b2b"})
 
 
 def _check_socks5(host: str, port: int, timeout: int = 5) -> tuple:
@@ -970,6 +970,50 @@ def _send_one(
         except Exception as exc:
             return False, _parse_smtp_error(exc, lead.get("email", "")), via
 
+    # ─── MX-direct ──────────────────────────────────────────
+    # Send straight to the recipient's MX records on port 25, optionally
+    # through a SOCKS5/HTTP proxy from the normal pool. No SMTP relay.
+    elif method == "mx":
+        proxy_cfg = None
+        if override_proxy:
+            proxy_cfg = override_proxy
+        else:
+            proxy_cfg = _pick_pool_proxy(opts, i, dead_proxies)
+        from_email  = sender.get("fromEmail", "")
+        ehlo_domain = (
+            (dlv or {}).get("ehloDomain", "")
+            or (from_email.split("@")[-1] if "@" in from_email else "")
+            or "mail.local"
+        )
+        try:
+            msg, _ = build_message(
+                lead        = lead,
+                sender      = sender,
+                subject     = subject,
+                html        = html,
+                plain       = plain,
+                dlv         = dlv,
+                custom_hdrs = hdrs,
+                ehlo_domain = ehlo_domain,
+                preheader   = (dlv or {}).get("preheader", ""),
+                attachments = opts.attachments or {},
+            )
+            mx_host = send_direct_mx(
+                lead_email  = lead["email"],
+                sender      = sender,
+                msg         = msg,
+                ehlo_domain = ehlo_domain,
+                socks_proxy = proxy_cfg,
+                ctx         = mx_ctx,
+            )
+            via_label = f"MX:{mx_host}"
+            if proxy_cfg:
+                via_label = f"{proxy_cfg.get('type','proxy')}:{proxy_cfg.get('host','')} → MX:{mx_host}"
+            return True, "", via_label
+        except Exception as exc:
+            return False, _parse_smtp_error(exc, lead.get("email", "")), (
+                f"{proxy_cfg.get('host','')} → MX" if proxy_cfg else "MX")
+
     # ─── TUNNEL ─────────────────────────────────────────────
     elif method == "tunnel":
         tun = server     # server IS the tunnel config in tunnel method
@@ -1336,8 +1380,13 @@ def run_campaign(opts: CampaignOptions) -> Generator:
         )
         return
 
+    # MX-direct has no per-server pool (it sends straight to recipient
+    # MX records). Use a single placeholder "server" so the iteration
+    # loop works the same way as every other method.
+    _mx_placeholder = [{"label": "MX-direct", "host": "mx"}]
     pool_map = {
         "smtp":   opts.smtps,
+        "mx":     _mx_placeholder,
         "api":    opts.apis,
         "owa":    opts.owas,
         "crm":    opts.crms,
@@ -1351,7 +1400,18 @@ def run_campaign(opts: CampaignOptions) -> Generator:
         _method_label  = "ISP proxies" if _is_isp_direct else "SSH tunnels"
         yield {"type": "info", "msg": f"{_method_label} loaded: {len(opts.tunnels)} — {'ready' if opts.tunnels else 'NONE FOUND — add proxies in ISP tab'}"}
 
-    if not servers and method not in ("smtp",):
+    if method == "mx":
+        _mx_proxy_count = len((opts.proxy or {}).get("list") or [])
+        yield {
+            "type": "info",
+            "msg": (
+                f"MX direct: {_mx_proxy_count} proxy(ies) loaded — sending straight to recipient MX:25"
+                if _mx_proxy_count > 0 else
+                "MX direct (no proxy): sending straight to recipient MX:25 — only works if your VPS allows outbound port 25"
+            ),
+        }
+
+    if not servers and method not in ("smtp", "mx"):
         if method == "tunnel":
             yield {
                 "type": "error",
