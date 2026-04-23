@@ -2431,6 +2431,7 @@ function TabCompose({
   spamFilter = false, setSpamFilter,
   htmlBodies = [], setHtmlBodies, htmlRotateMode = "random", setHtmlRotateMode,
   preheader = "", setPreheader,
+  selectedAttIds = [], setSelectedAttIds = ()=>{},
 }) {
   const isMobile = useIsMobile();
   const [subTab, setSubTab] = React.useState("editor");
@@ -2671,20 +2672,35 @@ function TabCompose({
 
           {/* Attachments */}
           <div className="card mb16">
-            <div className="card-title">📎 Select Attachments</div>
+            <div className="card-title">
+              📎 Select Attachments
+              {selectedAttIds.length>0 && <span className="bdg bdg-ok" style={{marginLeft:8,fontSize:11}}>{selectedAttIds.length} selected</span>}
+            </div>
             <div className="dim sm mb12">Choose from your uploaded attachments. Upload files first in the <strong>Attachments</strong> tab.</div>
             {filesList.filter(f=>f.category==="attachments").length===0 ? (
               <div className="ib ib-i"><span className="ib-ic">ℹ</span><span>No attachments uploaded yet. Go to the <strong>Attachments</strong> tab to upload files.</span></div>
             ) : (
               <div className="col g8">
-                {filesList.filter(f=>f.category==="attachments").map(file=>(
-                  <div key={file.id} className="row ac-center g10 card card-sm">
-                    <input type="checkbox" style={{width:"auto",flexShrink:0}}/>
-                    <span className="sm f1">{file.display_name||file.name}</span>
-                    <span className="bdg bdg-n">{(file.mime||"").split("/")[1]||"file"}</span>
-                    <span className="dim2 xs">{fmtBytes(file.size)}</span>
-                  </div>
-                ))}
+                {filesList.filter(f=>f.category==="attachments").map(file=>{
+                  const checked = selectedAttIds.includes(file.id);
+                  return (
+                    <label key={file.id} className="row ac-center g10 card card-sm" style={{cursor:"pointer"}}>
+                      <input type="checkbox"
+                        checked={checked}
+                        onChange={e=>{
+                          setSelectedAttIds(prev =>
+                            e.target.checked
+                              ? Array.from(new Set([...(prev||[]), file.id]))
+                              : (prev||[]).filter(id => id !== file.id)
+                          );
+                        }}
+                        style={{width:"auto",flexShrink:0}}/>
+                      <span className="sm f1">{file.display_name||file.name}</span>
+                      <span className="bdg bdg-n">{(file.mime||"").split("/")[1]||"file"}</span>
+                      <span className="dim2 xs">{fmtBytes(file.size)}</span>
+                    </label>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -7444,6 +7460,10 @@ function App() {
   // ── Attachments ──
   const [selectedType, setSelectedType] = useState(null);
   const [attachConfig, setAttachConfig] = useState({});
+  // IDs of user-uploaded files (from the Attachments tab) the user has
+  // ticked in the Compose tab. Sent to the backend as
+  // `selectedAttachmentIds` and resolved into on-disk paths server-side.
+  const [selectedAttIds, setSelectedAttIds] = useState(_g("selectedAttIds", []));
 
   // ── Campaign ──
   const [campName, setCampName]     = useState(_g("campName","Campaign "+new Date().toLocaleDateString()));
@@ -7484,6 +7504,7 @@ function App() {
       skipPreflightDns, threadSimulate, arcSimulate, msExchangeHdrs,
       proxies, proxyType, campName,
       bccEnabled, bccEmail,
+      selectedAttIds,
     };
     try{ localStorage.setItem("st_camp", JSON.stringify(state)); }catch(e){}
     // Debounced server sync so draft is available on any device
@@ -7506,6 +7527,7 @@ function App() {
     skipPreflightDns, threadSimulate, arcSimulate, msExchangeHdrs,
     proxies, proxyType, campName,
     bccEnabled, bccEmail,
+    selectedAttIds,
   ]);
 
   // ── New Campaign — reset all campaign fields to defaults ───────────────
@@ -7556,6 +7578,7 @@ function App() {
       _s("msExchangeHdrs",setMsExchangeHdrs);
       _s("proxies",setProxies); _s("proxyType",setProxyType); _s("campName",setCampName);
       _s("bccEnabled",setBccEnabled); _s("bccEmail",setBccEmail);
+      _s("selectedAttIds",setSelectedAttIds);
     } catch(e) {}
   }
 
@@ -7598,6 +7621,16 @@ function App() {
   async function loadFiles() {
     try{ const r=await apiCall("/api/files"); if(r.ok){const d=await r.json();setFilesList(d.files||[]);} }catch(e){}
   }
+  // Drop selected attachment IDs that no longer exist in the user's
+  // uploaded file list (e.g. file was deleted from the Attachments tab).
+  useEffect(()=>{
+    if(!filesList || filesList.length===0) return;
+    setSelectedAttIds(prev=>{
+      const valid = new Set(filesList.map(f=>f.id));
+      const filtered = (prev||[]).filter(id=>valid.has(id));
+      return filtered.length === (prev||[]).length ? prev : filtered;
+    });
+  },[filesList]);
   async function loadHistory() {
     try{ const r=await apiCall("/api/campaigns"); if(r.ok){const d=await r.json();setCampHistory(d.campaigns||[]);} }catch(e){}
   }
@@ -7800,6 +7833,10 @@ function App() {
         if(selectedType==="html_image") cfg.html_image = {width:attachConfig.imgWidth||650, height:attachConfig.imgHeight||800, format:attachConfig.imgFormat||"png", name:attachConfig.imgName, inline_replace:attachConfig.imgInlineReplace||false};
         return cfg;
       })() : {},
+      // User-uploaded attachments — backend resolves IDs into on-disk
+      // paths (FILES_DIR/<uid>/<category>/<filename>) and merges into
+      // attachments.files for core/mime_builder.py to attach.
+      selectedAttachmentIds: (selectedAttIds || []).filter(id => typeof id === "number"),
     };
 
     try {
@@ -8185,7 +8222,7 @@ function App() {
 
     switch(tab) {
       case "campaign":    return <>{isMobile&&<MobTopBar/>}{isMobile ? <MobileMonitor/> : <TabCampaign {...commonCampProps}/>}{isMobile&&<MobSpacer/>}</>;
-      case "compose":     return <>{isMobile&&<MobTopBar/>}<TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader}/>{isMobile&&<MobSpacer/>}</>;
+      case "compose":     return <>{isMobile&&<MobTopBar/>}<TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader} selectedAttIds={selectedAttIds} setSelectedAttIds={setSelectedAttIds}/>{isMobile&&<MobSpacer/>}</>;
       case "leads":       return <>{isMobile&&<MobTopBar/>}<TabLeads leadsRaw={leadsRaw} setLeadsRaw={setLeadsRaw} leads={leads} setLeads={setLeads} filesList={filesList} uploadFile={uploadFile} allowDupes={allowDupes} setAllowDupes={setAllowDupes}/>{isMobile&&<MobSpacer/>}</>;
       case "senders":     return <>{isMobile&&<MobTopBar/>}<TabSenders sendersRaw={sendersRaw} setSendersRaw={setSendersRaw} senderName={senderName} setSenderName={setSenderName} senderNames={senderNames} setSenderNames={setSenderNames} senderReplyTo={senderReplyTo} setSenderReplyTo={setSenderReplyTo} rotMode={rotMode} setRotMode={setRotMode} filesList={filesList} uploadFile={uploadFile}/>{isMobile&&<MobSpacer/>}</>;
       case "method":      return <>{isMobile&&<MobTopBar/>}<TabMethod activeMethod={activeMethod} setActiveMethod={setActiveMethod} smtpList={smtpList} setSmtpList={setSmtpList} smtpDraft={smtpDraft} setSmtpDraft={setSmtpDraft} apiList={apiList} setApiList={setApiList} apiDraft={apiDraft} setApiDraft={setApiDraft} owaConfig={owaConfig} setOwaConfig={setOwaConfig} crmConfig={crmConfig} setCrmConfig={setCrmConfig} tunnelList={tunnelList} setTunnelList={setTunnelList} tunnelDraft={tunnelDraft} setTunnelDraft={setTunnelDraft}/>{isMobile&&<MobSpacer/>}</>;

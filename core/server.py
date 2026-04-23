@@ -1346,6 +1346,50 @@ if(code && window.opener){{
             proxy_dead_count = 0
             try:
                 data["_uid"] = sess["user_id"]
+                # Resolve user-selected uploaded attachment IDs into on-disk
+                # paths so core.mime_builder can attach them. Files live at
+                # FILES_DIR/<uid>/<category>/<filename> per /api/files/upload.
+                _sel_ids = data.get("selectedAttachmentIds") or []
+                if _sel_ids:
+                    try:
+                        _ids = [int(x) for x in _sel_ids if str(x).strip().lstrip("-").isdigit()]
+                    except Exception:
+                        _ids = []
+                    if _ids:
+                        try:
+                            with db_lock:
+                                _conn = sqlite3.connect(DB_PATH)
+                                _q = ",".join("?" * len(_ids))
+                                _rows = _conn.execute(
+                                    f"SELECT id,category,filename,orig_name,display_name "
+                                    f"FROM user_files WHERE user_id=? AND id IN ({_q})",
+                                    (sess["user_id"], *_ids)
+                                ).fetchall()
+                                _conn.close()
+                        except Exception as _e:
+                            log.warning("attachment id lookup failed: %s", _e)
+                            _rows = []
+                        _atts = data.get("attachments") or {}
+                        if not isinstance(_atts, dict):
+                            _atts = {}
+                        _files = list(_atts.get("files") or [])
+                        for _r in _rows:
+                            _fpath = os.path.join(
+                                FILES_DIR, str(sess["user_id"]), _r[1], _r[2])
+                            if os.path.exists(_fpath):
+                                _files.append({
+                                    "path": _fpath,
+                                    "name": _r[4] or _r[3] or _r[2],
+                                })
+                            else:
+                                log.warning(
+                                    "attachment id=%s missing on disk: %s",
+                                    _r[0], _fpath)
+                        _atts["files"] = _files
+                        data["attachments"] = _atts
+                        log.info(
+                            "[attach] resolved %d/%d user-selected attachments for uid=%s",
+                            len(_files), len(_ids), sess["user_id"])
                 last_ping = time.time()
                 last_tg_update = time.time()
                 campaign_iter = iter(process_campaign(data))
@@ -4258,28 +4302,31 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             ctx = ssl_mod.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl_mod.CERT_NONE
-            log = []
+            # NOTE: don't name this 'log' — that creates a function-local
+            # binding that shadows the module-level logger for all other
+            # branches of _do_POST_inner (UnboundLocalError).
+            _smtp_log = []
             try:
                 t0 = time.time()
                 if mode == "SSL":
-                    log.append(f"Connecting SMTP_SSL {host}:{port}")
+                    _smtp_log.append(f"Connecting SMTP_SSL {host}:{port}")
                     server = smtplib.SMTP_SSL(host, port, timeout=20, context=ctx)
                 else:
-                    log.append(f"Connecting SMTP {host}:{port} ({mode})")
+                    _smtp_log.append(f"Connecting SMTP {host}:{port} ({mode})")
                     server = smtplib.SMTP(host, port, timeout=20)
                     server.ehlo_or_helo_if_needed()
                     if mode == "STARTTLS":
-                        log.append("Running STARTTLS")
+                        _smtp_log.append("Running STARTTLS")
                         server.starttls(context=ctx)
                         server.ehlo()
                 if username and password:
-                    log.append(f"AUTH as {username}")
+                    _smtp_log.append(f"AUTH as {username}")
                     server.login(username, password)
                 server.quit()
                 latency = round((time.time() - t0) * 1000)
                 self._json(200, {"status": "ok",
                     "message": f"Connected & authenticated — {host}:{port} ({mode}) {latency}ms",
-                    "latency_ms": latency, "log": log})
+                    "latency_ms": latency, "log": _smtp_log})
             except smtplib.SMTPAuthenticationError as e:
                 raw = str(e)
                 hint = ""
@@ -4287,15 +4334,15 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                     hint = " — AWS SES auth failed. Make sure you used the SMTP password from the generator (not your IAM secret key). Also verify your sending domain/email is verified in SES and your account is out of sandbox mode."
                 elif "535" in raw:
                     hint = " — Wrong username/password. For Gmail use an App Password, not your account password."
-                self._json(200, {"status": "error", "message": f"Auth failed{hint} [{raw[:200]}]", "log": log})
+                self._json(200, {"status": "error", "message": f"Auth failed{hint} [{raw[:200]}]", "log": _smtp_log})
             except smtplib.SMTPConnectError as e:
-                self._json(200, {"status": "error", "message": f"Cannot connect to {host}:{port} — port may be blocked", "log": log})
+                self._json(200, {"status": "error", "message": f"Cannot connect to {host}:{port} — port may be blocked", "log": _smtp_log})
             except (ConnectionRefusedError, OSError) as e:
-                self._json(200, {"status": "error", "message": f"Connection refused on {host}:{port} — check host/port", "log": log})
+                self._json(200, {"status": "error", "message": f"Connection refused on {host}:{port} — check host/port", "log": _smtp_log})
             except ssl_mod.SSLError as e:
-                self._json(200, {"status": "error", "message": f"SSL error — try toggling SSL/TLS or use port 587 with STARTTLS. Detail: {str(e)[:200]}", "log": log})
+                self._json(200, {"status": "error", "message": f"SSL error — try toggling SSL/TLS or use port 587 with STARTTLS. Detail: {str(e)[:200]}", "log": _smtp_log})
             except Exception as e:
-                self._json(200, {"status": "error", "message": str(e)[:400], "log": log})
+                self._json(200, {"status": "error", "message": str(e)[:400], "log": _smtp_log})
 
         # ── Email sorter ─────────────────────────────────────
         elif p == "/api/tools/sort-emails":
