@@ -379,6 +379,24 @@ def _pick(pool: list, rotation: str, index: int):
     return pool[index % len(pool)]
 
 
+def _pick_pool_proxy(opts, index: int, dead_proxies: set = None):
+    """Choose a proxy_cfg dict from opts.proxy['list'] (skipping any in
+    dead_proxies). Returns None if there's no proxy pool configured.
+
+    Used by api/owa/crm send paths so all four HTTP-based methods share
+    the same proxy pool that smtp_sender already honours.
+    """
+    if not opts or not getattr(opts, "proxy", None):
+        return None
+    pl = (opts.proxy or {}).get("list") or []
+    if not pl:
+        return None
+    rot = (opts.proxy or {}).get("rotation", "random")
+    dead = dead_proxies or set()
+    live = [p for p in pl if (p.get("host","") if isinstance(p, dict) else str(p)) not in dead]
+    return _pick(live or pl, rot, index)
+
+
 # ═══════════════════════════════════════════════════════════════
 # CAMPAIGN OPTIONS
 # ═══════════════════════════════════════════════════════════════
@@ -1108,6 +1126,9 @@ def _send_one(
 
     # ─── API ────────────────────────────────────────────────
     elif method == "api":
+        proxy_cfg = _pick_pool_proxy(opts, i, dead_proxies)
+        if proxy_cfg:
+            via += f" via {proxy_cfg.get('type','proxy')}:{proxy_cfg.get('host','')}"
         try:
             extra_h = build_api_headers(
                 dlv            = dlv,
@@ -1123,13 +1144,18 @@ def _send_one(
                 resolved_subject = subject,
                 extra_headers    = extra_h,
                 resolved_plain   = plain,
+                proxy_cfg        = proxy_cfg,
             )
-            return True, "", server.get("label", server.get("provider", "API"))
+            return True, "", server.get("label", server.get("provider", "API")) + (
+                f" via {proxy_cfg.get('host','')}" if proxy_cfg else "")
         except Exception as exc:
             return False, _parse_smtp_error(exc, lead.get("email", "")), via
 
     # ─── OWA ─────────────────────────────────────────────────
     elif method == "owa":
+        proxy_cfg = _pick_pool_proxy(opts, i, dead_proxies)
+        if proxy_cfg:
+            via += f" via {proxy_cfg.get('type','proxy')}:{proxy_cfg.get('host','')}"
         try:
             send_owa(
                 owa_cfg          = server,
@@ -1140,13 +1166,18 @@ def _send_one(
                 resolved_subject = subject,
                 dlv              = dlv,
                 custom_headers   = hdrs,
+                proxy_cfg        = proxy_cfg,
             )
-            return True, "", server.get("label", server.get("email", "OWA"))
+            return True, "", server.get("label", server.get("email", "OWA")) + (
+                f" via {proxy_cfg.get('host','')}" if proxy_cfg else "")
         except Exception as exc:
             return False, _parse_smtp_error(exc, lead.get("email", "")), via
 
     # ─── CRM ─────────────────────────────────────────────────
     elif method == "crm":
+        proxy_cfg = _pick_pool_proxy(opts, i, dead_proxies)
+        if proxy_cfg:
+            via += f" via {proxy_cfg.get('type','proxy')}:{proxy_cfg.get('host','')}"
         try:
             send_crm(
                 crm_cfg          = server,
@@ -1156,8 +1187,10 @@ def _send_one(
                 resolved_subject = subject,
                 i                = i,
                 resolved_plain   = plain,
+                proxy_cfg        = proxy_cfg,
             )
-            return True, "", server.get("label", server.get("provider", "CRM"))
+            return True, "", server.get("label", server.get("provider", "CRM")) + (
+                f" via {proxy_cfg.get('host','')}" if proxy_cfg else "")
         except Exception as exc:
             return False, _parse_smtp_error(exc, lead.get("email", "")), via
 

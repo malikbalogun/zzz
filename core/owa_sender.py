@@ -46,6 +46,17 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+try:
+    from core.proxy_util import proxied_urlopen as _proxied_urlopen
+except Exception:
+    _proxied_urlopen = None
+
+
+def _open(req, *, proxy_cfg=None, timeout=30):
+    if proxy_cfg and _proxied_urlopen is not None:
+        return _proxied_urlopen(req, proxy_cfg=proxy_cfg, timeout=timeout)
+    return urlopen(req, timeout=timeout)
+
 
 # ═══════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -230,6 +241,7 @@ def send_owa(
     resolved_subject: str,
     dlv:              Optional[dict] = None,
     custom_headers:   Optional[list] = None,
+    proxy_cfg:        Optional[dict] = None,
 ) -> int:
     """
     Send an email via Exchange Web Services (EWS) SOAP API.
@@ -303,7 +315,7 @@ def send_owa(
             },
         )
         try:
-            with urlopen(req, timeout=30) as resp:
+            with _open(req, proxy_cfg=proxy_cfg, timeout=30) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
 
             # EWS returns HTTP 200 even for application-level errors —

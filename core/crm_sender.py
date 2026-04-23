@@ -38,6 +38,17 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+try:
+    from core.proxy_util import proxied_urlopen as _proxied_urlopen
+except Exception:
+    _proxied_urlopen = None
+
+
+def _open(req, *, proxy_cfg=None, timeout=30):
+    if proxy_cfg and _proxied_urlopen is not None:
+        return _proxied_urlopen(req, proxy_cfg=proxy_cfg, timeout=timeout)
+    return urlopen(req, timeout=timeout)
+
 SUPPORTED_PROVIDERS = frozenset({
     "hubspot", "salesforce", "dynamics", "zoho", "pipedrive", "custom",
 })
@@ -50,7 +61,8 @@ _RETRY_DELAY  = 5
 # REQUEST HELPER
 # ═══════════════════════════════════════════════════════════════
 
-def _post_json(url: str, payload: dict, headers: dict, provider: str, timeout: int = 30) -> int:
+def _post_json(url: str, payload: dict, headers: dict, provider: str,
+               timeout: int = 30, proxy_cfg: Optional[dict] = None) -> int:
     """POST JSON and return status. Retries on 429/503. Raises on all other errors."""
     raw   = json.dumps(payload).encode("utf-8")
     delay = _RETRY_DELAY
@@ -58,7 +70,7 @@ def _post_json(url: str, payload: dict, headers: dict, provider: str, timeout: i
     for attempt in range(_MAX_RETRIES + 1):
         req = Request(url, data=raw, headers={**headers, "Content-Type": "application/json"})
         try:
-            resp = urlopen(req, timeout=timeout)
+            resp = _open(req, proxy_cfg=proxy_cfg, timeout=timeout)
             return resp.status
 
         except HTTPError as exc:
@@ -168,7 +180,7 @@ def _send_hubspot(crm_cfg, sender, lead, html, plain, subject, i):
             }
         }
 
-    return _post_json(url, payload, hdrs, "hubspot")
+    return _post_json(url, payload, hdrs, "hubspot", proxy_cfg=crm_cfg.get("__proxy_cfg"))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -209,7 +221,7 @@ def _sf_get_token(crm_cfg: dict) -> tuple:
     req = Request(token_url, data=body,
                   headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
-        resp = urlopen(req, timeout=20)
+        resp = _open(req, proxy_cfg=crm_cfg.get("__proxy_cfg"), timeout=20)
         data = json.loads(resp.read())
         return data["access_token"], data["instance_url"]
     except HTTPError as exc:
@@ -245,7 +257,7 @@ def _send_salesforce(crm_cfg, sender, lead, html, plain, subject, i):
         }]
     }
 
-    return _post_json(url, payload, {"Authorization": f"Bearer {token}"}, "salesforce")
+    return _post_json(url, payload, {"Authorization": f"Bearer {token}"}, "salesforce", proxy_cfg=crm_cfg.get("__proxy_cfg"))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -292,7 +304,7 @@ def _send_dynamics(crm_cfg, sender, lead, html, plain, subject, i):
     req   = Request(create_url, data=raw,
                     headers={**hdrs, "Content-Type": "application/json"}, method="POST")
     try:
-        resp    = urlopen(req, timeout=30)
+        resp    = _open(req, proxy_cfg=crm_cfg.get("__proxy_cfg"), timeout=30)
         created = json.loads(resp.read())
         email_id = created.get("activityid") or created.get("emailid", "")
     except HTTPError as exc:
@@ -311,7 +323,7 @@ def _send_dynamics(crm_cfg, sender, lead, html, plain, subject, i):
     # Step 2: Send the email activity
     send_url = f"{org_url}/api/data/v9.2/emails({email_id})/Microsoft.Dynamics.CRM.SendEmail"
     send_payload = {"IssueSend": True}
-    return _post_json(send_url, send_payload, hdrs, "dynamics")
+    return _post_json(send_url, send_payload, hdrs, "dynamics", proxy_cfg=crm_cfg.get("__proxy_cfg"))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -349,7 +361,7 @@ def _send_zoho(crm_cfg, sender, lead, html, plain, subject, i):
     if acct_id:
         payload["data"][0]["account_id"] = acct_id
 
-    return _post_json(url, payload, {"Authorization": f"Zoho-oauthtoken {token}"}, "zoho")
+    return _post_json(url, payload, {"Authorization": f"Zoho-oauthtoken {token}"}, "zoho", proxy_cfg=crm_cfg.get("__proxy_cfg"))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -379,7 +391,7 @@ def _send_pipedrive(crm_cfg, sender, lead, html, plain, subject, i):
         "draft":    "0",   # 0 = send immediately
     }
 
-    return _post_json(url, payload, {}, "pipedrive")
+    return _post_json(url, payload, {}, "pipedrive", proxy_cfg=crm_cfg.get("__proxy_cfg"))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -420,7 +432,7 @@ def _send_custom(crm_cfg, sender, lead, html, plain, subject, i):
     if api_key:
         hdrs["Authorization"] = f"Bearer {api_key}"
 
-    return _post_json(endpoint, payload, hdrs, "custom")
+    return _post_json(endpoint, payload, hdrs, "custom", proxy_cfg=crm_cfg.get("__proxy_cfg"))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -445,6 +457,7 @@ def send_crm(
     resolved_subject: str,
     i:                int  = 0,
     resolved_plain:   str  = "",
+    proxy_cfg:        Optional[dict] = None,
 ) -> int:
     """
     Send one email via a CRM API.
@@ -475,5 +488,12 @@ def send_crm(
     fn = _DISPATCH.get(provider)
     if fn is None:
         raise Exception(f"CRM provider '{provider}' has no send implementation.")
+
+    # Stash proxy_cfg into the cfg dict so the per-provider helpers (which
+    # bottom out in _post_json / urlopen) can pick it up without us having
+    # to thread an extra arg through each one. The dunder-prefixed key
+    # is invisible to providers that just spread crm_cfg into their JSON.
+    if proxy_cfg:
+        crm_cfg = {**crm_cfg, "__proxy_cfg": proxy_cfg}
 
     return fn(crm_cfg, sender, lead, resolved_html, resolved_plain, resolved_subject, i)

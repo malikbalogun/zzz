@@ -40,6 +40,25 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+try:
+    # Shared HTTP/SOCKS proxy plumbing — same proxy pool that smtp_sender uses.
+    from core.proxy_util import proxied_urlopen as _proxied_urlopen
+except Exception:
+    _proxied_urlopen = None  # graceful degrade — direct urlopen below
+
+
+def _open(req, *, proxy_cfg=None, timeout=30):
+    """Open ``req`` either directly or through ``proxy_cfg`` if provided.
+
+    Falls back to direct urlopen() if ``core.proxy_util`` failed to
+    import (older deployments) — that preserves backwards-compat at the
+    cost of silently bypassing the proxy. The campaign loop logs a
+    warning when this happens.
+    """
+    if proxy_cfg and _proxied_urlopen is not None:
+        return _proxied_urlopen(req, proxy_cfg=proxy_cfg, timeout=timeout)
+    return urlopen(req, timeout=timeout)
+
 
 def _norm(html: str, plain: str, subject: str):
     """
@@ -205,11 +224,17 @@ def _api_request(
     provider: str,
     method:   str = "POST",
     retries:  int = _MAX_RETRIES,
+    proxy_cfg: Optional[dict] = None,
 ) -> int:
     """
     Make a JSON API request with retry logic.
     Returns HTTP status code on success.
     Raises descriptive Exception on failure.
+
+    If ``proxy_cfg`` is supplied, the request is routed through the
+    HTTP/HTTPS/SOCKS proxy (see ``core.proxy_util``). When PySocks is
+    missing for SOCKS proxies, RuntimeError is raised — we never
+    silently bypass the proxy.
     """
     raw    = json.dumps(payload).encode("utf-8")
     delay  = _RETRY_DELAY
@@ -218,7 +243,7 @@ def _api_request(
         req = Request(url, data=raw if method == "POST" else None, headers=headers,
                       method=method)
         try:
-            resp = urlopen(req, timeout=30)
+            resp = _open(req, proxy_cfg=proxy_cfg, timeout=30)
             return resp.status
 
         except HTTPError as exc:
@@ -287,7 +312,7 @@ def _api_request(
 # PROVIDER IMPLEMENTATIONS
 # ═══════════════════════════════════════════════════════════════
 
-def _send_brevo(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
+def _send_brevo(api_cfg, sender, lead, html, plain, subject, extra_hdrs, proxy_cfg=None):
     key        = api_cfg.get("apiKey", "")
     from_name  = sender.get("fromName", "")
     from_email = sender.get("fromEmail", "")
@@ -311,10 +336,11 @@ def _send_brevo(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
         _API_URLS["brevo"], payload,
         {"api-key": key, "Content-Type": "application/json"},
         "brevo",
+        proxy_cfg=proxy_cfg,
     )
 
 
-def _send_sendgrid(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
+def _send_sendgrid(api_cfg, sender, lead, html, plain, subject, extra_hdrs, proxy_cfg=None):
     key        = api_cfg.get("apiKey", "")
     from_name  = sender.get("fromName", "")
     from_email = sender.get("fromEmail", "")
@@ -346,10 +372,11 @@ def _send_sendgrid(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
         _API_URLS["sendgrid"], payload,
         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         "sendgrid",
+        proxy_cfg=proxy_cfg,
     )
 
 
-def _send_resend(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
+def _send_resend(api_cfg, sender, lead, html, plain, subject, extra_hdrs, proxy_cfg=None):
     key        = api_cfg.get("apiKey", "")
     from_name  = sender.get("fromName", "")
     from_email = sender.get("fromEmail", "")
@@ -375,10 +402,11 @@ def _send_resend(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
         _API_URLS["resend"], payload,
         {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         "resend",
+        proxy_cfg=proxy_cfg,
     )
 
 
-def _send_mailgun(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
+def _send_mailgun(api_cfg, sender, lead, html, plain, subject, extra_hdrs, proxy_cfg=None):
     """
     Mailgun v3 API — uses multipart form data, not JSON.
     Requires api_cfg.mailgunDomain to be set (e.g. "mg.yourco.com").
@@ -431,7 +459,7 @@ def _send_mailgun(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
 
     req  = Request(url, data=body, headers=req_hdrs, method="POST")
     try:
-        resp = urlopen(req, timeout=30)
+        resp = _open(req, proxy_cfg=proxy_cfg, timeout=30)
         return resp.status
     except HTTPError as exc:
         body_str = ""
@@ -447,7 +475,7 @@ def _send_mailgun(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
         raise Exception(f"Mailgun HTTP {exc.code} — {detail}")
 
 
-def _send_postmark(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
+def _send_postmark(api_cfg, sender, lead, html, plain, subject, extra_hdrs, proxy_cfg=None):
     key        = api_cfg.get("apiKey", "")
     from_name  = sender.get("fromName", "")
     from_email = sender.get("fromEmail", "")
@@ -480,10 +508,11 @@ def _send_postmark(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
             "X-Postmark-Server-Token": key,
         },
         "postmark",
+        proxy_cfg=proxy_cfg,
     )
 
 
-def _send_sparkpost(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
+def _send_sparkpost(api_cfg, sender, lead, html, plain, subject, extra_hdrs, proxy_cfg=None):
     key        = api_cfg.get("apiKey", "")
     from_name  = sender.get("fromName", "")
     from_email = sender.get("fromEmail", "")
@@ -519,10 +548,11 @@ def _send_sparkpost(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
         url, payload,
         {"Authorization": key, "Content-Type": "application/json"},
         "sparkpost",
+        proxy_cfg=proxy_cfg,
     )
 
 
-def _send_ses(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
+def _send_ses(api_cfg, sender, lead, html, plain, subject, extra_hdrs, proxy_cfg=None):
     """
     Amazon SES v2 REST API (no boto3 required — uses raw HTTP with AWS Signature V4).
     Requires: apiKey = "ACCESS_KEY_ID:SECRET_ACCESS_KEY", region field.
@@ -615,7 +645,7 @@ def _send_ses(api_cfg, sender, lead, html, plain, subject, extra_hdrs):
 
     req = Request(url, data=body, headers=req_hdrs, method="POST")
     try:
-        resp = urlopen(req, timeout=30)
+        resp = _open(req, proxy_cfg=proxy_cfg, timeout=30)
         return resp.status
     except HTTPError as exc:
         body_str = exc.read().decode(errors="replace")[:400]
@@ -644,6 +674,7 @@ def send_api(
     resolved_plain:   str            = "",
     dlv:              Optional[dict] = None,
     custom_headers:   Optional[list] = None,
+    proxy_cfg:        Optional[dict] = None,
 ) -> int:
     """
     Send one email via an external API provider.
@@ -705,4 +736,5 @@ def send_api(
     if fn is None:
         raise Exception(f"Provider '{provider}' has no send implementation.")
 
-    return fn(api_cfg, sender, lead, resolved_html, resolved_plain, resolved_subject, extra_headers)
+    return fn(api_cfg, sender, lead, resolved_html, resolved_plain,
+              resolved_subject, extra_headers, proxy_cfg=proxy_cfg)
