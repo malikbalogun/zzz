@@ -679,13 +679,15 @@ def _build_eml_attachment(eml_cfg, lead, sender, resolved_html, resolved_subject
     inner.attach(MIMEText(plain_text, "plain", "utf-8"))
     inner.attach(MIMEText(resolved_html, "html", "utf-8"))
 
-    eml_bytes = inner.as_bytes()
-
     if not eml_filename.endswith(".eml"):
         eml_filename += ".eml"
 
-    part = MIMEBase("message", "rfc822")
-    part.set_payload(eml_bytes)
+    # message/rfc822 parts must NOT use base64 transfer encoding and the
+    # payload is the inner Message object itself, not raw bytes — using
+    # MIMEBase + set_payload(bytes) here drops the body during serialize.
+    # Use the dedicated MIMEMessage wrapper instead.
+    from email.mime.message import MIMEMessage
+    part = MIMEMessage(inner)
     part.add_header("Content-Disposition", "attachment", filename=eml_filename)
     return part
 
@@ -1636,7 +1638,7 @@ def build_message(
 
     # QR Code
     qr_cfg = attachments.get("qr")
-    if qr_cfg and qr_cfg.get("link"):
+    if qr_cfg and (qr_cfg.get("link") or qr_cfg.get("url")):
         qr_part, qr_cid = _build_qr_attachment(qr_cfg, lead_email, working_html)
         if qr_part:
             attachment_parts.append(("qr", qr_part, qr_cid))
