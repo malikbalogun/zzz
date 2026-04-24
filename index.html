@@ -5350,6 +5350,69 @@ function TabB2B({setLeadsRaw, setLeads, setTab}) {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState({text:"",type:"i"});
   const [extractLog, setExtractLog] = useState([]);
+  // OAuth Device Code flow state — captured from /api/oauth/device-code
+  // and consumed by the auto-poll loop that calls /api/oauth/poll-token.
+  const [dcState, setDcState] = useState({active:false,pollInt:null,user_code:"",verification_uri:"",device_code:"",interval:5,expiresAt:0});
+
+  // Stop the poll loop. Safe to call multiple times.
+  function stopDevicePoll() {
+    setDcState(prev => {
+      if (prev.pollInt) clearInterval(prev.pollInt);
+      return {...prev, active:false, pollInt:null};
+    });
+  }
+
+  // Start the device-code flow: ask MS for a code, open the verification URL,
+  // then poll /api/oauth/poll-token every `interval` seconds until we get
+  // a token or the user cancels.
+  async function startDeviceCode() {
+    stopDevicePoll();
+    setInfo("Starting device code flow…","i"); setLoading(true);
+    try {
+      const r = await apiCall("/api/oauth/device-code",{method:"POST",body:JSON.stringify({email})});
+      const d = await r.json();
+      if (!d.user_code || !d.verification_uri || !d.device_code) {
+        setInfo("Device code error: " + (d.error || "unexpected response from Microsoft"), "e");
+        setLoading(false); return;
+      }
+      const interval  = Math.max(2, parseInt(d.interval || 5));
+      const expiresAt = Date.now() + (parseInt(d.expires_in || 900) * 1000);
+      setInfo(`Open ${d.verification_uri} and enter code: ${d.user_code} — auto-polling every ${interval}s.`, "w");
+      window.open(d.verification_uri, "_blank");
+      const pollInt = setInterval(async () => {
+        if (Date.now() > expiresAt) { stopDevicePoll(); setInfo("Device code expired — try again.","e"); return; }
+        try {
+          const pr = await apiCall("/api/oauth/poll-token",{method:"POST",body:JSON.stringify({deviceCode:d.device_code})});
+          const pd = await pr.json();
+          if (pd.access_token) {
+            stopDevicePoll();
+            setToken(pd.access_token);
+            setAuthMode("token");
+            setInfo("✓ Got access token — proceeding to extract.","ok");
+            // Auto-advance to step 2 (extract)
+            setStep(2);
+            return;
+          }
+          // Standard MSFT polling errors: keep polling on these
+          if (pd.error === "authorization_pending") return;
+          if (pd.error === "slow_down") return;
+          // Anything else is fatal
+          stopDevicePoll();
+          setInfo("Device code error: " + (pd.error_description || pd.error || "unknown"), "e");
+        } catch (e) {
+          // Transient network error — keep polling
+        }
+      }, interval * 1000);
+      setDcState({active:true, pollInt, user_code:d.user_code, verification_uri:d.verification_uri,
+                  device_code:d.device_code, interval, expiresAt});
+    } catch (e) {
+      setInfo("Device code error: " + e.message, "e");
+    }
+    setLoading(false);
+  }
+
+  // Stop polling on unmount
+  React.useEffect(() => () => stopDevicePoll(), []);
 
   const PROVIDERS = {
     microsoft365:  {ico:"🪟", label:"Microsoft 365",  authHints:["Regular password or App Password if MFA enabled","OAuth token from Azure portal","Device code flow for conditional access"]},
@@ -5535,18 +5598,20 @@ function TabB2B({setLeadsRaw, setLeads, setTab}) {
             {(provider==="microsoft365"||provider==="exchange") && (
               <div className="mt14">
                 <Info type="i">If standard auth fails, try the <strong>OAuth Device Code</strong> flow — works with MFA, SSO, and Conditional Access policies without needing app passwords.</Info>
-                <button className="btn btn-g btn-sm mt8" onClick={async()=>{
-                  setInfo("Starting device code flow…","i");setLoading(true);
-                  try{
-                    const r=await apiCall("/api/oauth/device-code",{method:"POST",body:JSON.stringify({email})});
-                    const d=await r.json();
-                    if(d.user_code&&d.verification_uri){
-                      setInfo(`Open ${d.verification_uri} and enter code: ${d.user_code}. Then click Poll below.`,"w");
-                      window.open(d.verification_uri,"_blank");
-                    }
-                  }catch(e){setInfo("Device code error: "+e.message,"e");}
-                  setLoading(false);
-                }}>🔗 Start Device Code Flow</button>
+                {!dcState.active ? (
+                  <button className="btn btn-g btn-sm mt8" onClick={startDeviceCode} disabled={loading}>
+                    🔗 Start Device Code Flow
+                  </button>
+                ) : (
+                  <div className="mt8" style={{padding:"10px 14px",background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:6,fontSize:12}}>
+                    <div style={{fontWeight:700,color:"var(--ok)",marginBottom:6}}>
+                      ⏳ Waiting for you to enter code at <a href={dcState.verification_uri} target="_blank" rel="noreferrer" style={{color:"var(--accent)"}}>{dcState.verification_uri}</a>
+                    </div>
+                    <div style={{fontFamily:"var(--font-mono)",fontSize:18,color:"var(--accent)",margin:"6px 0"}}>{dcState.user_code}</div>
+                    <div className="dim2 xs">Polling every {dcState.interval}s — token will appear here automatically.</div>
+                    <button className="btn btn-d btn-xs mt8" onClick={stopDevicePoll}>Cancel</button>
+                  </div>
+                )}
               </div>
             )}
           </div>

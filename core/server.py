@@ -4040,9 +4040,16 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            client_id = data.get("clientId", "").strip()
+            # Accept clientId from the payload OR fall back to the
+            # server-side _AZURE_CLIENT_ID env. Several frontend
+            # sites (the B2B 'Start Device Code' button being one)
+            # only send {email} and expect the server to use the
+            # configured Azure app — same convention the
+            # /api/b2b/device-start endpoint uses.
+            client_id = (data.get("clientId") or data.get("client_id") or "").strip() \
+                        or _AZURE_CLIENT_ID
             if not client_id:
-                self._json(200, {"error": "Azure Client ID required"}); return
+                self._json(200, {"error": "No Azure Client ID — pass clientId in the request or set SYNTHTEL_AZURE_CLIENT_ID on the server."}); return
             try:
                 import urllib.parse
                 body = urllib.parse.urlencode({
@@ -4071,10 +4078,12 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            client_id   = data.get("clientId", "").strip()
-            device_code = data.get("deviceCode", "").strip()
+            # Accept clientId from payload OR fall back to server-configured Azure app.
+            client_id = (data.get("clientId") or data.get("client_id") or "").strip() \
+                        or _AZURE_CLIENT_ID
+            device_code = (data.get("deviceCode") or data.get("device_code") or "").strip()
             if not client_id or not device_code:
-                self._json(200, {"error": "clientId and deviceCode required"}); return
+                self._json(200, {"error": "deviceCode required (and clientId, unless SYNTHTEL_AZURE_CLIENT_ID is set on the server)"}); return
             try:
                 import urllib.parse
                 body = urllib.parse.urlencode({
