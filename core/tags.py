@@ -1043,7 +1043,48 @@ def resolve_tags(text: str, ctx: dict) -> str:
     # ── Pass 2: regex-based and functional tags ──
     s = _apply_regex_tags(s, ctx)
 
+    # ── Pass 3: bare spintax {opt1|opt2|opt3} ──
+    # Standard spintax syntax — pick one randomly. Recursive (innermost
+    # braces resolved first) so nested spintax works:
+    #   {Hi|{Hello|Hey}} → "Hi" or "Hello" or "Hey".
+    # We also resolve {{(a|b|c)}} (F-Mailer convention) for backwards
+    # compat with templates that use it.
+    s = _resolve_spintax(s)
+
     return s
+
+
+# ═══════════════════════════════════════════════════════════
+# SPINTAX  {opt1|opt2|opt3}  +  {{(opt1|opt2|opt3)}}
+# ═══════════════════════════════════════════════════════════
+# Resolved as a final pass after all #TAGs have been substituted, so
+# we won't accidentally consume #TAG{...} brace args.
+
+# Match an INNER spintax block — {...} with no nested braces and at
+# least one '|'. Resolved repeatedly until no more matches (handles
+# nested spintax left-to-right, innermost first).
+_SPINTAX_INNER = re.compile(r'\{([^{}]*\|[^{}]*)\}')
+
+# F-Mailer style: {{(a|b|c)}}  (legacy — still supported)
+_SPINTAX_FMAILER = re.compile(r'\{\{\(([^()]*\|[^()]*)\)\}\}')
+
+
+def _resolve_spintax(text: str) -> str:
+    """Expand spintax tokens. Safe to call on any string."""
+    if not text or '|' not in text:
+        return text
+    # Resolve F-Mailer convention first so the inner '|' doesn't trip
+    # the bare-spintax matcher on the outer braces.
+    text = _SPINTAX_FMAILER.sub(
+        lambda m: random.choice(m.group(1).split('|')).strip(), text)
+    # Resolve bare spintax (recursively — innermost first).
+    for _ in range(64):  # safety: avoid pathological loops
+        m = _SPINTAX_INNER.search(text)
+        if not m:
+            break
+        choice = random.choice(m.group(1).split('|')).strip()
+        text = text[:m.start()] + choice + text[m.end():]
+    return text
 
 
 # ═══════════════════════════════════════════════════════════
