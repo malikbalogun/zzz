@@ -3368,6 +3368,69 @@ function TabMethod({
   const [apiTestResult, setApiTestResult] = useState(null);
   const [apiTestLoading, setApiTestLoading] = useState(false);
 
+  // ── Outbound port 25 reachability probe ────────────────────
+  // Surfaces (in the MX-direct sub-panel) whether the current VPS can
+  // even reach port 25 on a public mail server. Saves the user a lot
+  // of grief on cloud VPSes that block outbound 25 by default.
+  function Port25Probe() {
+    const [state, setState]   = React.useState("idle");  // idle | running | open | blocked
+    const [detail, setDetail] = React.useState(null);
+    async function probe() {
+      setState("running"); setDetail(null);
+      try {
+        const r = await apiCall("/api/port25-check");
+        const d = await r.json();
+        setState(d.open ? "open" : "blocked");
+        setDetail(d);
+      } catch (e) {
+        setState("blocked"); setDetail({ verdict: "Probe request failed: " + e.message });
+      }
+    }
+    const bg = state==="open"   ? "#0f2a1a"
+             : state==="blocked"? "#2a0f0f"
+             : "var(--bg2)";
+    const bd = state==="open"   ? "#22c55e44"
+             : state==="blocked"? "#ef444444"
+             : "var(--bdr)";
+    const ic = state==="open"   ? "✓"
+             : state==="blocked"? "✗"
+             : "?";
+    const co = state==="open"   ? "#4ade80"
+             : state==="blocked"? "#f87171"
+             : "var(--t2)";
+    return (
+      <div style={{padding:"10px 14px", borderRadius:6,
+                    background: bg, border:"1px solid " + bd,
+                    fontSize:12, color: co, marginBottom:12}}>
+        <div style={{display:"flex", alignItems:"center", gap:10}}>
+          <span style={{fontWeight:700}}>{ic} Outbound port 25 probe</span>
+          <span style={{flex:1}}>
+            {state==="idle"
+              ? "Click to test if your server can reach a recipient mail server on port 25."
+              : state==="running"
+                ? "Probing aspmx.l.google.com:25 …"
+                : (detail && detail.verdict) || ""}
+          </span>
+          <button className="btn btn-g btn-xs" onClick={probe} disabled={state==="running"}>
+            {state==="running" ? "Testing…" : "Run probe"}
+          </button>
+        </div>
+        {state==="open" && detail && detail.ok && detail.ok[0] && detail.ok[0].banner && (
+          <pre style={{margin:"8px 0 0", fontSize:11, color:"#86efac",
+                        fontFamily:"var(--font-mono)", whiteSpace:"pre-wrap"}}>
+            {detail.ok[0].host}:{detail.ok[0].port} — {detail.ok[0].banner}
+          </pre>
+        )}
+        {state==="blocked" && detail && detail.errors && detail.errors.length>0 && (
+          <pre style={{margin:"8px 0 0", fontSize:11, color:"#fca5a5",
+                        fontFamily:"var(--font-mono)", whiteSpace:"pre-wrap"}}>
+            {detail.errors.join("\n")}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
   // ── Per-method proxy status pill ───────────────────────────
   // Compact "are we using the proxy pool?" indicator at the top of
   // each method sub-panel. Click to toggle on/off, or jump to the
@@ -3612,15 +3675,8 @@ function TabMethod({
             Sends straight to each recipient's MX records on port 25 — no SMTP relay required.
             <br/>If a proxy pool is configured, sends route through SOCKS5/HTTP proxy first.
           </div>
-          <div className="ib ib-i" style={{marginBottom:12}}>
-            <span className="ib-ic">⚠</span>
-            <span>
-              MX direct only works if your VPS allows outbound port 25.
-              Most cloud providers (AWS / GCP / Azure / DigitalOcean) block port 25 by default.
-              If you hit "Connection refused" or "Network unreachable", route through a proxy that allows it.
-            </span>
-          </div>
-          <div className="dim sm">
+          <Port25Probe/>
+          <div className="dim sm" style={{marginTop:12}}>
             <strong>No per-server config needed.</strong> Make sure to:
             <ul style={{marginTop:6,marginBottom:0,paddingLeft:18}}>
               <li>Add at least one valid sender in the <strong>Senders</strong> tab.</li>
@@ -7665,12 +7721,12 @@ function App() {
   const [proxyDraft, setProxyDraft] = useState("");
   const [proxyType, setProxyType]   = useState(_g("proxyType","socks5"));
   // Per-method opt-in: should the campaign include the proxy pool when
-  // sending via this method? Defaults: ON for the methods that benefit
-  // most (mx, isp), OFF for SMTP / API / OWA / CRM so existing
-  // workflows aren't perturbed unexpectedly. Tunnel ignores this — the
-  // SSH tunnel IS the proxy.
+  // sending via this method? Defaults are ON for every method — if the
+  // user has gone to the trouble of building a proxy pool, they almost
+  // always want it used everywhere. Tunnel ignores this flag (the SSH
+  // tunnel IS the proxy) and is here only for completeness.
   const [useProxiesFor, setUseProxiesFor] = useState(_g("useProxiesFor", {
-    smtp: false, mx: true, api: false, owa: false, crm: false, isp: true,
+    smtp: true, mx: true, api: true, owa: true, crm: true, isp: true, b2b: true,
   }));
   // ISP method: optional global ISP SMTP host (used when 'Use normal
   // proxy pool + ISP SMTP host' is selected so the user doesn't have

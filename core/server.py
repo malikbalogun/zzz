@@ -1177,6 +1177,47 @@ if(code && window.opener){{
                     _ip = "unknown"
             self._json(200, {"ip": _ip})
 
+        # ── Port 25 outbound reachability check ─────────────────────
+        # Used by the MX-direct method panel so the user knows up-front
+        # whether their VPS allows direct-to-MX sends. Tests TCP connect
+        # to a few well-known mail servers; if any succeed, port 25 is
+        # almost certainly open.
+        elif p == "/api/port25-check":
+            if not (sess := self._auth()): return
+            import socket as _sk
+            targets = [
+                ("aspmx.l.google.com", 25),     # Gmail MX
+                ("smtp.gmail.com",     25),
+                ("alt1.aspmx.l.google.com", 25),
+                ("smtp.mail.yahoo.com", 25),
+            ]
+            ok_targets = []
+            errors = []
+            for host, port in targets:
+                try:
+                    s = _sk.create_connection((host, port), timeout=4)
+                    try:
+                        s.settimeout(3)
+                        banner = s.recv(256).decode(errors="replace").strip()
+                    except Exception:
+                        banner = ""
+                    s.close()
+                    ok_targets.append({"host": host, "port": port, "banner": banner[:120]})
+                    if len(ok_targets) >= 1:
+                        # one success is enough; bail early
+                        break
+                except Exception as _e:
+                    errors.append(f"{host}: {str(_e)[:80]}")
+            self._json(200, {
+                "open":     bool(ok_targets),
+                "ok":       ok_targets,
+                "tried":    len(targets),
+                "errors":   errors[:4],
+                "verdict":  ("Outbound port 25 IS reachable from this server. MX direct should work."
+                             if ok_targets else
+                             "Outbound port 25 is BLOCKED on this server. MX direct will not work without a proxy/tunnel that forwards port 25."),
+            })
+
         else:
             self._json(404, {"error": "Not found"})
 

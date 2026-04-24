@@ -124,6 +124,77 @@ except ImportError:
     _HAS_DNS = False
 
 
+# ── Proxy helpers ────────────────────────────────────────────────────────
+# Convert a proxy_cfg dict (the same shape produced by
+# core.campaign.CampaignOptions._build_proxy_cfg) into the structures each
+# downstream library wants. Mirrors what core.smtp_sender / core.proxy_util
+# already do for the other senders.
+
+def _b2b_requests_proxies(proxy_cfg: Optional[dict]) -> Optional[dict]:
+    """Return a dict suitable for ``requests.post(proxies=...)`` or
+    ``requests.Session.proxies``. None when no proxy.
+
+    SOCKS proxies require the ``requests[socks]`` extra (which is just
+    PySocks — already a runtime dep). HTTP/HTTPS work natively.
+    """
+    if not proxy_cfg or not isinstance(proxy_cfg, dict) or not proxy_cfg.get("host"):
+        return None
+    from urllib.parse import quote
+    ptype = (proxy_cfg.get("type") or "http").lower().strip()
+    host  = str(proxy_cfg["host"]).strip()
+    try:
+        port = int(proxy_cfg.get("port") or 0)
+    except Exception:
+        port = 0
+    if not port:
+        return None
+    user = quote(str(proxy_cfg.get("username") or ""), safe="")
+    pw   = quote(str(proxy_cfg.get("password") or ""), safe="")
+    auth = f"{user}:{pw}@" if (user or pw) else ""
+    if ptype not in ("http", "https", "socks4", "socks5", "socks5h"):
+        ptype = "http"
+    if ptype == "socks5":
+        # socks5h delegates DNS to the proxy (avoids leaking lookups).
+        ptype = "socks5h"
+    url = f"{ptype}://{auth}{host}:{port}"
+    return {"http": url, "https": url}
+
+
+def _b2b_smtp_socket(host: str, port: int, proxy_cfg: Optional[dict],
+                      timeout: float = 30):
+    """Open a TCP socket to ``host:port`` either directly or through the
+    given SOCKS5 / HTTP proxy. Used by _send_via_smtp.
+    """
+    if not proxy_cfg or not proxy_cfg.get("host"):
+        import socket as _sock
+        return _sock.create_connection((host, port), timeout=timeout)
+    try:
+        import socks as _pysocks  # PySocks
+    except ImportError:
+        raise RuntimeError(
+            "B2B SMTP proxy requires PySocks — "
+            "run `pip install pysocks --break-system-packages`")
+    ptype = (proxy_cfg.get("type") or "socks5").lower()
+    pmap  = {
+        "socks5":  _pysocks.SOCKS5,
+        "socks5h": _pysocks.SOCKS5,
+        "socks4":  _pysocks.SOCKS4,
+        "http":    _pysocks.HTTP,
+        "https":   _pysocks.HTTP,
+    }
+    s = _pysocks.socksocket()
+    s.set_proxy(
+        pmap.get(ptype, _pysocks.SOCKS5),
+        str(proxy_cfg["host"]),
+        int(proxy_cfg.get("port") or 1080),
+        username=proxy_cfg.get("username") or None,
+        password=proxy_cfg.get("password") or None,
+    )
+    s.settimeout(timeout)
+    s.connect((host, port))
+    return s
+
+
 # ═══════════════════════════════════════════════════════════════
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════
@@ -2118,12 +2189,17 @@ def _send_via_smtp(
     username:   str,
     password:   str,
     is_godaddy: bool = False,
+    proxy_cfg:  Optional[dict] = None,
 ) -> tuple:
     """
     Send via authenticated SMTP.
     Port 465 → SMTP_SSL.
     Port 587 / other → STARTTLS.
     GoDaddy: uses smtpout.secureserver.net:465 (SSL only).
+    If proxy_cfg is supplied, the underlying TCP socket is opened
+    through the SOCKS5/HTTP proxy; SSL on port 465 is auto-downgraded
+    to STARTTLS on port 587 to keep TLS handshakes working through SOCKS
+    (matching the same logic in core.smtp_sender).
 
     Returns (True, "") or (False, error_string).
     """
@@ -2137,7 +2213,32 @@ def _send_via_smtp(
         smtp_port = 465
 
     try:
-        if smtp_port == 465:
+        if proxy_cfg and proxy_cfg.get("host"):
+            # Through-proxy: 465 SSL handshakes are unreliable through
+            # SOCKS, so transparently downgrade to STARTTLS on 587 (same
+            # behaviour as core.smtp_sender). For STARTTLS / plain ports
+            # we open the SOCKS socket and hand it to smtplib.
+            if smtp_port == 465:
+                smtp_port = 587
+            sock = _b2b_smtp_socket(smtp_host, smtp_port, proxy_cfg, timeout=30)
+            server = smtplib.SMTP(timeout=30)
+            server.sock = sock
+            # smtplib expects a file-like object for line reads.
+            server.file = server.sock.makefile("rb")
+            # Read the SMTP banner so the next ehlo() picks up the
+            # right initial state.
+            try:
+                code, _msg = server.getreply()
+                if code != 220:
+                    raise smtplib.SMTPConnectError(code, _msg)
+            except Exception:
+                pass
+            server._host = smtp_host
+            server.ehlo()
+            if server.has_extn("STARTTLS"):
+                server.starttls(context=ctx)
+                server.ehlo()
+        elif smtp_port == 465:
             server = smtplib.SMTP_SSL(smtp_host, smtp_port,
                                       context=ctx, timeout=30)
         else:
@@ -2198,6 +2299,7 @@ def _send_via_graph(
     from_name:    str        = "",
     reply_to_mid: str        = "",
     attachments:  list       = None,
+    proxy_cfg:    Optional[dict] = None,
 ) -> tuple:
     """
     Send via Microsoft Graph API /me/sendMail.
@@ -2275,7 +2377,8 @@ def _send_via_graph(
 
     try:
         r = _req.post(f"{GRAPH}/me/sendMail", headers=h,
-                      json=payload, timeout=45)
+                      json=payload, timeout=45,
+                      proxies=_b2b_requests_proxies(proxy_cfg))
         if r.status_code in (200, 202):
             return True, ""
         try:
@@ -2311,6 +2414,7 @@ def send_b2b(
     batch_size:  int          = 0,
     batch_delay: float        = 30.0,
     max_sends:   int          = 0,
+    proxy_cfg:   Optional[dict] = None,
 ) -> Generator:
     """
     Generator — sends to each B2BLead, yields progress events.
@@ -2383,8 +2487,11 @@ def send_b2b(
                 from_name    = actual_name,
                 reply_to_mid = mid,
                 attachments  = atts,
+                proxy_cfg    = proxy_cfg,
             )
             via = "MS Graph"
+            if proxy_cfg and proxy_cfg.get("host"):
+                via += f" via {proxy_cfg.get('host')}"
 
         elif account.imap_conn:
             ok, err = _send_via_smtp(
@@ -2396,8 +2503,11 @@ def send_b2b(
                 username   = account.smtp_user or account.email,
                 password   = account.smtp_pass,
                 is_godaddy = is_godaddy,
+                proxy_cfg  = proxy_cfg,
             )
             via = f"SMTP {account.smtp_host}"
+            if proxy_cfg and proxy_cfg.get("host"):
+                via += f" via {proxy_cfg.get('host')}"
 
         else:
             err = "No authenticated session — call login first"
@@ -3309,6 +3419,7 @@ class B2BSession:
         batch_size:  int   = 0,
         batch_delay: float = 30.0,
         max_sends:   int   = 0,
+        proxy_cfg:   Optional[dict] = None,
     ) -> Generator:
         """Generator — streams send events."""
         acct = B2BAccount(
@@ -3338,6 +3449,7 @@ class B2BSession:
             batch_size  = batch_size,
             batch_delay = batch_delay,
             max_sends   = max_sends,
+            proxy_cfg   = proxy_cfg,
         )
 
     # ── Reset ────────────────────────────────────────────────────
@@ -3452,7 +3564,8 @@ class B2BSender(B2BSession):
                      delay_range=(3.0, 8.0), max_sends: int = 0,
                      subject: str = "", from_name: str = "", from_email: str = "",
                      attachments: list = None, mode: str = "reply",
-                     plain: str = "", batch_size: int = 0, batch_delay: float = 30.0):
+                     plain: str = "", batch_size: int = 0, batch_delay: float = 30.0,
+                     proxy_cfg: Optional[dict] = None):
         delay  = (float(delay_range[0]) + float(delay_range[1])) / 2.0
         jitter = max(0.0, (float(delay_range[1]) - float(delay_range[0])) / 2.0)
         # If we have IMAP-discovered threads with message-ids, use them as
@@ -3463,10 +3576,16 @@ class B2BSender(B2BSession):
                 if isinstance(L, B2BLead):
                     b2b_leads.append(L)
                 else:
+                    is_d = isinstance(L, dict)
                     b2b_leads.append(B2BLead(
-                        email       = (L.get("email") if isinstance(L, dict) else str(L)) or "",
-                        name        = (L.get("name", "") if isinstance(L, dict) else ""),
-                        score       = int(L.get("score", 0)) if isinstance(L, dict) else 0,
+                        email        = (L.get("email") if is_d else str(L)) or "",
+                        name         = (L.get("name", "") if is_d else ""),
+                        last_subject = "",
+                        last_date    = "",
+                        message_id   = "",
+                        thread_ids   = [],
+                        folder       = "",
+                        score        = int(L.get("score", 0)) if is_d else 0,
                     ))
         elif threads:
             for t in threads:
@@ -3474,7 +3593,10 @@ class B2BSender(B2BSession):
                     email        = t.get("from_email") or t.get("email", ""),
                     name         = t.get("from_name", ""),
                     last_subject = t.get("subject", ""),
+                    last_date    = t.get("date", ""),
                     message_id   = t.get("message_id", ""),
+                    thread_ids   = t.get("thread_ids", []) or [],
+                    folder       = t.get("folder", ""),
                     score        = int(t.get("score", 0)),
                 ))
         cap = int(max_sends or len(b2b_leads))
@@ -3492,6 +3614,7 @@ class B2BSender(B2BSession):
             batch_size  = int(batch_size or 0),
             batch_delay = float(batch_delay or 30.0),
             max_sends   = cap,
+            proxy_cfg   = proxy_cfg,
         )
 
 

@@ -1371,12 +1371,20 @@ def run_campaign(opts: CampaignOptions) -> Generator:
             float(opts.b2b_cfg.get("delayMin", 3)),
             float(opts.b2b_cfg.get("delayMax", 8)),
         )
+        # Pick a proxy from the normal pool (if any) — same path used by
+        # SMTP/MX/API/OWA/CRM. B2B doesn't rotate per-send (single
+        # account-bound session), so we pick once at the start.
+        _b2b_proxy = _pick_pool_proxy(opts, 0, set())
+        if _b2b_proxy:
+            yield {"type": "info",
+                   "msg": f"B2B: routing through {_b2b_proxy.get('type','proxy')}:{_b2b_proxy.get('host','')}"}
         yield from _b2b.run_campaign(
             threads     = threads,
             html        = _b2b_html,
             leads       = opts.leads,
             delay_range = _b2b_delay,
             max_sends   = min(len(opts.leads), len(threads)) if opts.leads else 0,
+            proxy_cfg   = _b2b_proxy,
         )
         return
 
