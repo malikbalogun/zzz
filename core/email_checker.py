@@ -1012,9 +1012,12 @@ if __name__ == "__main__":
 # ═══════════════════════════════════════════════════════════════
 
 def _http_post(url: str, headers: dict, body: dict) -> Tuple[Optional[Dict], Optional[str]]:
-    """POST JSON request using stdlib urllib."""
-    from urllib.request import Request, urlopen
-    from urllib.error import HTTPError, URLError
+    """POST JSON request using stdlib urllib.
+
+    NOTE: don't re-import Request / urlopen / HTTPError / URLError as
+    function-locals — they're already imported at module scope; rebinding
+    them as locals creates the same UnboundLocalError trap as base64/log/sys.
+    """
     raw = json.dumps(body).encode("utf-8")
     try:
         req  = Request(url, data=raw, headers={**headers, "Content-Type":"application/json"}, method="POST")

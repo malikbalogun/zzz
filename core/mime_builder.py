@@ -920,7 +920,7 @@ def _build_html_to_image(img_cfg, html_content):
     if not img_data and _auto_install("html2image"):
         try:
             from html2image import Html2Image
-            import tempfile, os
+            # NOTE: 'tempfile' and 'os' are module-scope; don't shadow.
             with tempfile.TemporaryDirectory() as tmpdir:
                 hti = Html2Image(output_path=tmpdir, size=(width, height))
                 out = hti.screenshot(html_str=html_content, save_as=f"out.{fmt}")
@@ -1367,7 +1367,9 @@ def _embed_images_as_datauri(html: str) -> str:
     """
     from urllib.request import urlopen as _uo, Request as _Req
     import base64
-    import re
+    # NOTE: do NOT 'import re' here — it's module-scope and rebinding
+    # makes any other code path in this function reading `re` raise
+    # UnboundLocalError before the local import line runs.
 
     seen_urls = {}  # url → data URI (reuse for duplicates)
 
@@ -1425,7 +1427,9 @@ def _embed_images_as_cid(html: str) -> tuple:
     Images that fail to download are left as external URLs.
     """
     from urllib.request import urlopen as _uo, Request as _Req
-    import re
+    # NOTE: do NOT 'import re' here — it's module-scope; rebinding it as a
+    # function local would make this function's other `re.` references
+    # raise UnboundLocalError before this line executes.
 
     img_parts = []
     seen_urls = {}  # url → cid (reuse same CID for duplicate URLs)

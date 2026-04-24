@@ -1707,7 +1707,11 @@ if(code && window.opener){{
             if not api_key:
                 self._json(400, {"error": "API key required"}); return
             try:
-                from urllib.request import urlopen, Request as _Req
+                # NOTE: do NOT bind `urlopen` as a function-local here —
+                # it's already imported at module scope and other branches
+                # in _do_POST_inner read it; rebinding makes those branches
+                # raise UnboundLocalError.
+                from urllib.request import Request as _Req
                 from urllib.parse import urlencode
                 params = {
                     "key": api_key,
@@ -2021,7 +2025,11 @@ if(code && window.opener){{
                 if not smtp_host:
                     self._json(200, {"status":"error","message":"Host required"}); return
 
-                import socket, smtplib, ssl
+                # NOTE: don't 'import socket' here — it's module-scope and
+                # rebinding makes other branches in _do_POST_inner that use
+                # `socket.create_connection` / `socket.gaierror` raise
+                # UnboundLocalError. smtplib/ssl are local-only here.
+                import smtplib, ssl
                 PROBE_PORTS = [
                     {"port":25,  "ssl":False, "label":"25 (Plain/STARTTLS)"},
                     {"port":587, "ssl":False, "label":"587 (STARTTLS)"},
@@ -3535,7 +3543,10 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                     # Re-import msal now that it's installed
                     try:
                         import msal as _msal_new
-                        import importlib, sys
+                        import importlib  # NOTE: don't 'import sys' here —
+                        # 'sys' is module-scope and rebinding it as a function
+                        # local makes earlier branches in _do_POST_inner that
+                        # reference sys.executable hit UnboundLocalError.
                         import core.b2b_manager as _b2b_mod
                         _b2b_mod._msal = _msal_new
                         _b2b_mod._HAS_MSAL = True
@@ -4274,11 +4285,11 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                     self._json(400, {"error": "accessKey and secretKey required"}); return
                 # AWS SES SMTP password derivation (official algorithm)
                 # https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html
-                # NOTE: do NOT re-import base64 here — that creates a
-                # function-local binding that shadows the module-level
-                # import and makes other branches in this function
-                # (e.g. /api/files/upload) hit UnboundLocalError.
-                import hmac, hashlib
+                # NOTE: do NOT re-import base64 OR hashlib here — both are
+                # module-scope; rebinding them as function locals creates
+                # the same UnboundLocalError trap that bit /api/files/upload.
+                # Only `hmac` is local-only.
+                import hmac
                 DATE      = "11111111"
                 SERVICE   = "ses"
                 MSG       = "SendRawEmail"

@@ -1732,7 +1732,11 @@ def run_campaign(opts: CampaignOptions) -> Generator:
     #   The SmtpPool handles connection reuse per-server, so N workers =
     #   N simultaneous sends across N server slots (not N new connections)
     # - api/owa/crm: follow maxConnections too (HTTP is stateless, safe to parallelize)
-    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+    # NOTE: don't 'from concurrent.futures import ThreadPoolExecutor' here
+    # — it's already imported at module scope (line 56) and rebinding it
+    # as a function local can shadow earlier references in this 700-line
+    # function (UnboundLocalError trap, same class as base64/log).
+    from concurrent.futures import as_completed as _as_completed
     import threading as _threading
     _workers = max(1, min(max_connections, 128))  # cap at 128 — beyond that adds overhead
     _send_lock = _threading.Lock()   # protects shared counters/state
