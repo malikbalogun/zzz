@@ -7560,7 +7560,12 @@ function App() {
   }
 
   // ── Poll campaign status (cross-device live monitoring) ──
+  // Also auto-reattaches the event stream whenever the server says a
+  // campaign is running for this user but we don't hold an open stream
+  // (e.g. after a page refresh or the original /api/send connection
+  // dropped due to network loss / mobile backgrounding).
   const [remoteRunning, setRemoteRunning] = useState(false);
+  const attachInFlight = useRef(false);
   useEffect(()=>{
     if(!token) return;
     let active = true;
@@ -7570,18 +7575,25 @@ function App() {
         if(!r.ok || !active) return;
         const d = await r.json();
         if(d.active && d.live) {
-          // Campaign running — silently update stats (no log spam)
+          // Campaign running on server — sync local state, attach stream.
           setRemoteRunning(true);
+          setCampRunning(true);
+          setCampPaused((d.live.status||"") === "paused");
           setCampStats({
             sent: d.live.sent||0,
             failed: d.live.failed||0,
             total: d.live.total||0,
             pending: (d.live.total||0) - (d.live.sent||0) - (d.live.failed||0),
           });
+          if(!attachInFlight.current) {
+            attachToCampaign();
+          }
         } else {
           if(remoteRunning) {
             // Campaign just finished — reload history
             setRemoteRunning(false);
+            setCampRunning(false);
+            setCampPaused(false);
             loadHistory();
           }
         }
@@ -7804,77 +7816,142 @@ function App() {
 
     try {
       const r = await apiCall("/api/send",{method:"POST",body:JSON.stringify(payload)});
-      const reader=r.body.getReader(), dec=new TextDecoder(); let buf="",sent=0,failed=0;
-      while(true){
-        const{done,value}=await reader.read(); if(done)break;
-        buf+=dec.decode(value,{stream:true});
-        const lines=buf.split("\n"); buf=lines.pop();
-        for(const line of lines){
-          if(!line.trim())continue;
-          try{
-            const ev=JSON.parse(line);
-            if(ev.type==="sent"||ev.type==="success"){
-              sent++;
-              setCampStats(s=>({...s,sent,pending:s.total-sent-failed}));
-              const fromPart = ev.from ? ` ← ${ev.from}` : "";
-              const v = ev.via||"";
-              const vIcon = v.match(/amazonaws|smtp|relay/i) ? "📨"
-                          : v.match(/sendgrid|mailgun|sparkpost|postmark|ses|api/i) ? "🔌"
-                          : v.match(/tunnel|rdp|isp|socks/i) ? "🔑"
-                          : v.match(/owa|exchange|outlook/i) ? "📮"
-                          : v.match(/crm|hubspot|salesforce/i) ? "🗄️"
-                          : v ? "📡" : "";
-              const viaPart  = v ? ` ${vIcon} ${v}` : "";
-              addLog(`${ev.email||""}${fromPart}${viaPart}`, "ok", ev.email||"", {from:ev.from||"",via:v});
-            }
-            else if(ev.type==="error"||ev.type==="fail"){
-              failed++;
-              setCampStats(s=>({...s,failed,pending:s.total-sent-failed}));
-              addLog(`✗ ${ev.email||""} — ${ev.msg||ev.error||""}`, "err", ev.email||"");
-            }
-            else if(ev.type==="info") addLog(ev.msg||"","inf");
-            else if(ev.type==="warn") addLog(ev.msg||"","wrn");
-            else if(ev.type==="proxy_dead") {
-              // Remove dead proxy from Proxy List tab state
-              const deadHost = (ev.host||"").toLowerCase();
-              if(deadHost) {
-                const _filterDead = p => {
-                  const raw = (p.raw||"").toLowerCase();
-                  const pHost = (p.host||"").toLowerCase();
-                  return !raw.includes(deadHost) && pHost !== deadHost;
-                };
-                // Remove from Proxy List tab (in-memory state)
-                setProxies(prev => prev.filter(_filterDead));
-                // Remove from ISP proxies (localStorage + state via saveIspProxies if available)
-                try {
-                  const isp = JSON.parse(localStorage.getItem("isp_proxies")||"[]");
-                  const ispUpdated = isp.filter(_filterDead);
-                  localStorage.setItem("isp_proxies", JSON.stringify(ispUpdated));
-                } catch(e){}
-                addLog(`🗑 Proxy ${ev.host} removed from pool (persistent)`, "inf");
-              }
-            }
-            else if(ev.type==="pause") addLog(ev.msg||"⏸ Paused","wrn");
-            else if(ev.type==="batch") addLog(ev.msg||"","inf");
-            else if(ev.type==="done") {
-              addLog(`✅ Complete — ${sent.toLocaleString()} sent, ${failed.toLocaleString()} failed`,"inf");
-              setCampStats(s=>({...s,pending:0}));
-            }
-            // SMTP dead detection — warn/info events only; errors already shown as ✗
-            // Skip: pause/batch/cooldown events, AUP events, auth failures, sender-removal infos
-            const msgText = ev.msg||ev.error||"";
-            const _skipPatterns = /AUP#POL|AUP#MXRT|sender rejected|temporarily unavailable|✂ Sender|greylist|MXRT retry|proxy retry|health=|demoted|Resuming|removed.*remaining|dead proxy|cooling down|pausing|Cooldown|Rate limit.*cooling|⏸/i;
-            if(!_skipPatterns.test(msgText) && ev.type!=="error" && ev.type!=="fail" && ev.type!=="success" &&
-               ev.type!=="pause" && ev.type!=="batch" &&
-               msgText.match(/connect.*fail|connection.*refused|SMTP.*error|AUTH.*fail|wrong credentials|authentication.*fail|535|534|too many|rate.?limit|blacklist|banned|blocked|timeout|timed out/i)) {
-              addLog(`⚠️ SMTP Issue: ${msgText.slice(0,120)}`,"warn");
-            }
-          }catch(e){}
+      if(!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if(j.error) msg = j.error; } catch(e) {}
+        throw new Error(msg);
+      }
+      await consumeCampaignStream(r);
+    } catch(e){
+      // Network drop → the worker keeps running on the server.  Mark and
+      // let the auto-reattach loop pick it back up.
+      addLog(`📡 Connection lost — campaign continues on server (will reattach)`,"wrn");
+      console.warn("startCampaign stream error:", e);
+    }
+  }
+
+  // ─── Shared streaming consumer ─────────────────────────────────────
+  // Used by both startCampaign() and attachToCampaign() so the event
+  // handling is identical whether we're reading the original /api/send
+  // response or re-attaching mid-flight via /api/campaign/stream.
+  // Returns when the stream ends naturally (sentinel) or throws on
+  // network/read error so the caller can decide whether to reattach.
+  async function consumeCampaignStream(response) {
+    const reader = response.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    let sawDone = false;
+    while(true) {
+      let chunk;
+      try { chunk = await reader.read(); }
+      catch(e) { throw e; }
+      if(chunk.done) break;
+      buf += dec.decode(chunk.value,{stream:true});
+      const lines = buf.split("\n"); buf = lines.pop();
+      for(const line of lines) {
+        if(!line.trim()) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch(e) { continue; }
+
+        if(ev.type==="sent" || ev.type==="success") {
+          setCampStats(s => {
+            const sent = (s.sent||0) + 1;
+            return {...s, sent, pending: Math.max(0, (s.total||0) - sent - (s.failed||0))};
+          });
+          const fromPart = ev.from ? ` ← ${ev.from}` : "";
+          const v = ev.via||"";
+          const vIcon = v.match(/amazonaws|smtp|relay/i) ? "📨"
+                      : v.match(/sendgrid|mailgun|sparkpost|postmark|ses|api/i) ? "🔌"
+                      : v.match(/tunnel|rdp|isp|socks/i) ? "🔑"
+                      : v.match(/owa|exchange|outlook/i) ? "📮"
+                      : v.match(/crm|hubspot|salesforce/i) ? "🗄️"
+                      : v ? "📡" : "";
+          const viaPart = v ? ` ${vIcon} ${v}` : "";
+          addLog(`${ev.email||""}${fromPart}${viaPart}`, "ok", ev.email||"", {from:ev.from||"",via:v});
+        }
+        else if(ev.type==="error" || ev.type==="fail") {
+          setCampStats(s => {
+            const failed = (s.failed||0) + 1;
+            return {...s, failed, pending: Math.max(0, (s.total||0) - (s.sent||0) - failed)};
+          });
+          addLog(`✗ ${ev.email||""} — ${ev.msg||ev.error||""}`, "err", ev.email||"");
+        }
+        else if(ev.type==="test") {
+          // Test email sent every N — informational only, doesn't affect stats.
+          addLog(`🧪 Test → ${ev.email||""} ${ev.ok?"OK":"FAIL"} ${ev.msg||""}`,
+                 ev.ok ? "inf" : "wrn");
+        }
+        else if(ev.type==="info") addLog(ev.msg||"","inf");
+        else if(ev.type==="warn") addLog(ev.msg||"","wrn");
+        else if(ev.type==="ping") { /* keepalive */ }
+        else if(ev.type==="proxy_dead") {
+          const deadHost = (ev.host||"").toLowerCase();
+          if(deadHost) {
+            const _filterDead = p => {
+              const raw = (p.raw||"").toLowerCase();
+              const pHost = (p.host||"").toLowerCase();
+              return !raw.includes(deadHost) && pHost !== deadHost;
+            };
+            setProxies(prev => prev.filter(_filterDead));
+            try {
+              const isp = JSON.parse(localStorage.getItem("isp_proxies")||"[]");
+              const ispUpdated = isp.filter(_filterDead);
+              localStorage.setItem("isp_proxies", JSON.stringify(ispUpdated));
+            } catch(e){}
+            addLog(`🗑 Proxy ${ev.host} removed from pool (persistent)`, "inf");
+          }
+        }
+        else if(ev.type==="pause") addLog(ev.msg||"⏸ Paused","wrn");
+        else if(ev.type==="batch") addLog(ev.msg||"","inf");
+        else if(ev.type==="done") {
+          sawDone = true;
+          const _s = (window._lastCampStats||{});
+          addLog(`✅ Complete — ${(ev.success||0).toLocaleString()} sent, ${(ev.fail||0).toLocaleString()} failed`,"inf");
+          setCampStats(s=>({...s, pending:0}));
+          setCampRunning(false);
+          setCampPaused(false);
+          loadHistory();
+          // Optionally prompt to delete sent emails after the run.
+          try { maybePromptDeleteSent(ev); } catch(e){}
+        }
+
+        const msgText = ev.msg||ev.error||"";
+        const _skipPatterns = /AUP#POL|AUP#MXRT|sender rejected|temporarily unavailable|✂ Sender|greylist|MXRT retry|proxy retry|health=|demoted|Resuming|removed.*remaining|dead proxy|cooling down|pausing|Cooldown|Rate limit.*cooling|⏸/i;
+        if(!_skipPatterns.test(msgText) && ev.type!=="error" && ev.type!=="fail" && ev.type!=="success" &&
+           ev.type!=="pause" && ev.type!=="batch" &&
+           msgText.match(/connect.*fail|connection.*refused|SMTP.*error|AUTH.*fail|wrong credentials|authentication.*fail|535|534|too many|rate.?limit|blacklist|banned|blocked|timeout|timed out/i)) {
+          addLog(`⚠️ SMTP Issue: ${msgText.slice(0,120)}`,"warn");
         }
       }
-    } catch(e){ addLog(`❌ Error: ${e.message}`,"err"); }
-    setCampRunning(false); setCampPaused(false);
-    loadHistory();
+    }
+    return sawDone;
+  }
+
+  // Re-attach to a campaign that's still running on the server.  Called
+  // from the status poller (below) whenever it sees an active campaign
+  // for which we don't already hold an open stream.
+  async function attachToCampaign() {
+    if(attachInFlight.current) return;
+    attachInFlight.current = true;
+    try {
+      const r = await apiCall("/api/campaign/stream");
+      if(r.status === 404) return;            // no longer active
+      if(!r.ok) return;
+      addLog("🔄 Reattached to running campaign","inf");
+      setCampRunning(true);
+      try { await consumeCampaignStream(r); }
+      catch(e) { /* will reattach next poll cycle */ }
+    } finally {
+      attachInFlight.current = false;
+    }
+  }
+
+  // Phase C: prompt to delete sent emails after a run.  Stubbed here so
+  // consumeCampaignStream / pauseCampaign / stopCampaign can call it
+  // unconditionally; the prompt body is added in the Phase C UI block.
+  function maybePromptDeleteSent(ev) {
+    if(typeof window._promptDeleteSent === "function") {
+      window._promptDeleteSent(ev);
+    }
   }
 
   async function pauseCampaign()  {
