@@ -7973,14 +7973,68 @@ function App() {
     }
   }
 
-  // Phase C: prompt to delete sent emails after a run.  Stubbed here so
-  // consumeCampaignStream / pauseCampaign / stopCampaign can call it
-  // unconditionally; the prompt body is added in the Phase C UI block.
-  function maybePromptDeleteSent(ev) {
-    if(typeof window._promptDeleteSent === "function") {
-      window._promptDeleteSent(ev);
+  // Phase C: prompt to delete sent emails after a run.
+  // Triggered when the campaign emits {type:"done"} (natural completion
+  // or user-initiated stop) and from pauseCampaign() / stopCampaign().
+  // Skipped if the user disabled the prompt in Settings (askDeleteSent).
+  // We query /api/campaign/sent-records first so we can show an accurate
+  // count and skip the prompt entirely when there's nothing to delete.
+  async function maybePromptDeleteSent(ev) {
+    if(!askDeleteSent) return;
+    let info;
+    try {
+      const r = await apiCall("/api/campaign/sent-records");
+      if(!r.ok) return;
+      info = await r.json();
+    } catch(e) { return; }
+    if(!info || !info.eligible || info.eligible <= 0) {
+      // Nothing IMAP-deletable (likely API/OWA/CRM run, or no creds).
+      if(info && info.total > 0) {
+        addLog(`ℹ ${info.total} sent — none eligible for IMAP delete (no IMAP creds)`,"inf");
+      }
+      return;
+    }
+    const accountStr = (info.accounts||[]).slice(0,3).join(", ")
+      + ((info.accounts||[]).length > 3 ? `, +${info.accounts.length-3} more` : "");
+    const ok = await showPopup({
+      title: "Delete sent emails?",
+      msg:   `Delete the ${info.eligible} message${info.eligible===1?"":"s"} `
+           + `you just sent from the Sent folders of: ${accountStr}? `
+           + `This cannot be undone.`,
+      ico:   "🗑",
+      type:  "confirm",
+    });
+    if(!ok) {
+      addLog(`Kept ${info.eligible} sent email${info.eligible===1?"":"s"}`,"inf");
+      return;
+    }
+    addLog(`🗑 Deleting ${info.eligible} sent email${info.eligible===1?"":"s"}…`,"inf");
+    try {
+      const dr = await apiCall("/api/campaign/delete-sent",
+                                {method:"POST", body:JSON.stringify({})});
+      if(!dr.ok) throw new Error(`HTTP ${dr.status}`);
+      const dd = await dr.json();
+      addLog(`🗑 Deleted ${dd.deleted||0} / ${(dd.deleted||0)+(dd.failed||0)} `
+           + `(${dd.failed||0} failed${dd.skipped_no_creds?`, ${dd.skipped_no_creds} skipped`:""})`,
+             (dd.failed||0)>0 ? "wrn" : "inf");
+      for(const acc of (dd.byAccount||[])) {
+        if(acc.error) {
+          addLog(`  ⚠ ${acc.email}: ${acc.error}`,"wrn");
+        } else if((acc.failed||0) > 0) {
+          addLog(`  ⚠ ${acc.email}: ${acc.deleted||0} deleted, ${acc.failed} not found`,"wrn");
+        } else {
+          addLog(`  ✓ ${acc.email}: ${acc.deleted||0} deleted`,"inf");
+        }
+      }
+    } catch(e) {
+      addLog(`✗ Delete-sent failed: ${e.message}`,"err");
     }
   }
+  // Persist the askDeleteSent toggle whenever it changes.
+  useEffect(()=>{
+    try { localStorage.setItem("st_ask_delete_sent", askDeleteSent ? "1" : "0"); }
+    catch(e) {}
+  },[askDeleteSent]);
 
   async function pauseCampaign()  {
     try{
@@ -7988,6 +8042,9 @@ function App() {
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
       setCampPaused(true);
       addLog("⏸ Paused","wrn");
+      // Offer to delete what's been sent so far without ending the run —
+      // the worker stays paused until the user resumes or stops.
+      try { maybePromptDeleteSent({type:"pause"}); } catch(e){}
     }catch(e){
       addLog(`⚠ Pause failed: ${e.message}`,"err");
     }
