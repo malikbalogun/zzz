@@ -104,6 +104,19 @@ _PERMANENT_RCPT_CODES = {550, 551, 553, 554, 501}
 _TRANSIENT_CODES      = {421, 450, 451, 452, 454}
 
 
+class _ViaResult(str):
+    """str subclass that smuggles the Message-ID back to campaign.py.
+
+    Behaves exactly like the via-label string used everywhere already
+    (so the legacy `via_used or via` patterns keep working) but exposes
+    `.message_id` for callers that need it for IMAP delete-sent.
+    """
+    def __new__(cls, via: str, message_id: str = ""):
+        s = super().__new__(cls, via or "")
+        s.message_id = message_id or ""
+        return s
+
+
 class SmtpErrorKind:
     PERMANENT_AUTH      = "permanent_auth"
     PERMANENT_RECIPIENT = "permanent_recipient"
@@ -965,7 +978,16 @@ def send_smtp(
     # explicit pool was passed (i.e. caller is using the per-campaign global pool)
     if send_delay > 0 and pool is None:
         target_pool.send_delay = send_delay
-    return send_via_pool(
+    via_used = send_via_pool(
         target_pool, smtp_cfg, msg, _env_from, to_email,
         ehlo_domain=ehlo, proxy_cfg=proxy_cfg,
     )
+    # Stash the Message-ID on the via string via a sidecar attribute so
+    # callers that care (campaign.py → IMAP delete-sent) can recover it
+    # without changing the established (str) return signature used by
+    # legacy call sites.  Use a lightweight subclass of str.
+    try:
+        msg_id = msg.get("Message-ID", "") if msg is not None else ""
+    except Exception:
+        msg_id = ""
+    return _ViaResult(via_used or "", msg_id or "")

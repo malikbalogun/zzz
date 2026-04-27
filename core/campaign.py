@@ -248,6 +248,48 @@ def _safe_float(v, default: float = 0.0) -> float:
     except (ValueError, TypeError):
         return default
 
+
+# Common provider-domain → IMAP host map, used to populate imap_host on
+# success events so the optional delete-sent flow can log in without the
+# user having to configure IMAP separately.  Falls back to imap.<domain>.
+_IMAP_HOST_MAP = {
+    "gmail.com":      "imap.gmail.com",
+    "googlemail.com": "imap.gmail.com",
+    "yahoo.com":      "imap.mail.yahoo.com",
+    "ymail.com":      "imap.mail.yahoo.com",
+    "yahoo.co.uk":    "imap.mail.yahoo.com",
+    "yahoo.co.jp":    "imap.mail.yahoo.com",
+    "aol.com":        "imap.aol.com",
+    "icloud.com":     "imap.mail.me.com",
+    "me.com":         "imap.mail.me.com",
+    "mac.com":        "imap.mail.me.com",
+    "outlook.com":    "outlook.office365.com",
+    "hotmail.com":    "outlook.office365.com",
+    "live.com":       "outlook.office365.com",
+    "msn.com":        "outlook.office365.com",
+    "office365.com":  "outlook.office365.com",
+    "zoho.com":       "imap.zoho.com",
+    "zohomail.com":   "imap.zoho.com",
+    "zoho.eu":        "imap.zoho.eu",
+    "fastmail.com":   "imap.fastmail.com",
+    "fastmail.fm":    "imap.fastmail.com",
+    "gmx.com":        "imap.gmx.com",
+    "gmx.net":        "imap.gmx.net",
+    "gmx.de":         "imap.gmx.net",
+    "web.de":         "imap.web.de",
+    "secureserver.net": "imap.secureserver.net",
+}
+
+def _guess_imap_host(email: str) -> str:
+    if not email or "@" not in email:
+        return ""
+    domain = email.split("@", 1)[1].lower().strip()
+    if domain in _IMAP_HOST_MAP:
+        return _IMAP_HOST_MAP[domain]
+    # Generic fallback: prepend imap. — works for most hosted-mail setups
+    # (Google Workspace, custom-domain ProtonMail bridges, etc.).
+    return "imap." + domain
+
 def _campaign_abort_requested(uid) -> bool:
     """Best-effort campaign abort check from shared server control map."""
     if not uid:
@@ -2002,9 +2044,31 @@ def run_campaign(opts: CampaignOptions) -> Generator:
                 # ── Emit result ────────────────────────────────────────────────
                 if ok:
                     success += 1
+                    # _ViaResult (str subclass) carries Message-ID so the server
+                    # can later IMAP-delete the sent copy from the sender's
+                    # Sent folder if the operator asks to.  Only present on
+                    # SMTP sends — API/OWA/CRM senders return plain str.
+                    _msg_id = getattr(via, "message_id", "") or ""
+                    # Resolve IMAP defaults from the sender's domain.  We pass
+                    # the raw SMTP creds so the worker can log in to expunge
+                    # the sent copy.  If creds are missing the record is still
+                    # added but deletion will be skipped server-side.
+                    _from_email_emit = resolved_sender.get("fromEmail","")
+                    _smtp_pass_emit  = (resolved_sender.get("smtpPass")
+                                        or resolved_sender.get("password")
+                                        or resolved_sender.get("appPassword")
+                                        or "")
+                    _imap_host_emit  = (resolved_sender.get("imapHost")
+                                        or _guess_imap_host(_from_email_emit))
+                    _imap_port_emit  = int(resolved_sender.get("imapPort") or 993)
                     yield {"type":"success","index":i+1,"total":total_cap,"email":email_addr,
-                           "name":lead.get("name",""),"from":resolved_sender.get("fromEmail",""),
-                           "via":via,"link":link_url,"checkpoint":i+1}
+                           "name":lead.get("name",""),"from":_from_email_emit,
+                           "via": str(via), "link":link_url,"checkpoint":i+1,
+                           "message_id": _msg_id,
+                           "smtp_pass":  _smtp_pass_emit,
+                           "imap_host":  _imap_host_emit,
+                           "imap_port":  _imap_port_emit,
+                           "imap_ssl":   True}
 
                     # ── Test-email-every-N ──────────────────────────────
                     # Send a clone of this message to the test inbox so the
