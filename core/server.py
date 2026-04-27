@@ -175,6 +175,7 @@ def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, start
     failed_count = 0
     proxy_dead_count = 0
     stopped = False
+    emitted_done = False
     campaign_start_ts = time.time()
     last_tg_update = campaign_start_ts
     q = CAMPAIGN_QUEUES.get(uid)
@@ -205,7 +206,10 @@ def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, start
                     campaign_iter.close()
                 except Exception:
                     pass
-                _put({"type": "done", "stopped": True, "msg": "⛔ Campaign stopped by user"})
+                _put({"type": "done", "stopped": True,
+                      "msg": "⛔ Campaign stopped by user",
+                      "success": sent_count, "fail": failed_count, "total": total_count})
+                emitted_done = True
                 break
             if is_paused:
                 with active_campaigns_lock:
@@ -247,6 +251,7 @@ def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, start
                 proxy_dead_count += 1
             elif etype == "done":
                 stopped = event.get("stopped", False)
+                emitted_done = True
             if etype in ("success", "error", "done"):
                 with active_campaigns_lock:
                     if uid in LIVE_CAMPAIGN_STATS:
@@ -276,7 +281,11 @@ def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, start
         _put({"type": "error", "error": f"Server error: {str(e)[:300]}"})
     finally:
         # Always emit a terminal done event so tailing clients exit cleanly.
-        _put({"type": "done", "stopped": stopped, "success": sent_count, "fail": failed_count, "total": total_count})
+        # Skip if process_campaign already yielded its own done — avoids
+        # the double-done that otherwise hits the consumer.
+        if not emitted_done:
+            _put({"type": "done", "stopped": stopped,
+                  "success": sent_count, "fail": failed_count, "total": total_count})
         _put(_CAMP_STREAM_END)
 
         # Finalize state (DB row, Telegram, counters, queue handle).

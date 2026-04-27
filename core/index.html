@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-  <meta name="version" content="v5.16.20260304">
+  <meta name="version" content="v5.17.20260427-bg">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -1940,6 +1940,8 @@ function TabCampaign({
   activeMethod, setActiveMethod, showDeliv, setShowDeliv,
   cooldownEvery, setCooldownEvery, cooldownSecs, setCooldownSecs,
   batchPauseSecs, setBatchPauseSecs,
+  testEmail, setTestEmail, testEveryN, setTestEveryN,
+  askDeleteSent, setAskDeleteSent,
   concurrent, setConcurrent,
   hideFromEmail, setHideFromEmail, autoFlagEmail, setAutoFlagEmail, antiDetect, setAntiDetect,
   skipPreflightDns, setSkipPreflightDns,
@@ -2161,6 +2163,18 @@ function TabCampaign({
                 <input type="number" value={batchPauseSecs} onChange={e=>setBatchPauseSecs(e.target.value)} min="0" placeholder="0=use delay" style={{fontSize:15,padding:"10px 12px"}}/>
               </div>
               <div>
+                <label className="lbl"><span title="Address to receive a deliverability test copy of the campaign every N sends. Leave blank to disable.">Test Email</span></label>
+                <input type="email" value={testEmail} onChange={e=>setTestEmail(e.target.value)}
+                       placeholder="you@inbox.test" autoComplete="off"
+                       style={{fontSize:15,padding:"10px 12px"}}/>
+              </div>
+              <div>
+                <label className="lbl"><span title="Send a test copy of the email to the address above after this many real sends. 0 = off.">Send Test Every</span></label>
+                <input type="number" value={testEveryN} onChange={e=>setTestEveryN(e.target.value)}
+                       min="0" max="500" placeholder="0=off"
+                       style={{fontSize:15,padding:"10px 12px"}}/>
+              </div>
+              <div>
                 <label className="lbl"><span title="Run N sends in parallel (ISP/tunnel mode). Higher = faster but more aggressive. Recommended: 3-8 for ISP.">Concurrent Sends</span></label>
                 <input type="number" value={concurrent} onChange={e=>setConcurrent(e.target.value)} min="1" max="20" style={{fontSize:15,padding:"10px 12px"}}/>
               </div>
@@ -2171,7 +2185,7 @@ function TabCampaign({
               <div>
                 <label className="lbl">Unit</label>
                 <select value={delayUnit} onChange={e=>setDelayUnit(e.target.value)} style={{fontSize:14,padding:"10px 12px"}}>
-                  <option value="ms">ms</option><option value="sec">Sec</option><option value="min">Min</option>
+                  <option value="ms">ms</option><option value="seconds">Sec</option><option value="minutes">Min</option><option value="hours">Hours</option>
                 </select>
               </div>
             </div>
@@ -2266,17 +2280,17 @@ function TabCampaign({
             <div className="div-lbl" style={{marginTop:8}}>ANTI-DETECTION &amp; DELIVERY</div>
             <div className="col g12 mt12">
               <Tog checked={antiDetect} onChange={setAntiDetect}
-                label={<Tip text="Enables full anti-fingerprinting suite: randomised MIME boundaries, per-recipient uniqueness tokens, jittered timestamps, and enhanced Exchange/SpamAssassin trust headers. Matches behaviour of real MUAs (Outlook 16.x). Recommended: always on.">🛡️ Anti-Detection Mode</Tip>}
-                desc="Randomise MIME fingerprint, inject trust headers — matches real Outlook behaviour"/>
+                label={<Tip text="Adds limited message randomisation. Keep OFF for baseline deliverability; enable only after baseline inboxing is stable and you need extra variance testing.">🛡️ Anti-Detection Mode</Tip>}
+                desc="Optional content/randomisation layer — disabled by default for safer inbox placement"/>
               <Tog checked={threadSimulate} onChange={setThreadSimulate}
-                label={<Tip text="Adds In-Reply-To and References headers pointing to a plausible prior message. Spam filters treat replies as conversation threads and score them far more leniently than cold outbound. One of the highest-impact single inboxing tricks.">🧵 Thread Simulation</Tip>}
-                desc="Fake In-Reply-To/References headers — filters treat email as a thread reply, not cold outbound"/>
+                label={<Tip text="Adds synthetic In-Reply-To/References headers. This can hurt trust on strict providers. Leave OFF unless you are testing a true conversation follow-up workflow.">🧵 Thread Simulation</Tip>}
+                desc="Synthetic thread headers (advanced testing only)"/>
               <Tog checked={arcSimulate} onChange={setArcSimulate}
-                label={<Tip text="Injects ARC-Authentication-Results, ARC-Message-Signature, and ARC-Seal headers claiming the message passed SPF/DKIM/DMARC at mx.google.com. ARC is a chain of trust headers used by forwarded mail. Disable if your SMTP provider adds real ARC headers.">⛓️ ARC Chain Simulation</Tip>}
-                desc="Fake ARC headers claiming SPF/DKIM/DMARC pass from Google infrastructure"/>
+                label={<Tip text="Injects synthetic ARC headers. Most sending stacks should leave this OFF unless you control a real forwarding/signing chain.">⛓️ ARC Chain Simulation</Tip>}
+                desc="Synthetic ARC headers (expert-only)"/>
               <Tog checked={msExchangeHdrs} onChange={setMsExchangeHdrs}
-                label={<Tip text="Injects X-MS-Exchange-Organization-SCL:-1 (spam confidence level = trusted), BCL:0, and PCL:2. Exchange and Office 365 servers read these to bypass their own junk filters. High impact for Outlook/Hotmail/O365 recipients.">🏢 MS Exchange Trust Headers</Tip>}
-                desc="SCL:-1 + BCL:0 — tells Exchange/O365 to bypass junk filter for this message"/>
+                label={<Tip text="Injects synthetic Exchange trust headers. Keep OFF unless you fully control Exchange trust flow and are running controlled tests.">🏢 MS Exchange Trust Headers</Tip>}
+                desc="Synthetic Exchange trust headers (advanced testing only)"/>
               <Tog checked={autoFlagEmail} onChange={setAutoFlagEmail}
                 label={<Tip text="Adds X-Priority: 1 + Importance: High + X-MSMail-Priority: High headers, which cause Outlook/Hotmail to display a red flag icon next to the email in inbox. Increases open rates and makes emails stand out in crowded inboxes.">🚩 Auto-Flag Emails (red flag icon)</Tip>}
                 desc="Sets high priority headers — Outlook shows red flag icon in inbox"/>
@@ -3541,13 +3555,10 @@ function TabMethod({
               <label className="lbl">Provider</label>
               <select value={apiDraft.provider} onChange={e=>setApiDraft({...apiDraft,provider:e.target.value})} style={{fontSize:14,padding:"10px 12px"}}>
                 <optgroup label="── Transactional ESP ──">
-                  {["sendgrid","mailgun","postmark","sparkpost","brevo","mailchimp"].map(p=><option key={p}>{p}</option>)}
+                  {["sendgrid","mailgun","postmark","sparkpost","brevo","resend"].map(p=><option key={p}>{p}</option>)}
                 </optgroup>
                 <optgroup label="── AWS ──">
                   <option value="ses-api">AWS SES (API)</option>
-                </optgroup>
-                <optgroup label="── Microsoft ──">
-                  <option value="graph">Graph API / O365 (Bearer Token)</option>
                 </optgroup>
               </select>
             </div>
@@ -7404,10 +7415,19 @@ function App() {
   const [cooldownEvery, setCooldownEvery]   = useState(_g("cooldownEvery",0));
   const [cooldownSecs, setCooldownSecs]     = useState(_g("cooldownSecs",60));
   const [batchPauseSecs, setBatchPauseSecs] = useState(_g("batchPauseSecs",0));
+  // Send a test copy of the campaign to a separate inbox after every N
+  // successful real sends.  testEveryN=0 disables the feature entirely.
+  const [testEmail, setTestEmail]           = useState(_g("testEmail",""));
+  const [testEveryN, setTestEveryN]         = useState(_g("testEveryN",0));
+  // Whether to prompt to delete sent emails on pause/stop/done.  Saved
+  // per browser; default ON.  Set from Settings.
+  const [askDeleteSent, setAskDeleteSent]   = useState(
+    (localStorage.getItem("st_ask_delete_sent") || "1") === "1"
+  );
   const [htmlBodies, setHtmlBodies]         = useState(_g("htmlBodies",[]));
   const [htmlRotateMode, setHtmlRotateMode] = useState(_g("htmlRotateMode","random"));
   const [delay, setDelay]           = useState(_g("delay",2));
-  const [delayUnit, setDelayUnit]   = useState(_g("delayUnit","sec"));
+  const [delayUnit, setDelayUnit]   = useState(_g("delayUnit","seconds"));
   const [jitter, setJitter]         = useState(_g("jitter",true));
   const [jitterSec, setJitterSec]   = useState(_g("jitterSec",3));
   const [domThrottle, setDomThrottle] = useState(_g("domThrottle",false));
@@ -7428,11 +7448,11 @@ function App() {
   const [autoPlain, setAutoPlain]   = useState(_g("autoPlain",true));
   const [hideFromEmail, setHideFromEmail] = useState(_g("hideFromEmail",false));
   const [autoFlagEmail, setAutoFlagEmail] = useState(_g("autoFlagEmail",false));
-  const [antiDetect, setAntiDetect]       = useState(_g("antiDetect",true));
+  const [antiDetect, setAntiDetect]       = useState(_g("antiDetect",false));
   const [skipPreflightDns, setSkipPreflightDns] = useState(_g("skipPreflightDns",false));
-  const [threadSimulate, setThreadSimulate]   = useState(_g("threadSimulate",true));
+  const [threadSimulate, setThreadSimulate]   = useState(_g("threadSimulate",false));
   const [arcSimulate, setArcSimulate]         = useState(_g("arcSimulate",false));
-  const [msExchangeHdrs, setMsExchangeHdrs]   = useState(_g("msExchangeHdrs",true));
+  const [msExchangeHdrs, setMsExchangeHdrs]   = useState(_g("msExchangeHdrs",false));
   const [showDeliv, setShowDeliv]   = useState(false);
 
   // ── Personal BCC (monitoring copy) ──
@@ -7478,7 +7498,8 @@ function App() {
       sendersRaw, senderName, senderNames, senderReplyTo, rotMode,
       activeMethod, smtpList, apiList, owaConfig, crmConfig, tunnelList,
       priority, batchSize, concurrent, cooldownEvery, cooldownSecs,
-      batchPauseSecs, htmlBodies, htmlRotateMode, delay, delayUnit,
+      batchPauseSecs, testEmail, testEveryN,
+      htmlBodies, htmlRotateMode, delay, delayUnit,
       jitter, jitterSec, domThrottle, warmup,
       listUnsub, unsubEmail, unsubUrl, oneClick, autoInject,
       spamFilter, bypassMode, bypassZeroFont, bypassComments,
@@ -7500,7 +7521,8 @@ function App() {
     sendersRaw, senderName, senderNames, senderReplyTo, rotMode,
     activeMethod, smtpList, apiList, owaConfig, crmConfig, tunnelList,
     priority, batchSize, concurrent, cooldownEvery, cooldownSecs,
-    batchPauseSecs, htmlBodies, htmlRotateMode, delay, delayUnit,
+    batchPauseSecs, testEmail, testEveryN,
+    htmlBodies, htmlRotateMode, delay, delayUnit,
     jitter, jitterSec, domThrottle, warmup,
     listUnsub, unsubEmail, unsubUrl, oneClick, autoInject,
     spamFilter, bypassMode, bypassZeroFont, bypassComments,
@@ -7543,7 +7565,9 @@ function App() {
       _s("tunnelList",setTunnelList);
       _s("priority",setPriority); _s("batchSize",setBatchSize); _s("concurrent",setConcurrent);
       _s("cooldownEvery",setCooldownEvery); _s("cooldownSecs",setCooldownSecs);
-      _s("batchPauseSecs",setBatchPauseSecs); _s("htmlBodies",setHtmlBodies);
+      _s("batchPauseSecs",setBatchPauseSecs);
+      _s("testEmail",setTestEmail); _s("testEveryN",setTestEveryN);
+      _s("htmlBodies",setHtmlBodies);
       _s("htmlRotateMode",setHtmlRotateMode);
       _s("delay",setDelay); _s("delayUnit",setDelayUnit); _s("jitter",setJitter); _s("jitterSec",setJitterSec);
       _s("domThrottle",setDomThrottle); _s("warmup",setWarmup);
@@ -7563,7 +7587,12 @@ function App() {
   }
 
   // ── Poll campaign status (cross-device live monitoring) ──
+  // Also auto-reattaches the event stream whenever the server says a
+  // campaign is running for this user but we don't hold an open stream
+  // (e.g. after a page refresh or the original /api/send connection
+  // dropped due to network loss / mobile backgrounding).
   const [remoteRunning, setRemoteRunning] = useState(false);
+  const attachInFlight = useRef(false);
   useEffect(()=>{
     if(!token) return;
     let active = true;
@@ -7573,18 +7602,25 @@ function App() {
         if(!r.ok || !active) return;
         const d = await r.json();
         if(d.active && d.live) {
-          // Campaign running — silently update stats (no log spam)
+          // Campaign running on server — sync local state, attach stream.
           setRemoteRunning(true);
+          setCampRunning(true);
+          setCampPaused((d.live.status||"") === "paused");
           setCampStats({
             sent: d.live.sent||0,
             failed: d.live.failed||0,
             total: d.live.total||0,
             pending: (d.live.total||0) - (d.live.sent||0) - (d.live.failed||0),
           });
+          if(!attachInFlight.current) {
+            attachToCampaign();
+          }
         } else {
           if(remoteRunning) {
             // Campaign just finished — reload history
             setRemoteRunning(false);
+            setCampRunning(false);
+            setCampPaused(false);
             loadHistory();
           }
         }
@@ -7606,15 +7642,32 @@ function App() {
   }
 
   async function uploadFile(file, category) {
+    // Backend /api/files/upload expects a JSON body with a base64 'data'
+    // field — read the file, base64-encode it in chunks (so big files
+    // don't blow the call stack), then POST as JSON.
     setFileUploadLoading(true);
-    const fd = new FormData();
-    fd.append(category, file, file.name||"file.bin");
-    const tk = localStorage.getItem("st_token");
     try {
-      const r = await fetch(API+"/api/files/upload",{method:"POST",headers:{"Authorization":"Bearer "+tk},body:fd});
-      const d = await r.json();
-      if((d.uploaded||[]).length) await loadFiles();
-    } catch(e){}
+      const buf  = await file.arrayBuffer();
+      const view = new Uint8Array(buf);
+      let bin = "";
+      const CHUNK = 0x8000; // 32 KB chunks for String.fromCharCode.apply
+      for (let i = 0; i < view.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, view.subarray(i, i + CHUNK));
+      }
+      const b64 = btoa(bin);
+      const r = await apiCall("/api/files/upload", {
+        method: "POST",
+        body: JSON.stringify({
+          category,
+          name: file.name || "file.bin",
+          mime: file.type || "application/octet-stream",
+          data: b64,
+        }),
+      });
+      if (r.ok) await loadFiles();
+    } catch (e) {
+      console.error("uploadFile failed:", e);
+    }
     setFileUploadLoading(false);
   }
 
@@ -7693,6 +7746,7 @@ function App() {
     if(!htmlBody.trim()&&!plainBody.trim()){showPopup({title:"No Email Body",msg:"Write your email in the Compose tab first.",ico:"📝",type:"alert"});return;}
     const senders=sendersRaw.split(/\r?\n/).map(s=>s.trim()).filter(s=>s.includes("@"));
     if(!senders.length){showPopup({title:"No Senders",msg:"Add at least one sender email in the Senders tab.",ico:"📤",type:"alert"});return;}
+    const expertMode = (localStorage.getItem("st_expert_mode")||"0") === "1";
 
     pauseRef.current={paused:false,abort:false};
     setCampRunning(true); setCampPaused(false); setCampLog([]);
@@ -7755,13 +7809,24 @@ function App() {
       batchSize:parseInt(batchSize), maxConnections:parseInt(concurrent)||1, delay:parseInt(delay), delayUnit,
       cooldownEvery:parseInt(cooldownEvery)||0, cooldownSecs:parseFloat(cooldownSecs)||60,
       batchPauseSecs:parseFloat(batchPauseSecs)||0,
+      testEmail:(testEmail||"").trim(), testEveryN:parseInt(testEveryN)||0,
       htmlBodies, htmlRotateMode,
       jitter:jitter?parseInt(jitterSec):0, domainThrottle:domThrottle, gmailDelay:5, msDelay:8, warmup, rateLimitPause,
       listUnsub, unsubEmail, unsubUrl, oneClickUnsub:oneClick,
       autoInjectUnsub:autoInject, autoPlainText:autoPlain, spamFilter, preheader,
-      bypassMode, bypassZeroFont, bypassComments, bypassHomoglyphs, bypassFontRand, bypassInnat,
-      hideFromEmail, autoFlagEmail, antiDetect, emailPriority:priority,
-      threadSimulate, arcSimulate, msExchangeHeaders:msExchangeHdrs,
+      allowSyntheticHeaders: expertMode,
+      allowRiskyBypass: expertMode,
+      bypassMode: expertMode ? bypassMode : false,
+      bypassZeroFont: expertMode ? bypassZeroFont : false,
+      bypassComments: expertMode ? bypassComments : false,
+      bypassHomoglyphs: expertMode ? bypassHomoglyphs : false,
+      bypassFontRand: expertMode ? bypassFontRand : false,
+      bypassInnat: expertMode ? bypassInnat : false,
+      hideFromEmail: expertMode ? hideFromEmail : false,
+      autoFlagEmail, antiDetect: expertMode ? antiDetect : false, emailPriority:priority,
+      threadSimulate: expertMode ? threadSimulate : false,
+      arcSimulate: expertMode ? arcSimulate : false,
+      msExchangeHeaders: expertMode ? msExchangeHdrs : false,
       skipPreflightDns,
       bcc: bccEnabled && bccEmail.trim() ? bccEmail.trim() : null,
       campaignName:campName, rotationMode:rotMode,
@@ -7779,78 +7844,197 @@ function App() {
 
     try {
       const r = await apiCall("/api/send",{method:"POST",body:JSON.stringify(payload)});
-      const reader=r.body.getReader(), dec=new TextDecoder(); let buf="",sent=0,failed=0;
-      while(true){
-        const{done,value}=await reader.read(); if(done)break;
-        buf+=dec.decode(value,{stream:true});
-        const lines=buf.split("\n"); buf=lines.pop();
-        for(const line of lines){
-          if(!line.trim())continue;
-          try{
-            const ev=JSON.parse(line);
-            if(ev.type==="sent"||ev.type==="success"){
-              sent++;
-              setCampStats(s=>({...s,sent,pending:s.total-sent-failed}));
-              const fromPart = ev.from ? ` ← ${ev.from}` : "";
-              const v = ev.via||"";
-              const vIcon = v.match(/amazonaws|smtp|relay/i) ? "📨"
-                          : v.match(/sendgrid|mailgun|sparkpost|postmark|ses|api/i) ? "🔌"
-                          : v.match(/tunnel|rdp|isp|socks/i) ? "🔑"
-                          : v.match(/owa|exchange|outlook/i) ? "📮"
-                          : v.match(/crm|hubspot|salesforce/i) ? "🗄️"
-                          : v ? "📡" : "";
-              const viaPart  = v ? ` ${vIcon} ${v}` : "";
-              addLog(`${ev.email||""}${fromPart}${viaPart}`, "ok", ev.email||"", {from:ev.from||"",via:v});
-            }
-            else if(ev.type==="error"||ev.type==="fail"){
-              failed++;
-              setCampStats(s=>({...s,failed,pending:s.total-sent-failed}));
-              addLog(`✗ ${ev.email||""} — ${ev.msg||ev.error||""}`, "err", ev.email||"");
-            }
-            else if(ev.type==="info") addLog(ev.msg||"","inf");
-            else if(ev.type==="warn") addLog(ev.msg||"","wrn");
-            else if(ev.type==="proxy_dead") {
-              // Remove dead proxy from Proxy List tab state
-              const deadHost = (ev.host||"").toLowerCase();
-              if(deadHost) {
-                const _filterDead = p => {
-                  const raw = (p.raw||"").toLowerCase();
-                  const pHost = (p.host||"").toLowerCase();
-                  return !raw.includes(deadHost) && pHost !== deadHost;
-                };
-                // Remove from Proxy List tab (in-memory state)
-                setProxies(prev => prev.filter(_filterDead));
-                // Remove from ISP proxies (localStorage + state via saveIspProxies if available)
-                try {
-                  const isp = JSON.parse(localStorage.getItem("isp_proxies")||"[]");
-                  const ispUpdated = isp.filter(_filterDead);
-                  localStorage.setItem("isp_proxies", JSON.stringify(ispUpdated));
-                } catch(e){}
-                addLog(`🗑 Proxy ${ev.host} removed from pool (persistent)`, "inf");
-              }
-            }
-            else if(ev.type==="pause") addLog(ev.msg||"⏸ Paused","wrn");
-            else if(ev.type==="batch") addLog(ev.msg||"","inf");
-            else if(ev.type==="done") {
-              addLog(`✅ Complete — ${sent.toLocaleString()} sent, ${failed.toLocaleString()} failed`,"inf");
-              setCampStats(s=>({...s,pending:0}));
-            }
-            // SMTP dead detection — warn/info events only; errors already shown as ✗
-            // Skip: pause/batch/cooldown events, AUP events, auth failures, sender-removal infos
-            const msgText = ev.msg||ev.error||"";
-            const _skipPatterns = /AUP#POL|AUP#MXRT|sender rejected|temporarily unavailable|✂ Sender|greylist|MXRT retry|proxy retry|health=|demoted|Resuming|removed.*remaining|dead proxy|cooling down|pausing|Cooldown|Rate limit.*cooling|⏸/i;
-            if(!_skipPatterns.test(msgText) && ev.type!=="error" && ev.type!=="fail" && ev.type!=="success" &&
-               ev.type!=="pause" && ev.type!=="batch" &&
-               msgText.match(/connect.*fail|connection.*refused|SMTP.*error|AUTH.*fail|wrong credentials|authentication.*fail|535|534|too many|rate.?limit|blacklist|banned|blocked|timeout|timed out/i)) {
-              addLog(`⚠️ SMTP Issue: ${msgText.slice(0,120)}`,"warn");
-            }
-          }catch(e){}
+      if(!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if(j.error) msg = j.error; } catch(e) {}
+        throw new Error(msg);
+      }
+      await consumeCampaignStream(r);
+    } catch(e){
+      // Network drop → the worker keeps running on the server.  Mark and
+      // let the auto-reattach loop pick it back up.
+      addLog(`📡 Connection lost — campaign continues on server (will reattach)`,"wrn");
+      console.warn("startCampaign stream error:", e);
+    }
+  }
+
+  // ─── Shared streaming consumer ─────────────────────────────────────
+  // Used by both startCampaign() and attachToCampaign() so the event
+  // handling is identical whether we're reading the original /api/send
+  // response or re-attaching mid-flight via /api/campaign/stream.
+  // Returns when the stream ends naturally (sentinel) or throws on
+  // network/read error so the caller can decide whether to reattach.
+  async function consumeCampaignStream(response) {
+    const reader = response.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    let sawDone = false;
+    while(true) {
+      let chunk;
+      try { chunk = await reader.read(); }
+      catch(e) { throw e; }
+      if(chunk.done) break;
+      buf += dec.decode(chunk.value,{stream:true});
+      const lines = buf.split("\n"); buf = lines.pop();
+      for(const line of lines) {
+        if(!line.trim()) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch(e) { continue; }
+
+        if(ev.type==="sent" || ev.type==="success") {
+          setCampStats(s => {
+            const sent = (s.sent||0) + 1;
+            return {...s, sent, pending: Math.max(0, (s.total||0) - sent - (s.failed||0))};
+          });
+          const fromPart = ev.from ? ` ← ${ev.from}` : "";
+          const v = ev.via||"";
+          const vIcon = v.match(/amazonaws|smtp|relay/i) ? "📨"
+                      : v.match(/sendgrid|mailgun|sparkpost|postmark|ses|api/i) ? "🔌"
+                      : v.match(/tunnel|rdp|isp|socks/i) ? "🔑"
+                      : v.match(/owa|exchange|outlook/i) ? "📮"
+                      : v.match(/crm|hubspot|salesforce/i) ? "🗄️"
+                      : v ? "📡" : "";
+          const viaPart = v ? ` ${vIcon} ${v}` : "";
+          addLog(`${ev.email||""}${fromPart}${viaPart}`, "ok", ev.email||"", {from:ev.from||"",via:v});
+        }
+        else if(ev.type==="error" || ev.type==="fail") {
+          setCampStats(s => {
+            const failed = (s.failed||0) + 1;
+            return {...s, failed, pending: Math.max(0, (s.total||0) - (s.sent||0) - failed)};
+          });
+          addLog(`✗ ${ev.email||""} — ${ev.msg||ev.error||""}`, "err", ev.email||"");
+        }
+        else if(ev.type==="test") {
+          // Test email sent every N — informational only, doesn't affect stats.
+          addLog(`🧪 Test → ${ev.email||""} ${ev.ok?"OK":"FAIL"} ${ev.msg||""}`,
+                 ev.ok ? "inf" : "wrn");
+        }
+        else if(ev.type==="info") addLog(ev.msg||"","inf");
+        else if(ev.type==="warn") addLog(ev.msg||"","wrn");
+        else if(ev.type==="ping") { /* keepalive */ }
+        else if(ev.type==="proxy_dead") {
+          const deadHost = (ev.host||"").toLowerCase();
+          if(deadHost) {
+            const _filterDead = p => {
+              const raw = (p.raw||"").toLowerCase();
+              const pHost = (p.host||"").toLowerCase();
+              return !raw.includes(deadHost) && pHost !== deadHost;
+            };
+            setProxies(prev => prev.filter(_filterDead));
+            try {
+              const isp = JSON.parse(localStorage.getItem("isp_proxies")||"[]");
+              const ispUpdated = isp.filter(_filterDead);
+              localStorage.setItem("isp_proxies", JSON.stringify(ispUpdated));
+            } catch(e){}
+            addLog(`🗑 Proxy ${ev.host} removed from pool (persistent)`, "inf");
+          }
+        }
+        else if(ev.type==="pause") addLog(ev.msg||"⏸ Paused","wrn");
+        else if(ev.type==="batch") addLog(ev.msg||"","inf");
+        else if(ev.type==="done") {
+          sawDone = true;
+          const _s = (window._lastCampStats||{});
+          addLog(`✅ Complete — ${(ev.success||0).toLocaleString()} sent, ${(ev.fail||0).toLocaleString()} failed`,"inf");
+          setCampStats(s=>({...s, pending:0}));
+          setCampRunning(false);
+          setCampPaused(false);
+          loadHistory();
+          // Optionally prompt to delete sent emails after the run.
+          try { maybePromptDeleteSent(ev); } catch(e){}
+        }
+
+        const msgText = ev.msg||ev.error||"";
+        const _skipPatterns = /AUP#POL|AUP#MXRT|sender rejected|temporarily unavailable|✂ Sender|greylist|MXRT retry|proxy retry|health=|demoted|Resuming|removed.*remaining|dead proxy|cooling down|pausing|Cooldown|Rate limit.*cooling|⏸/i;
+        if(!_skipPatterns.test(msgText) && ev.type!=="error" && ev.type!=="fail" && ev.type!=="success" &&
+           ev.type!=="pause" && ev.type!=="batch" &&
+           msgText.match(/connect.*fail|connection.*refused|SMTP.*error|AUTH.*fail|wrong credentials|authentication.*fail|535|534|too many|rate.?limit|blacklist|banned|blocked|timeout|timed out/i)) {
+          addLog(`⚠️ SMTP Issue: ${msgText.slice(0,120)}`,"warn");
         }
       }
-    } catch(e){ addLog(`❌ Error: ${e.message}`,"err"); }
-    setCampRunning(false); setCampPaused(false);
-    loadHistory();
+    }
+    return sawDone;
   }
+
+  // Re-attach to a campaign that's still running on the server.  Called
+  // from the status poller (below) whenever it sees an active campaign
+  // for which we don't already hold an open stream.
+  async function attachToCampaign() {
+    if(attachInFlight.current) return;
+    attachInFlight.current = true;
+    try {
+      const r = await apiCall("/api/campaign/stream");
+      if(r.status === 404) return;            // no longer active
+      if(!r.ok) return;
+      addLog("🔄 Reattached to running campaign","inf");
+      setCampRunning(true);
+      try { await consumeCampaignStream(r); }
+      catch(e) { /* will reattach next poll cycle */ }
+    } finally {
+      attachInFlight.current = false;
+    }
+  }
+
+  // Phase C: prompt to delete sent emails after a run.
+  // Triggered when the campaign emits {type:"done"} (natural completion
+  // or user-initiated stop) and from pauseCampaign() / stopCampaign().
+  // Skipped if the user disabled the prompt in Settings (askDeleteSent).
+  // We query /api/campaign/sent-records first so we can show an accurate
+  // count and skip the prompt entirely when there's nothing to delete.
+  async function maybePromptDeleteSent(ev) {
+    if(!askDeleteSent) return;
+    let info;
+    try {
+      const r = await apiCall("/api/campaign/sent-records");
+      if(!r.ok) return;
+      info = await r.json();
+    } catch(e) { return; }
+    if(!info || !info.eligible || info.eligible <= 0) {
+      // Nothing IMAP-deletable (likely API/OWA/CRM run, or no creds).
+      if(info && info.total > 0) {
+        addLog(`ℹ ${info.total} sent — none eligible for IMAP delete (no IMAP creds)`,"inf");
+      }
+      return;
+    }
+    const accountStr = (info.accounts||[]).slice(0,3).join(", ")
+      + ((info.accounts||[]).length > 3 ? `, +${info.accounts.length-3} more` : "");
+    const ok = await showPopup({
+      title: "Delete sent emails?",
+      msg:   `Delete the ${info.eligible} message${info.eligible===1?"":"s"} `
+           + `you just sent from the Sent folders of: ${accountStr}? `
+           + `This cannot be undone.`,
+      ico:   "🗑",
+      type:  "confirm",
+    });
+    if(!ok) {
+      addLog(`Kept ${info.eligible} sent email${info.eligible===1?"":"s"}`,"inf");
+      return;
+    }
+    addLog(`🗑 Deleting ${info.eligible} sent email${info.eligible===1?"":"s"}…`,"inf");
+    try {
+      const dr = await apiCall("/api/campaign/delete-sent",
+                                {method:"POST", body:JSON.stringify({})});
+      if(!dr.ok) throw new Error(`HTTP ${dr.status}`);
+      const dd = await dr.json();
+      addLog(`🗑 Deleted ${dd.deleted||0} / ${(dd.deleted||0)+(dd.failed||0)} `
+           + `(${dd.failed||0} failed${dd.skipped_no_creds?`, ${dd.skipped_no_creds} skipped`:""})`,
+             (dd.failed||0)>0 ? "wrn" : "inf");
+      for(const acc of (dd.byAccount||[])) {
+        if(acc.error) {
+          addLog(`  ⚠ ${acc.email}: ${acc.error}`,"wrn");
+        } else if((acc.failed||0) > 0) {
+          addLog(`  ⚠ ${acc.email}: ${acc.deleted||0} deleted, ${acc.failed} not found`,"wrn");
+        } else {
+          addLog(`  ✓ ${acc.email}: ${acc.deleted||0} deleted`,"inf");
+        }
+      }
+    } catch(e) {
+      addLog(`✗ Delete-sent failed: ${e.message}`,"err");
+    }
+  }
+  // Persist the askDeleteSent toggle whenever it changes.
+  useEffect(()=>{
+    try { localStorage.setItem("st_ask_delete_sent", askDeleteSent ? "1" : "0"); }
+    catch(e) {}
+  },[askDeleteSent]);
 
   async function pauseCampaign()  {
     try{
@@ -7858,6 +8042,9 @@ function App() {
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
       setCampPaused(true);
       addLog("⏸ Paused","wrn");
+      // Offer to delete what's been sent so far without ending the run —
+      // the worker stays paused until the user resumes or stops.
+      try { maybePromptDeleteSent({type:"pause"}); } catch(e){}
     }catch(e){
       addLog(`⚠ Pause failed: ${e.message}`,"err");
     }
@@ -8139,6 +8326,8 @@ function App() {
       pauseRef, startCampaign, pauseCampaign, resumeCampaign, stopCampaign,
       cooldownEvery, setCooldownEvery, cooldownSecs, setCooldownSecs,
       batchPauseSecs, setBatchPauseSecs,
+      testEmail, setTestEmail, testEveryN, setTestEveryN,
+      askDeleteSent, setAskDeleteSent,
       setLeadsRaw, setLeads, setTab,
       priority,setPriority,batchSize,setBatchSize,delay,setDelay,delayUnit,setDelayUnit,
       jitter,setJitter,jitterSec,setJitterSec,domThrottle,setDomThrottle,warmup,setWarmup,rateLimitPause,setRateLimitPause,
