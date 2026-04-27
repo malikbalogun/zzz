@@ -28,12 +28,14 @@ import json
 import logging
 import mimetypes
 import os
+import queue
 import re
 import secrets
 import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -137,9 +139,180 @@ SESSIONS: dict       = {}   # token → {user_id, username, role, expires}
 ACTIVE_CAMPAIGNS: dict = {}  # user_id → count of running campaigns (thread-safe via lock)
 LIVE_CAMPAIGN_STATS: dict = {}  # user_id → {sent, failed, total, name, status, started_at}
 CAMPAIGN_CONTROLS: dict = {}  # user_id → {paused: bool, abort: bool, stats: dict}
+# Per-user event queues for true background sending. /api/send and
+# /api/campaign/stream tail events from this queue. Queue lives until
+# the worker thread emits its terminal {"type":"done"} event AND no
+# client has been actively reading for a short while; cleanup happens
+# in the worker's finally clause.
+CAMPAIGN_QUEUES: dict = {}     # user_id → queue.Queue
+CAMPAIGN_THREADS: dict = {}    # user_id → threading.Thread
+# Per-user list of records describing successful sends in the active run.
+# Used by /api/campaign/delete-sent to IMAP-delete from sender mailboxes.
+CAMPAIGN_SENT_RECORDS: dict = {}  # user_id → list[ {message_id, sender_email, sender_pass, imap_host, imap_port, ts, ssl} ]
 _INBOX_RUNS: dict    = {}   # run_id → {"done": bool, "results": [...]}
 active_campaigns_lock = Lock()
 LOGIN_ATTEMPTS: dict = {}   # ip → {count, last_attempt}
+
+# Sentinel pushed to per-user queue to mark stream end.
+_CAMP_STREAM_END = object()
+
+
+def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, started_at):
+    """Run a campaign in a background thread.
+
+    Pushes every event from `process_campaign(data)` onto the per-user
+    queue and updates LIVE_CAMPAIGN_STATS / CAMPAIGN_CONTROLS so polling
+    clients (and re-attached streams) see live progress even when no
+    HTTP client is connected.
+
+    Honors pause/abort flags from CAMPAIGN_CONTROLS.  All finalization
+    (DB row, Telegram done message, ACTIVE_CAMPAIGNS decrement) happens
+    in the `finally` block so it always runs — even if the user closes
+    their browser or the worker crashes mid-stream.
+    """
+    method = data.get("method", "smtp")
+    sent_count = 0
+    failed_count = 0
+    proxy_dead_count = 0
+    stopped = False
+    campaign_start_ts = time.time()
+    last_tg_update = campaign_start_ts
+    q = CAMPAIGN_QUEUES.get(uid)
+
+    def _put(ev):
+        try:
+            if q is not None:
+                q.put(ev, timeout=2)
+        except Exception:
+            pass
+
+    try:
+        data["_uid"] = uid
+        # Reset sent records list for this run so /api/campaign/delete-sent
+        # only operates on the messages from the most recent run.
+        with active_campaigns_lock:
+            CAMPAIGN_SENT_RECORDS[uid] = []
+
+        campaign_iter = iter(process_campaign(data))
+        while True:
+            with active_campaigns_lock:
+                ctrl = CAMPAIGN_CONTROLS.get(uid) or {}
+                is_paused = bool(ctrl.get("paused", False))
+                is_abort = bool(ctrl.get("abort", False))
+            if is_abort:
+                stopped = True
+                try:
+                    campaign_iter.close()
+                except Exception:
+                    pass
+                _put({"type": "done", "stopped": True, "msg": "⛔ Campaign stopped by user"})
+                break
+            if is_paused:
+                with active_campaigns_lock:
+                    if uid in LIVE_CAMPAIGN_STATS:
+                        LIVE_CAMPAIGN_STATS[uid]["status"] = "paused"
+                time.sleep(0.25)
+                continue
+            with active_campaigns_lock:
+                if uid in LIVE_CAMPAIGN_STATS:
+                    LIVE_CAMPAIGN_STATS[uid]["status"] = "running"
+            try:
+                event = next(campaign_iter)
+            except StopIteration:
+                break
+            etype = event.get("type")
+            if etype == "success":
+                sent_count += 1
+                # Track sent record for optional IMAP delete-sent later.
+                try:
+                    rec = {
+                        "message_id":   event.get("message_id") or "",
+                        "sender_email": event.get("from") or "",
+                        "sender_pass":  event.get("smtp_pass") or "",
+                        "imap_host":    event.get("imap_host") or "",
+                        "imap_port":    int(event.get("imap_port") or 993),
+                        "ssl":          bool(event.get("imap_ssl", True)),
+                        "ts":           int(time.time()),
+                    }
+                    if rec["message_id"] and rec["sender_email"]:
+                        with active_campaigns_lock:
+                            lst = CAMPAIGN_SENT_RECORDS.setdefault(uid, [])
+                            if len(lst) < 50000:
+                                lst.append(rec)
+                except Exception:
+                    pass
+            elif etype == "error":
+                failed_count += 1
+            elif etype == "proxy_dead":
+                proxy_dead_count += 1
+            elif etype == "done":
+                stopped = event.get("stopped", False)
+            if etype in ("success", "error", "done"):
+                with active_campaigns_lock:
+                    if uid in LIVE_CAMPAIGN_STATS:
+                        LIVE_CAMPAIGN_STATS[uid]["sent"] = sent_count
+                        LIVE_CAMPAIGN_STATS[uid]["failed"] = failed_count
+                    if uid in CAMPAIGN_CONTROLS:
+                        CAMPAIGN_CONTROLS[uid]["stats"] = {
+                            "sent": sent_count,
+                            "failed": failed_count,
+                            "total": total_count,
+                        }
+            _put(event)
+            now = time.time()
+            if TG_AVAILABLE and tg_msg_id and now - last_tg_update > 10:
+                try:
+                    elapsed = now - campaign_start_ts
+                    speed = sent_count / elapsed if elapsed > 0 else 0
+                    tg.campaign_update_msg(
+                        uid, tg_msg_id, camp_name,
+                        sent_count, failed_count, total_count,
+                        method, speed, proxy_dead_count)
+                except Exception:
+                    pass
+                last_tg_update = now
+    except Exception as e:
+        log.exception("[campaign worker] uid=%s crashed", uid)
+        _put({"type": "error", "error": f"Server error: {str(e)[:300]}"})
+    finally:
+        # Always emit a terminal done event so tailing clients exit cleanly.
+        _put({"type": "done", "stopped": stopped, "success": sent_count, "fail": failed_count, "total": total_count})
+        _put(_CAMP_STREAM_END)
+
+        # Finalize state (DB row, Telegram, counters, queue handle).
+        if TG_AVAILABLE and tg_msg_id:
+            try:
+                duration = time.time() - campaign_start_ts
+                tg.campaign_done_msg(
+                    uid, tg_msg_id, camp_name,
+                    sent_count, failed_count, total_count,
+                    stopped=stopped, duration_s=duration)
+            except Exception:
+                pass
+
+        if run_id:
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute(
+                        "UPDATE campaign_runs SET status=?, sent=?, failed=?, finished_at=? WHERE id=?",
+                        ("stopped" if stopped else "done", sent_count, failed_count,
+                         datetime.now().isoformat(), run_id)
+                    )
+                    conn.commit(); conn.close()
+            except Exception:
+                pass
+
+        with active_campaigns_lock:
+            if uid and ACTIVE_CAMPAIGNS.get(uid, 0) > 0:
+                ACTIVE_CAMPAIGNS[uid] -= 1
+            if uid and ACTIVE_CAMPAIGNS.get(uid, 0) <= 0:
+                LIVE_CAMPAIGN_STATS.pop(uid, None)
+                CAMPAIGN_CONTROLS.pop(uid, None)
+                CAMPAIGN_THREADS.pop(uid, None)
+                # Keep CAMPAIGN_QUEUES[uid] alive briefly so any in-flight
+                # tail readers can drain the sentinel.  A subsequent /api/send
+                # for the same uid replaces the queue cleanly.
 
 db_lock       = Lock()
 sessions_lock = Lock()
@@ -728,6 +901,41 @@ class SynthTelHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _tail_campaign_queue(self, uid, q):
+        """Stream events from a per-user campaign queue until sentinel/disconnect.
+
+        Used by both /api/send (which spawns the worker first) and
+        /api/campaign/stream (which re-attaches to an already running campaign).
+        Disconnects are silent — the worker thread keeps running on the server
+        regardless.  Heartbeat pings keep the TCP connection alive.
+        """
+        last_ping = time.time()
+        while True:
+            try:
+                ev = q.get(timeout=15)
+            except queue.Empty:
+                try:
+                    self._stream_chunk({"type": "ping", "ts": int(time.time())})
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+                continue
+            if ev is _CAMP_STREAM_END:
+                return
+            try:
+                self._stream_chunk(ev)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Client gone — campaign continues on the server.  Stop tailing.
+                return
+            except Exception:
+                pass
+            now = time.time()
+            if now - last_ping > 30:
+                try:
+                    self._stream_chunk({"type": "ping", "ts": int(now)})
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+                last_ping = now
+
 
     # ── OPTIONS ──────────────────────────────────────────────
 
@@ -1109,6 +1317,25 @@ if(code && window.opener){{
             except Exception as e:
                 self._json(500, {"error": str(e)})
 
+        elif p == "/api/campaign/stream":
+            # Re-attach to a running campaign's event stream.  Used by the
+            # browser when reopening / refreshing after the original /api/send
+            # connection was dropped.  Streams future events only — caller
+            # already knows the cumulative state via /api/campaign/status.
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            with active_campaigns_lock:
+                active = ACTIVE_CAMPAIGNS.get(uid, 0)
+                q = CAMPAIGN_QUEUES.get(uid)
+            if not active or q is None:
+                self._json(404, {"error": "No active campaign for this user"})
+                return
+            self._stream_start()
+            try:
+                self._tail_campaign_queue(uid, q)
+            finally:
+                self._stream_end()
+
         elif p == "/api/campaign/status":
             if not (sess := self._auth()): return
             uid = sess["user_id"]
@@ -1287,6 +1514,12 @@ if(code && window.opener){{
             self._json(200, {"status": "ok"})
 
         # ── SMTP campaign send (chunked streaming) ───────────
+        # The campaign is executed in a background thread so closing the
+        # browser, refreshing, or losing connection no longer kills it.
+        # The HTTP response is just a *tail* of the per-user event queue —
+        # disconnecting drops the tail but the worker keeps running on the
+        # server until completion / pause / stop.  Reconnect via
+        # /api/campaign/stream.
         elif p == "/api/send":
             if not (sess := self._auth()): return
             try:
@@ -1312,13 +1545,12 @@ if(code && window.opener){{
                     "abort": False,
                     "stats": {"sent": 0, "failed": 0, "total": total_count},
                 }
+                # Fresh queue per run.  maxsize is generous so a slow tailer
+                # never blocks the campaign loop in practice; if it does,
+                # the worker uses put(timeout=2) and drops the event.
+                CAMPAIGN_QUEUES[uid] = queue.Queue(maxsize=4096)
 
-            self._stream_start()
-            sent_count = 0
-            failed_count = 0
             run_id = None
-
-            # Create campaign_runs record
             try:
                 with db_lock:
                     conn = sqlite3.connect(DB_PATH)
@@ -1332,9 +1564,7 @@ if(code && window.opener){{
             except Exception:
                 pass
 
-            # Telegram: send campaign start message (non-blocking)
             tg_msg_id = None
-            campaign_start_ts = time.time()
             if TG_AVAILABLE:
                 try:
                     tg_msg_id = tg.campaign_start_msg(
@@ -1342,136 +1572,27 @@ if(code && window.opener){{
                 except Exception:
                     pass
 
-            stopped = False
-            proxy_dead_count = 0
-            try:
-                data["_uid"] = sess["user_id"]
-                last_ping = time.time()
-                last_tg_update = time.time()
-                campaign_iter = iter(process_campaign(data))
-                while True:
-                    with active_campaigns_lock:
-                        ctrl = CAMPAIGN_CONTROLS.get(uid) or {}
-                        is_paused = bool(ctrl.get("paused", False))
-                        is_abort = bool(ctrl.get("abort", False))
-                    if is_abort:
-                        stopped = True
-                        try:
-                            campaign_iter.close()
-                        except Exception:
-                            pass
-                        try:
-                            self._stream_chunk({"type": "done", "stopped": True, "msg": "⛔ Campaign stopped by user"})
-                        except Exception:
-                            pass
-                        break
-                    if is_paused:
-                        with active_campaigns_lock:
-                            if uid in LIVE_CAMPAIGN_STATS:
-                                LIVE_CAMPAIGN_STATS[uid]["status"] = "paused"
-                        time.sleep(0.25)
-                        continue
-                    with active_campaigns_lock:
-                        if uid in LIVE_CAMPAIGN_STATS:
-                            LIVE_CAMPAIGN_STATS[uid]["status"] = "running"
-                    try:
-                        event = next(campaign_iter)
-                    except StopIteration:
-                        break
-                    etype = event.get("type")
-                    if etype == "success":
-                        sent_count += 1
-                    elif etype == "error":
-                        failed_count += 1
-                    elif etype == "proxy_dead":
-                        proxy_dead_count += 1
-                    elif etype == "done":
-                        stopped = event.get("stopped", False)
-                    # Update live stats for cross-device polling
-                    if etype in ("success", "error", "done"):
-                        with active_campaigns_lock:
-                            if uid in LIVE_CAMPAIGN_STATS:
-                                LIVE_CAMPAIGN_STATS[uid]["sent"] = sent_count
-                                LIVE_CAMPAIGN_STATS[uid]["failed"] = failed_count
-                            if uid in CAMPAIGN_CONTROLS:
-                                CAMPAIGN_CONTROLS[uid]["stats"] = {
-                                    "sent": sent_count,
-                                    "failed": failed_count,
-                                    "total": total_count,
-                                }
-                    try:
-                        self._stream_chunk(event)
-                    except (BrokenPipeError, ConnectionResetError, OSError):
-                        break  # client disconnected — stop streaming
-                    except Exception:
-                        pass  # never let a stream write error stop the campaign
-                    now = time.time()
-                    # Keepalive: send a heartbeat ping every 30s so the connection
-                    # doesn't get killed by TCP idle timeout or OS network stack
-                    if now - last_ping > 30:
-                        try:
-                            self._stream_chunk({"type": "ping", "ts": int(now)})
-                        except Exception:
-                            pass
-                        last_ping = now
-                    # Telegram: update live stats every 10s
-                    if TG_AVAILABLE and tg_msg_id and now - last_tg_update > 10:
-                        try:
-                            elapsed = now - campaign_start_ts
-                            speed = sent_count / elapsed if elapsed > 0 else 0
-                            tg.campaign_update_msg(
-                                uid, tg_msg_id, camp_name,
-                                sent_count, failed_count, total_count,
-                                data.get("method", "smtp"), speed,
-                                proxy_dead_count)
-                        except Exception:
-                            pass
-                        last_tg_update = now
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                pass  # client disconnected — campaign already done
-            except GeneratorExit:
-                pass
-            except Exception as e:
-                try:
-                    self._stream_chunk({"type": "error", "error": f"Server error: {str(e)[:300]}"})
-                except Exception:
-                    pass
-
-            # Decrement active campaign count and clear live stats
+            # Spawn the background worker.  It outlives this HTTP request.
+            worker = threading.Thread(
+                target=_campaign_worker,
+                args=(uid, data, run_id, camp_name, total_count, tg_msg_id, started_at),
+                daemon=True,
+                name=f"campaign-{uid}",
+            )
             with active_campaigns_lock:
-                uid = sess.get("user_id")
-                if uid and ACTIVE_CAMPAIGNS.get(uid, 0) > 0:
-                    ACTIVE_CAMPAIGNS[uid] -= 1
-                if uid and ACTIVE_CAMPAIGNS.get(uid, 0) <= 0:
-                    LIVE_CAMPAIGN_STATS.pop(uid, None)
-                    CAMPAIGN_CONTROLS.pop(uid, None)
+                CAMPAIGN_THREADS[uid] = worker
+            worker.start()
 
-            # Telegram: send campaign completion message
-            if TG_AVAILABLE:
-                try:
-                    duration = time.time() - campaign_start_ts
-                    tg.campaign_done_msg(
-                        uid, tg_msg_id, camp_name,
-                        sent_count, failed_count, total_count,
-                        stopped=stopped, duration_s=duration)
-                except Exception:
-                    pass
-
-            # Update campaign_runs record with final stats
-            if run_id:
-                try:
-                    with db_lock:
-                        conn = sqlite3.connect(DB_PATH)
-                        conn.execute(
-                            "UPDATE campaign_runs SET status=?, sent=?, failed=?, finished_at=? WHERE id=?",
-                            ("stopped" if stopped else "done", sent_count, failed_count, datetime.now().isoformat(), run_id)
-                        )
-                        conn.commit()
-                        conn.close()
-                except Exception:
-                    pass
-
-            self._stream_end()
+            # Tail the queue back to the client.  If the client drops mid-tail
+            # the worker continues running; the user can re-attach via
+            # /api/campaign/stream.
+            self._stream_start()
+            try:
+                q = CAMPAIGN_QUEUES.get(uid)
+                if q is not None:
+                    self._tail_campaign_queue(uid, q)
+            finally:
+                self._stream_end()
 
         # ── Campaign control (UI/API): pause/resume/stop/stats ─────────────
         elif p == "/api/campaign/control":
