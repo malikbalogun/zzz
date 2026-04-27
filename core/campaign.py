@@ -684,6 +684,8 @@ class CampaignOptions:
                 "cooldownEvery":  data.get("cooldownEvery", 0),
                 "cooldownSecs":   data.get("cooldownSecs", 60),
                 "batchPauseSecs": data.get("batchPauseSecs", 0),
+                "testEmail":      data.get("testEmail", ""),
+                "testEveryN":     data.get("testEveryN", 0),
                 "htmlRotateMode": data.get("htmlRotateMode", "random"),
             },
             links_cfg      = cls._build_links_cfg_from_data(data),
@@ -1230,6 +1232,12 @@ def run_campaign(opts: CampaignOptions) -> Generator:
     cooldown_every   = _safe_int(sending.get("cooldownEvery", 0), 0)
     cooldown_secs    = _safe_float(sending.get("cooldownSecs", 60), 60.0)
     batch_pause_secs = _safe_float(sending.get("batchPauseSecs", 0), 0.0)
+    # Send a deliverability test copy of the current message to a separate
+    # inbox after every N successful real sends.  testEveryN<=0 disables it.
+    test_email_addr  = (sending.get("testEmail") or data.get("testEmail") or "").strip()
+    test_every_n     = _safe_int(sending.get("testEveryN", data.get("testEveryN", 0)), 0)
+    _tests_sent      = 0
+    _since_last_test = 0
     html_rotate_mode = sending.get("htmlRotateMode", "random")
     max_connections  = _safe_int(sending.get("maxConnections", 1), 1)
     sends_per_sec    = _safe_float(sending.get("sendsPerSec", 0), 0.0)
@@ -1997,6 +2005,41 @@ def run_campaign(opts: CampaignOptions) -> Generator:
                     yield {"type":"success","index":i+1,"total":total_cap,"email":email_addr,
                            "name":lead.get("name",""),"from":resolved_sender.get("fromEmail",""),
                            "via":via,"link":link_url,"checkpoint":i+1}
+
+                    # ── Test-email-every-N ──────────────────────────────
+                    # Send a clone of this message to the test inbox so the
+                    # operator can see how the campaign is landing in real
+                    # time.  Failures here never count toward fail/stats —
+                    # the test address is purely instrumentation.
+                    if test_email_addr and test_every_n > 0:
+                        _since_last_test += 1
+                        if _since_last_test >= test_every_n:
+                            _since_last_test = 0
+                            try:
+                                _test_lead = {"email": test_email_addr,
+                                              "name":  "Deliverability Test",
+                                              "company": ""}
+                                _test_srv = _pick(servers, srv_rot, i) if servers else {}
+                                _t_ok, _t_err, _t_via = _send_one(
+                                    opts=opts, i=i, lead=_test_lead,
+                                    sender=resolved_sender,
+                                    server=_test_srv,
+                                    subject=resolve_tags(_pick(opts.subjects, sender_rot, i) or "",
+                                                          build_context(lead=_test_lead, sender=resolved_sender,
+                                                                        subject="", counter=_tests_sent+1,
+                                                                        links_cfg=opts.links_cfg)),
+                                    html=resolved_html, plain=resolved_plain,
+                                    pool=pool, mx_ctx=mx_ctx,
+                                    dead_proxies=_dead_proxies,
+                                )
+                            except Exception as _te:
+                                _t_ok, _t_err, _t_via = False, f"test send error: {_te}", ""
+                            _tests_sent += 1
+                            yield {"type":"test","email":test_email_addr,"ok":bool(_t_ok),
+                                   "msg": _t_err if not _t_ok else f"via {_t_via}",
+                                   "from": resolved_sender.get("fromEmail",""),
+                                   "test_no": _tests_sent}
+
                     if sends_per_sec > 0 and not _sleep_interruptible(1.0/sends_per_sec, campaign_uid):
                         stopped = True
                         break
