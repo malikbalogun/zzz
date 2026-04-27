@@ -1336,6 +1336,25 @@ if(code && window.opener){{
             finally:
                 self._stream_end()
 
+        elif p == "/api/campaign/sent-records":
+            # How many sent emails are eligible for IMAP delete-sent?
+            # Used by the UI to decide whether to show the delete prompt.
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            with active_campaigns_lock:
+                records = list(CAMPAIGN_SENT_RECORDS.get(uid, []))
+            eligible = sum(1 for r in records
+                           if r.get("message_id") and r.get("sender_email")
+                           and r.get("imap_host") and r.get("sender_pass"))
+            unique_accounts = sorted({r.get("sender_email") for r in records
+                                      if r.get("sender_email")})
+            self._json(200, {
+                "total":    len(records),
+                "eligible": eligible,
+                "skipped":  max(0, len(records) - eligible),
+                "accounts": unique_accounts,
+            })
+
         elif p == "/api/campaign/status":
             if not (sess := self._auth()): return
             uid = sess["user_id"]
@@ -1632,6 +1651,130 @@ if(code && window.opener){{
                     })
                 else:
                     self._json(400, {"error": f"Unknown action: {action}"})
+
+        # ── Delete sent emails from sender mailboxes (IMAP) ─────────
+        # Optional cleanup step that runs after a campaign pauses or
+        # finishes.  Logs into each unique sender via IMAP, finds the
+        # messages we just sent (by HEADER Message-ID), marks them
+        # \\Deleted and EXPUNGES the mailbox.  Per-account results are
+        # returned so the UI can surface successes / failures.
+        elif p == "/api/campaign/delete-sent":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            uid = sess["user_id"]
+            with active_campaigns_lock:
+                records = list(CAMPAIGN_SENT_RECORDS.get(uid, []))
+            if not records:
+                self._json(200, {"ok": True, "deleted": 0, "failed": 0,
+                                 "byAccount": [], "message": "No sent records to delete"})
+                return
+            # Group records by (imap_host, sender_email) so we IMAP-login once
+            # per mailbox instead of per message.
+            groups = {}
+            skipped_no_creds = 0
+            for r in records:
+                if not r.get("message_id") or not r.get("sender_email"):
+                    skipped_no_creds += 1
+                    continue
+                if not r.get("imap_host") or not r.get("sender_pass"):
+                    skipped_no_creds += 1
+                    continue
+                key = (r["imap_host"], int(r.get("imap_port") or 993),
+                       r["sender_email"], r["sender_pass"])
+                groups.setdefault(key, []).append(r["message_id"])
+
+            results = []
+            total_deleted = 0
+            total_failed  = 0
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _delete_one_account(key, msgids):
+                host, port, email_addr, password = key
+                deleted = 0
+                failed  = 0
+                err     = None
+                M = None
+                try:
+                    import imaplib, ssl as _ssl
+                    M = imaplib.IMAP4_SSL(host, port,
+                                          ssl_context=_ssl.create_default_context(),
+                                          timeout=30)
+                    M.login(email_addr, password)
+                    # Try common Sent folder names in order.
+                    sent_folders = ['"[Gmail]/Sent Mail"', '"Sent Items"',
+                                    '"Sent"', '"INBOX.Sent"', '"INBOX/Sent"',
+                                    '"[Gmail]/Sent"']
+                    for folder in sent_folders:
+                        try:
+                            typ, _ = M.select(folder)
+                            if typ != "OK":
+                                continue
+                            for mid in msgids:
+                                # Strip < > if present so search is consistent.
+                                clean = mid.strip("<>").strip()
+                                if not clean:
+                                    continue
+                                try:
+                                    typ2, msg_nums = M.search(None,
+                                        f'HEADER Message-ID "{clean}"')
+                                    if typ2 != "OK" or not msg_nums or not msg_nums[0]:
+                                        continue
+                                    for num in msg_nums[0].split():
+                                        try:
+                                            M.store(num, "+FLAGS", r"(\Deleted)")
+                                            deleted += 1
+                                        except Exception:
+                                            failed += 1
+                                except Exception:
+                                    failed += 1
+                            try:
+                                M.expunge()
+                            except Exception:
+                                pass
+                        except Exception:
+                            continue
+                except Exception as e:
+                    err = str(e)[:200]
+                    failed = len(msgids)
+                finally:
+                    try:
+                        if M is not None:
+                            M.logout()
+                    except Exception:
+                        pass
+                return {"email": email_addr, "host": host,
+                        "tried": len(msgids), "deleted": deleted,
+                        "failed": max(0, len(msgids) - deleted),
+                        "error": err}
+
+            with ThreadPoolExecutor(max_workers=4) as exe:
+                futs = {exe.submit(_delete_one_account, k, v): k for k, v in groups.items()}
+                for f in futs:
+                    try:
+                        r = f.result(timeout=120)
+                    except Exception as e:
+                        k = futs[f]
+                        r = {"email": k[2], "host": k[0], "tried": 0,
+                             "deleted": 0, "failed": 0, "error": str(e)[:200]}
+                    results.append(r)
+                    total_deleted += r.get("deleted", 0)
+                    total_failed  += r.get("failed", 0)
+
+            # Drop the records we successfully deleted so a subsequent click
+            # only retries the failed ones.
+            with active_campaigns_lock:
+                CAMPAIGN_SENT_RECORDS[uid] = []  # clear after attempt
+
+            self._json(200, {
+                "ok": True,
+                "deleted": total_deleted,
+                "failed": total_failed,
+                "skipped_no_creds": skipped_no_creds,
+                "byAccount": results,
+            })
 
         # ── Save draft (cross-device sync) ───────────────────
         elif p == "/api/draft":
