@@ -144,8 +144,9 @@ CAMPAIGN_CONTROLS: dict = {}  # user_id → {paused: bool, abort: bool, stats: d
 # the worker thread emits its terminal {"type":"done"} event AND no
 # client has been actively reading for a short while; cleanup happens
 # in the worker's finally clause.
-CAMPAIGN_QUEUES: dict = {}     # user_id → queue.Queue
+CAMPAIGN_QUEUES: dict = {}     # user_id → queue.Queue (legacy stream compatibility)
 CAMPAIGN_THREADS: dict = {}    # user_id → threading.Thread
+CAMPAIGN_EVENTS: dict = {}     # user_id → replayable event buffer for polling clients
 # Per-user list of records describing successful sends in the active run.
 # Used by /api/campaign/delete-sent to IMAP-delete from sender mailboxes.
 CAMPAIGN_SENT_RECORDS: dict = {}  # user_id → list[ {message_id, sender_email, sender_pass, imap_host, imap_port, ts, ssl} ]
@@ -155,6 +156,215 @@ LOGIN_ATTEMPTS: dict = {}   # ip → {count, last_attempt}
 
 # Sentinel pushed to per-user queue to mark stream end.
 _CAMP_STREAM_END = object()
+_CAMP_EVENT_LIMIT = int(os.environ.get("SYNTHTEL_CAMPAIGN_EVENT_LIMIT", "10000") or 10000)
+
+
+def _init_campaign_events(uid, run_id=None):
+    """Create/reset the replayable per-user campaign event buffer."""
+    with active_campaigns_lock:
+        CAMPAIGN_EVENTS[uid] = {
+            "run_id": run_id,
+            "next": 0,
+            "events": _collections.deque(maxlen=_CAMP_EVENT_LIMIT),
+            "terminal": False,
+            "updated_at": time.time(),
+            "sent_leads": set(),
+        }
+
+
+def _campaign_emit(uid, event: dict):
+    """Append a campaign event to the replay buffer and legacy queue.
+
+    Events are assigned a monotonic integer `id` so the browser can poll
+    `/api/campaign/events?since=N` and safely resume after navigation without
+    double-processing earlier events.
+    """
+    if not isinstance(event, dict):
+        return None
+    ev = dict(event)
+    with active_campaigns_lock:
+        buf = CAMPAIGN_EVENTS.setdefault(uid, {
+            "run_id": None,
+            "next": 0,
+            "events": _collections.deque(maxlen=_CAMP_EVENT_LIMIT),
+            "terminal": False,
+            "updated_at": time.time(),
+            "sent_leads": set(),
+        })
+        buf["next"] = int(buf.get("next", 0)) + 1
+        ev["id"] = buf["next"]
+        ev["ts"] = int(time.time())
+        if buf.get("run_id") is not None and "run_id" not in ev:
+            ev["run_id"] = buf.get("run_id")
+        if ev.get("type") == "done":
+            buf["terminal"] = True
+        if ev.get("type") in ("success", "sent") and ev.get("email"):
+            try:
+                buf.setdefault("sent_leads", set()).add(str(ev.get("email")).strip().lower())
+            except Exception:
+                pass
+        buf["updated_at"] = time.time()
+        buf["events"].append(ev)
+        q = CAMPAIGN_QUEUES.get(uid)
+    # Keep old stream endpoint working for any older browser tab, but polling
+    # is authoritative and does not consume from this queue.
+    try:
+        if q is not None:
+            q.put(ev, timeout=0.2)
+    except Exception:
+        pass
+    return ev
+
+
+def _campaign_events_snapshot(uid, since: int = 0):
+    """Return buffered events newer than `since` plus cursor metadata."""
+    with active_campaigns_lock:
+        buf = CAMPAIGN_EVENTS.get(uid)
+        live = LIVE_CAMPAIGN_STATS.get(uid)
+        active = ACTIVE_CAMPAIGNS.get(uid, 0) > 0
+        if not buf:
+            return {
+                "events": [],
+                "next": int(since or 0),
+                "terminal": not active,
+                "compacted": False,
+                "run_id": None,
+                "live": dict(live) if isinstance(live, dict) else None,
+                "active": active,
+            }
+        events_all = list(buf.get("events") or [])
+        first_id = events_all[0].get("id", 0) if events_all else int(buf.get("next", 0))
+        compacted = bool(events_all and since and since < first_id - 1)
+        events = [e for e in events_all if int(e.get("id", 0)) > int(since or 0)]
+        return {
+            "events": events,
+            "next": int(buf.get("next", since or 0)),
+            "terminal": bool(buf.get("terminal", False)),
+            "compacted": compacted,
+            "run_id": buf.get("run_id"),
+            "live": dict(live) if isinstance(live, dict) else None,
+            "active": active,
+        }
+
+
+def _latest_campaign_row(uid):
+    """Best-effort latest persisted campaign run for status/event responses."""
+    try:
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            row = conn.execute(
+                "SELECT id, name, status, sent, failed, total, started_at, finished_at "
+                "FROM campaign_runs WHERE user_id=? ORDER BY started_at DESC LIMIT 1",
+                (uid,)
+            ).fetchone()
+            conn.close()
+        if row:
+            return {"id": row[0], "name": row[1], "status": row[2], "sent": row[3],
+                    "failed": row[4], "total": row[5], "started_at": row[6],
+                    "finished_at": row[7]}
+    except Exception:
+        pass
+    return None
+
+
+def _extract_email_from_line(line: str) -> str:
+    """Extract first email address from a CSV/plain lead line."""
+    m = re.search(r'[\w.\-+%]+@[\w.\-]+\.[A-Za-z]{2,}', line or "")
+    return (m.group(0).lower() if m else "")
+
+
+def _remove_emails_from_user_file(uid, file_id, emails):
+    """Remove lead lines matching `emails` from a user-owned saved lead file."""
+    email_set = {str(e).lower().strip() for e in (emails or []) if str(e).strip()}
+    if not email_set:
+        return {"ok": True, "removed": 0, "remaining": None, "message": "No sent lead emails to remove"}
+    try:
+        fid = int(file_id)
+    except Exception:
+        return {"ok": False, "removed": 0, "error": "Invalid listFileId"}
+    try:
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            row = conn.execute(
+                "SELECT filename,orig_name,category FROM user_files WHERE id=? AND user_id=?",
+                (fid, uid)
+            ).fetchone()
+            conn.close()
+        if not row:
+            return {"ok": False, "removed": 0, "error": "Lead file not found"}
+        filename, orig_name, category = row
+        if category not in ("leads", "lead"):
+            return {"ok": False, "removed": 0, "error": "Selected file is not a leads file"}
+        fpath = os.path.join(FILES_DIR, str(uid), category, filename)
+        if not os.path.exists(fpath):
+            return {"ok": False, "removed": 0, "error": "Lead file missing from disk"}
+        with open(fpath, "r", errors="replace") as f:
+            lines = f.read().splitlines()
+        kept, removed = [], 0
+        for line in lines:
+            found = _extract_email_from_line(line)
+            if found and found in email_set:
+                removed += 1
+                continue
+            kept.append(line)
+        new_text = "\n".join(kept) + ("\n" if kept else "")
+        with open(fpath, "w") as f:
+            f.write(new_text)
+        size = os.path.getsize(fpath)
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute("UPDATE user_files SET size_bytes=? WHERE id=? AND user_id=?", (size, fid, uid))
+            conn.commit(); conn.close()
+        remaining = sum(1 for line in kept if _extract_email_from_line(line))
+        return {"ok": True, "file_id": fid, "file": orig_name, "removed": removed, "remaining": remaining}
+    except Exception as e:
+        return {"ok": False, "removed": 0, "error": str(e)[:200]}
+
+
+def _resolve_attachment_files_for_user(uid, data: dict):
+    """Replace client-supplied attachment file IDs with trusted disk paths."""
+    attachments = data.get("attachments") if isinstance(data.get("attachments"), dict) else {}
+    raw_files = attachments.get("files") or []
+    raw_ids = data.get("attachmentFileIds") or attachments.get("fileIds") or []
+    if not isinstance(raw_files, list):
+        raw_files = []
+    if isinstance(raw_ids, list):
+        raw_files = list(raw_files) + raw_ids
+    ids = []
+    passthrough = []
+    for item in raw_files:
+        if isinstance(item, dict) and item.get("id") is not None:
+            try:
+                ids.append(int(item.get("id")))
+            except Exception:
+                pass
+        elif isinstance(item, dict) and item.get("path"):
+            # Never trust browser-supplied paths; keep none.
+            continue
+        elif isinstance(item, int):
+            ids.append(int(item))
+    if ids:
+        q_marks = ",".join(["?"] * len(ids))
+        try:
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                rows = conn.execute(
+                    f"SELECT id,category,filename,orig_name,display_name FROM user_files "
+                    f"WHERE user_id=? AND id IN ({q_marks})",
+                    (uid, *ids)
+                ).fetchall()
+                conn.close()
+            for fid, category, filename, orig_name, display_name in rows:
+                if category not in ("attachments", "attachment"):
+                    continue
+                fpath = os.path.join(FILES_DIR, str(uid), category, filename)
+                if os.path.exists(fpath):
+                    passthrough.append({"path": fpath, "name": display_name or orig_name or filename, "id": fid})
+        except Exception:
+            pass
+    if passthrough:
+        attachments["files"] = passthrough
+        data["attachments"] = attachments
 
 
 def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, started_at):
@@ -178,14 +388,8 @@ def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, start
     emitted_done = False
     campaign_start_ts = time.time()
     last_tg_update = campaign_start_ts
-    q = CAMPAIGN_QUEUES.get(uid)
-
     def _put(ev):
-        try:
-            if q is not None:
-                q.put(ev, timeout=2)
-        except Exception:
-            pass
+        _campaign_emit(uid, ev)
 
     try:
         data["_uid"] = uid
@@ -286,7 +490,12 @@ def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, start
         if not emitted_done:
             _put({"type": "done", "stopped": stopped,
                   "success": sent_count, "fail": failed_count, "total": total_count})
-        _put(_CAMP_STREAM_END)
+        try:
+            q = CAMPAIGN_QUEUES.get(uid)
+            if q is not None:
+                q.put(_CAMP_STREAM_END, timeout=0.2)
+        except Exception:
+            pass
 
         # Finalize state (DB row, Telegram, counters, queue handle).
         if TG_AVAILABLE and tg_msg_id:
@@ -1364,6 +1573,47 @@ if(code && window.opener){{
                 "accounts": unique_accounts,
             })
 
+        elif p.startswith("/api/campaign/events"):
+            # Polling consumer for detached campaign workers.  Unlike the
+            # legacy stream endpoint, this is replayable: callers pass the last
+            # event id they processed and receive only newer events.
+            if not (sess := self._auth()): return
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                since = int(qs.get("since", [0])[0] or 0)
+            except Exception:
+                since = 0
+            uid = sess["user_id"]
+            snap = _campaign_events_snapshot(uid, since)
+            latest = None
+            if not snap.get("live"):
+                try:
+                    with db_lock:
+                        conn = sqlite3.connect(DB_PATH)
+                        row = conn.execute(
+                            "SELECT id, name, status, sent, failed, total, started_at, finished_at "
+                            "FROM campaign_runs WHERE user_id=? ORDER BY started_at DESC LIMIT 1",
+                            (uid,)
+                        ).fetchone()
+                        conn.close()
+                    if row:
+                        latest = {"id":row[0],"name":row[1],"status":row[2],"sent":row[3],
+                                  "failed":row[4],"total":row[5],"started_at":row[6],"finished_at":row[7]}
+                except Exception:
+                    pass
+            self._json(200, {
+                "ok": True,
+                "active": bool(snap.get("active")),
+                "events": snap.get("events", []),
+                "next": snap.get("next", since),
+                "terminal": bool(snap.get("terminal")),
+                "compacted": bool(snap.get("compacted")),
+                "run_id": snap.get("run_id"),
+                "live": snap.get("live"),
+                "latest": latest,
+            })
+
         elif p == "/api/campaign/status":
             if not (sess := self._auth()): return
             uid = sess["user_id"]
@@ -1555,6 +1805,7 @@ if(code && window.opener){{
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
             uid = sess["user_id"]
+            _resolve_attachment_files_for_user(uid, data)
             total_count = len(data.get("leads", []))
             camp_name = data.get("campaignName", "Campaign")
             started_at = datetime.now().isoformat()
@@ -1591,6 +1842,7 @@ if(code && window.opener){{
                     conn.close()
             except Exception:
                 pass
+            _init_campaign_events(uid, run_id)
 
             tg_msg_id = None
             if TG_AVAILABLE:
@@ -1611,16 +1863,13 @@ if(code && window.opener){{
                 CAMPAIGN_THREADS[uid] = worker
             worker.start()
 
-            # Tail the queue back to the client.  If the client drops mid-tail
-            # the worker continues running; the user can re-attach via
-            # /api/campaign/stream.
-            self._stream_start()
-            try:
-                q = CAMPAIGN_QUEUES.get(uid)
-                if q is not None:
-                    self._tail_campaign_queue(uid, q)
-            finally:
-                self._stream_end()
+            self._json(202, {
+                "ok": True,
+                "started": True,
+                "run_id": run_id,
+                "next": 0,
+                "live": LIVE_CAMPAIGN_STATS.get(uid),
+            })
 
         # ── Campaign control (UI/API): pause/resume/stop/stats ─────────────
         elif p == "/api/campaign/control":
@@ -1640,16 +1889,19 @@ if(code && window.opener){{
                     ctrl["paused"] = True
                     if live:
                         live["status"] = "paused"
+                    _campaign_emit(uid, {"type": "info", "msg": "⏸ Campaign paused"})
                     self._json(200, {"status": "ok", "message": "Campaign paused"})
                 elif action == "resume":
                     ctrl["paused"] = False
                     if live:
                         live["status"] = "running"
+                    _campaign_emit(uid, {"type": "info", "msg": "▶ Campaign resumed"})
                     self._json(200, {"status": "ok", "message": "Campaign resumed"})
                 elif action == "stop":
                     ctrl["abort"] = True
                     if live:
                         live["status"] = "stopping"
+                    _campaign_emit(uid, {"type": "warn", "msg": "⛔ Campaign stop requested"})
                     self._json(200, {"status": "ok", "message": "Campaign stopping"})
                 elif action == "stats":
                     self._json(200, {
@@ -1676,9 +1928,31 @@ if(code && window.opener){{
             uid = sess["user_id"]
             with active_campaigns_lock:
                 records = list(CAMPAIGN_SENT_RECORDS.get(uid, []))
+                sent_leads = set()
+                ev_buf = CAMPAIGN_EVENTS.get(uid) or {}
+                try:
+                    sent_leads = set(ev_buf.get("sent_leads") or set())
+                except Exception:
+                    sent_leads = set()
+            if data.get("emails") and isinstance(data.get("emails"), list):
+                sent_leads.update(str(e).lower().strip() for e in data.get("emails") if str(e).strip())
+            remove_from_list = bool(data.get("removeFromList") or data.get("remove_from_list"))
+            list_result = None
+            if remove_from_list:
+                sent_leads.update((r.get("lead_email") or r.get("email") or "").lower().strip()
+                                  for r in records if (r.get("lead_email") or r.get("email")))
+                sent_leads = {e for e in sent_leads if e}
+                list_file_id = data.get("listFileId") or data.get("list_file_id")
+                if list_file_id:
+                    list_result = _remove_emails_from_user_file(uid, list_file_id, sent_leads)
+                else:
+                    list_result = {"ok": True, "mode": "client", "emails": sorted(sent_leads),
+                                   "removed": 0, "message": "Remove these emails from the current pasted leads list client-side."}
             if not records:
                 self._json(200, {"ok": True, "deleted": 0, "failed": 0,
-                                 "byAccount": [], "message": "No sent records to delete"})
+                                 "byAccount": [], "list": list_result,
+                                 "remove_emails": sorted(sent_leads) if remove_from_list else [],
+                                 "message": "No sent records to delete"})
                 return
             # Group records by (imap_host, sender_email) so we IMAP-login once
             # per mailbox instead of per message.
@@ -1783,6 +2057,8 @@ if(code && window.opener){{
                 "failed": total_failed,
                 "skipped_no_creds": skipped_no_creds,
                 "byAccount": results,
+                "list": list_result,
+                "remove_emails": sorted(sent_leads) if remove_from_list else [],
             })
 
         # ── Save draft (cross-device sync) ───────────────────
