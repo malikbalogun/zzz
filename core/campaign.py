@@ -1342,8 +1342,8 @@ def run_campaign(opts: CampaignOptions) -> Generator:
     batch_pause_secs = _safe_float(sending.get("batchPauseSecs", 0), 0.0)
     # Send a deliverability test copy of the current message to a separate
     # inbox after every N successful real sends.  testEveryN<=0 disables it.
-    test_email_addr  = (sending.get("testEmail") or data.get("testEmail") or "").strip()
-    test_every_n     = _safe_int(sending.get("testEveryN", data.get("testEveryN", 0)), 0)
+    test_email_addr  = (sending.get("testEmail") or "").strip()
+    test_every_n     = _safe_int(sending.get("testEveryN", 0), 0)
     _tests_sent      = 0
     _since_last_test = 0
     html_rotate_mode = sending.get("htmlRotateMode", "random")
