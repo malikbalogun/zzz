@@ -2445,10 +2445,21 @@ function TabCompose({
   spamFilter = false, setSpamFilter,
   htmlBodies = [], setHtmlBodies, htmlRotateMode = "random", setHtmlRotateMode,
   preheader = "", setPreheader,
+  selectedAttachmentIds = [], setSelectedAttachmentIds = ()=>{},
 }) {
   const isMobile = useIsMobile();
   const [subTab, setSubTab] = React.useState("editor");
-  const [splitView, setSplitView] = React.useState(false);
+  const [splitView, setSplitView] = React.useState(()=>window.innerWidth > 980);
+  const attachmentFiles = filesList.filter(f=>f.category==="attachments"||f.category==="attachment");
+  const selectedAttachmentSet = new Set((selectedAttachmentIds||[]).map(Number));
+  const toggleAttachment = (id) => {
+    const n = Number(id);
+    setSelectedAttachmentIds(prev => {
+      const cur = new Set((prev||[]).map(Number));
+      if(cur.has(n)) cur.delete(n); else cur.add(n);
+      return Array.from(cur);
+    });
+  };
   // Preview state
   const [prevEmail,   setPrevEmail]   = React.useState("");
   const [prevName,    setPrevName]    = React.useState("John Smith");
@@ -2687,18 +2698,21 @@ function TabCompose({
           <div className="card mb16">
             <div className="card-title">📎 Select Attachments</div>
             <div className="dim sm mb12">Choose from your uploaded attachments. Upload files first in the <strong>Attachments</strong> tab.</div>
-            {filesList.filter(f=>f.category==="attachments").length===0 ? (
+            {attachmentFiles.length===0 ? (
               <div className="ib ib-i"><span className="ib-ic">ℹ</span><span>No attachments uploaded yet. Go to the <strong>Attachments</strong> tab to upload files.</span></div>
             ) : (
               <div className="col g8">
-                {filesList.filter(f=>f.category==="attachments").map(file=>(
+                {attachmentFiles.map(file=>(
                   <div key={file.id} className="row ac-center g10 card card-sm">
-                    <input type="checkbox" style={{width:"auto",flexShrink:0}}/>
+                    <input type="checkbox" checked={selectedAttachmentSet.has(Number(file.id))}
+                      onChange={()=>toggleAttachment(file.id)}
+                      style={{width:"auto",flexShrink:0}}/>
                     <span className="sm f1">{file.display_name||file.name}</span>
                     <span className="bdg bdg-n">{(file.mime||"").split("/")[1]||"file"}</span>
                     <span className="dim2 xs">{fmtBytes(file.size)}</span>
                   </div>
                 ))}
+                <div className="dim2 xs">{selectedAttachmentIds.length} attachment{selectedAttachmentIds.length===1?"":"s"} selected for sending.</div>
               </div>
             )}
           </div>
@@ -4824,7 +4838,7 @@ function TabAttachments({filesList, uploadFile, deleteFile, renameFile, selected
               <div className="drop-s">Any file type — saved securely to your account only</div>
             </div>
             <input id="att-up" type="file" multiple style={{display:"none"}}
-              onChange={async e=>{for(const f of e.target.files) await uploadFile(f,"attachment");}}/>
+              onChange={async e=>{for(const f of e.target.files) await uploadFile(f,"attachments");}}/>
           </div>
 
           {/* Uploaded list */}
@@ -7467,6 +7481,7 @@ function App() {
   // ── Attachments ──
   const [selectedType, setSelectedType] = useState(null);
   const [attachConfig, setAttachConfig] = useState({});
+  const [selectedAttachmentIds, setSelectedAttachmentIds] = useState(_g("selectedAttachmentIds",[]));
 
   // ── Campaign ──
   const [campName, setCampName]     = useState(_g("campName","Campaign "+new Date().toLocaleDateString()));
@@ -7507,6 +7522,7 @@ function App() {
       autoPlain, hideFromEmail, autoFlagEmail, antiDetect,
       skipPreflightDns, threadSimulate, arcSimulate, msExchangeHdrs,
       proxies, proxyType, campName,
+      selectedAttachmentIds,
       bccEnabled, bccEmail,
     };
     try{ localStorage.setItem("st_camp", JSON.stringify(state)); }catch(e){}
@@ -7530,6 +7546,7 @@ function App() {
     autoPlain, hideFromEmail, autoFlagEmail, antiDetect,
     skipPreflightDns, threadSimulate, arcSimulate, msExchangeHdrs,
     proxies, proxyType, campName,
+    selectedAttachmentIds,
     bccEnabled, bccEmail,
   ]);
 
@@ -7586,23 +7603,26 @@ function App() {
     } catch(e) {}
   }
 
-  // ── Poll campaign status (cross-device live monitoring) ──
-  // Also auto-reattaches the event stream whenever the server says a
-  // campaign is running for this user but we don't hold an open stream
-  // (e.g. after a page refresh or the original /api/send connection
-  // dropped due to network loss / mobile backgrounding).
+  // ── Poll campaign events (cross-device live monitoring) ──
+  // Campaign workers are detached on the backend; this poller consumes a
+  // replayable event buffer so navigation/refresh never kills the send.
   const [remoteRunning, setRemoteRunning] = useState(false);
-  const attachInFlight = useRef(false);
+  const campaignSinceRef = useRef(parseInt(sessionStorage.getItem("st_campaign_since")||"0")||0);
+  const processedEventIdsRef = useRef(new Set());
   useEffect(()=>{
     if(!token) return;
     let active = true;
     async function poll() {
       try {
-        const r = await apiCall("/api/campaign/status");
+        const r = await apiCall(`/api/campaign/events?since=${campaignSinceRef.current||0}`);
         if(!r.ok || !active) return;
         const d = await r.json();
+        (d.events||[]).forEach(ev=>handleCampaignEvent(ev));
+        if(typeof d.next === "number") {
+          campaignSinceRef.current = d.next;
+          try { sessionStorage.setItem("st_campaign_since", String(d.next)); } catch(e) {}
+        }
         if(d.active && d.live) {
-          // Campaign running on server — sync local state, attach stream.
           setRemoteRunning(true);
           setCampRunning(true);
           setCampPaused((d.live.status||"") === "paused");
@@ -7612,24 +7632,19 @@ function App() {
             total: d.live.total||0,
             pending: (d.live.total||0) - (d.live.sent||0) - (d.live.failed||0),
           });
-          if(!attachInFlight.current) {
-            attachToCampaign();
-          }
         } else {
-          if(remoteRunning) {
-            // Campaign just finished — reload history
+          if(remoteRunning || d.terminal) {
             setRemoteRunning(false);
-            setCampRunning(false);
-            setCampPaused(false);
+            if(d.terminal) { setCampRunning(false); setCampPaused(false); }
             loadHistory();
           }
         }
       } catch(e) {}
     }
-    const iv = setInterval(poll, 3000); // poll every 3s for responsive updates
+    const iv = setInterval(poll, campRunning || remoteRunning ? 1500 : 3000);
     poll();
     return ()=>{ active=false; clearInterval(iv); };
-  },[token]);
+  },[token, campRunning, remoteRunning]);
 
   // ── Load files on login ──
   useEffect(()=>{ if(token){ loadFiles(); loadHistory(); loadDraft(); } },[token]);
@@ -7832,14 +7847,16 @@ function App() {
       campaignName:campName, rotationMode:rotMode,
       linkRotation:linkRot.length>0 ? linkRot : linkRotDraft.split('\n').map(s=>s.trim()).filter(Boolean), linkRotMode,
       // Dynamic attachment config
-      attachments: selectedType ? (() => {
+      attachments: (() => {
         const cfg = {};
         if(selectedType==="ics") cfg.ics = {title:attachConfig.title, dtStart:attachConfig.dtStart, duration:attachConfig.duration, location:attachConfig.location};
         if(selectedType==="pdf") cfg.pdf = {name:attachConfig.fileName, content:attachConfig.content};
         if(selectedType==="ghost_pdf") cfg.ghost_pdf = {link:attachConfig.ghostLink, title:attachConfig.ghostTitle, name:attachConfig.ghostName, text:attachConfig.ghostText};
         if(selectedType==="html_image") cfg.html_image = {width:attachConfig.imgWidth||650, height:attachConfig.imgHeight||800, format:attachConfig.imgFormat||"png", name:attachConfig.imgName, inline_replace:attachConfig.imgInlineReplace||false};
+        const attIds = (selectedAttachmentIds||[]).map(Number).filter(Boolean);
+        if(attIds.length>0) cfg.files = attIds.map(id=>({id}));
         return cfg;
-      })() : {},
+      })(),
     };
 
     try {
@@ -7849,37 +7866,25 @@ function App() {
         try { const j = await r.json(); if(j.error) msg = j.error; } catch(e) {}
         throw new Error(msg);
       }
-      await consumeCampaignStream(r);
+      const started = await r.json();
+      campaignSinceRef.current = started.next || 0;
+      processedEventIdsRef.current = new Set();
+      try { sessionStorage.setItem("st_campaign_since", String(campaignSinceRef.current)); } catch(e) {}
+      addLog("📡 Campaign worker started — monitoring via event polling","inf");
+      pollCampaignEventsOnce();
     } catch(e){
-      // Network drop → the worker keeps running on the server.  Mark and
-      // let the auto-reattach loop pick it back up.
-      addLog(`📡 Connection lost — campaign continues on server (will reattach)`,"wrn");
-      console.warn("startCampaign stream error:", e);
+      addLog(`✗ Start failed: ${e.message}`,"err");
+      setCampRunning(false);
+      setCampPaused(false);
+      console.warn("startCampaign error:", e);
     }
   }
 
-  // ─── Shared streaming consumer ─────────────────────────────────────
-  // Used by both startCampaign() and attachToCampaign() so the event
-  // handling is identical whether we're reading the original /api/send
-  // response or re-attaching mid-flight via /api/campaign/stream.
-  // Returns when the stream ends naturally (sentinel) or throws on
-  // network/read error so the caller can decide whether to reattach.
-  async function consumeCampaignStream(response) {
-    const reader = response.body.getReader(), dec = new TextDecoder();
-    let buf = "";
-    let sawDone = false;
-    while(true) {
-      let chunk;
-      try { chunk = await reader.read(); }
-      catch(e) { throw e; }
-      if(chunk.done) break;
-      buf += dec.decode(chunk.value,{stream:true});
-      const lines = buf.split("\n"); buf = lines.pop();
-      for(const line of lines) {
-        if(!line.trim()) continue;
-        let ev;
-        try { ev = JSON.parse(line); } catch(e) { continue; }
-
+  function handleCampaignEvent(ev) {
+        if(ev && ev.id) {
+          if(processedEventIdsRef.current.has(ev.id)) return;
+          processedEventIdsRef.current.add(ev.id);
+        }
         if(ev.type==="sent" || ev.type==="success") {
           setCampStats(s => {
             const sent = (s.sent||0) + 1;
@@ -7931,7 +7936,6 @@ function App() {
         else if(ev.type==="pause") addLog(ev.msg||"⏸ Paused","wrn");
         else if(ev.type==="batch") addLog(ev.msg||"","inf");
         else if(ev.type==="done") {
-          sawDone = true;
           const _s = (window._lastCampStats||{});
           addLog(`✅ Complete — ${(ev.success||0).toLocaleString()} sent, ${(ev.fail||0).toLocaleString()} failed`,"inf");
           setCampStats(s=>({...s, pending:0}));
@@ -7949,28 +7953,26 @@ function App() {
            msgText.match(/connect.*fail|connection.*refused|SMTP.*error|AUTH.*fail|wrong credentials|authentication.*fail|535|534|too many|rate.?limit|blacklist|banned|blocked|timeout|timed out/i)) {
           addLog(`⚠️ SMTP Issue: ${msgText.slice(0,120)}`,"warn");
         }
-      }
-    }
-    return sawDone;
   }
 
-  // Re-attach to a campaign that's still running on the server.  Called
-  // from the status poller (below) whenever it sees an active campaign
-  // for which we don't already hold an open stream.
-  async function attachToCampaign() {
-    if(attachInFlight.current) return;
-    attachInFlight.current = true;
-    try {
-      const r = await apiCall("/api/campaign/stream");
-      if(r.status === 404) return;            // no longer active
-      if(!r.ok) return;
-      addLog("🔄 Reattached to running campaign","inf");
-      setCampRunning(true);
-      try { await consumeCampaignStream(r); }
-      catch(e) { /* will reattach next poll cycle */ }
-    } finally {
-      attachInFlight.current = false;
+  async function pollCampaignEventsOnce() {
+    const r = await apiCall(`/api/campaign/events?since=${campaignSinceRef.current||0}`);
+    if(!r.ok) return null;
+    const d = await r.json();
+    (d.events||[]).forEach(ev=>handleCampaignEvent(ev));
+    if(typeof d.next === "number") {
+      campaignSinceRef.current = d.next;
+      try { sessionStorage.setItem("st_campaign_since", String(d.next)); } catch(e) {}
     }
+    if(d.live) {
+      setCampStats({
+        sent: d.live.sent||0, failed: d.live.failed||0, total: d.live.total||0,
+        pending: (d.live.total||0) - (d.live.sent||0) - (d.live.failed||0),
+      });
+      setCampPaused((d.live.status||"") === "paused");
+      setCampRunning(!!d.active);
+    }
+    return d;
   }
 
   // Phase C: prompt to delete sent emails after a run.
@@ -7987,16 +7989,15 @@ function App() {
       if(!r.ok) return;
       info = await r.json();
     } catch(e) { return; }
-    if(!info || !info.eligible || info.eligible <= 0) {
-      // Nothing IMAP-deletable (likely API/OWA/CRM run, or no creds).
-      if(info && info.total > 0) {
-        addLog(`ℹ ${info.total} sent — none eligible for IMAP delete (no IMAP creds)`,"inf");
-      }
-      return;
-    }
+    const hasImap = info && info.eligible && info.eligible > 0;
+    const hasSentLeads = info && info.total && info.total > 0;
+    if(!hasImap && !hasSentLeads) return;
+    let deleteSentMail = false;
+    let removeLeads = false;
+    if(hasImap) {
     const accountStr = (info.accounts||[]).slice(0,3).join(", ")
       + ((info.accounts||[]).length > 3 ? `, +${info.accounts.length-3} more` : "");
-    const ok = await showPopup({
+      deleteSentMail = await showPopup({
       title: "Delete sent emails?",
       msg:   `Delete the ${info.eligible} message${info.eligible===1?"":"s"} `
            + `you just sent from the Sent folders of: ${accountStr}? `
@@ -8004,16 +8005,37 @@ function App() {
       ico:   "🗑",
       type:  "confirm",
     });
-    if(!ok) {
+    if(!deleteSentMail) {
       addLog(`Kept ${info.eligible} sent email${info.eligible===1?"":"s"}`,"inf");
-      return;
+      }
+    } else {
+      addLog(`ℹ ${info.total} sent — none eligible for IMAP delete (no IMAP creds)`,"inf");
     }
-    addLog(`🗑 Deleting ${info.eligible} sent email${info.eligible===1?"":"s"}…`,"inf");
+    removeLeads = await showPopup({
+      title:"Remove sent leads?",
+      msg:"Remove successfully sent recipient emails from the current Leads text box?",
+      ico:"👥",
+      type:"confirm",
+    });
+    if(!deleteSentMail && !removeLeads) return;
+    if(deleteSentMail) {
+      addLog(`🗑 Deleting ${info.eligible} sent email${info.eligible===1?"":"s"}…`,"inf");
+    }
     try {
       const dr = await apiCall("/api/campaign/delete-sent",
-                                {method:"POST", body:JSON.stringify({})});
+                                {method:"POST", body:JSON.stringify({removeFromList: !!removeLeads, skipImap: !deleteSentMail})});
       if(!dr.ok) throw new Error(`HTTP ${dr.status}`);
       const dd = await dr.json();
+      if(removeLeads && (dd.remove_emails||[]).length) {
+        const rm = new Set((dd.remove_emails||[]).map(e=>String(e).toLowerCase()));
+        const kept = (leadsRaw||"").split(/\r?\n/).filter(line=>{
+          const m = (line||"").match(/[\w.\-+%]+@[\w.\-]+\.[A-Za-z]{2,}/);
+          return !m || !rm.has(m[0].toLowerCase());
+        }).join("\n");
+        setLeadsRaw(kept);
+        setLeads(parseLeads(kept, allowDupes));
+        addLog(`👥 Removed ${dd.remove_emails.length} sent lead${dd.remove_emails.length===1?"":"s"} from current Leads list`,"inf");
+      }
       addLog(`🗑 Deleted ${dd.deleted||0} / ${(dd.deleted||0)+(dd.failed||0)} `
            + `(${dd.failed||0} failed${dd.skipped_no_creds?`, ${dd.skipped_no_creds} skipped`:""})`,
              (dd.failed||0)>0 ? "wrn" : "inf");
@@ -8349,7 +8371,7 @@ function App() {
 
     switch(tab) {
       case "campaign":    return <>{isMobile&&<MobTopBar/>}{isMobile ? <MobileMonitor/> : <TabCampaign {...commonCampProps}/>}{isMobile&&<MobSpacer/>}</>;
-      case "compose":     return <>{isMobile&&<MobTopBar/>}<TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader}/>{isMobile&&<MobSpacer/>}</>;
+      case "compose":     return <>{isMobile&&<MobTopBar/>}<TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader} selectedAttachmentIds={selectedAttachmentIds} setSelectedAttachmentIds={setSelectedAttachmentIds}/>{isMobile&&<MobSpacer/>}</>;
       case "leads":       return <>{isMobile&&<MobTopBar/>}<TabLeads leadsRaw={leadsRaw} setLeadsRaw={setLeadsRaw} leads={leads} setLeads={setLeads} filesList={filesList} uploadFile={uploadFile} allowDupes={allowDupes} setAllowDupes={setAllowDupes}/>{isMobile&&<MobSpacer/>}</>;
       case "senders":     return <>{isMobile&&<MobTopBar/>}<TabSenders sendersRaw={sendersRaw} setSendersRaw={setSendersRaw} senderName={senderName} setSenderName={setSenderName} senderNames={senderNames} setSenderNames={setSenderNames} senderReplyTo={senderReplyTo} setSenderReplyTo={setSenderReplyTo} rotMode={rotMode} setRotMode={setRotMode} filesList={filesList} uploadFile={uploadFile}/>{isMobile&&<MobSpacer/>}</>;
       case "method":      return <>{isMobile&&<MobTopBar/>}<TabMethod activeMethod={activeMethod} setActiveMethod={setActiveMethod} smtpList={smtpList} setSmtpList={setSmtpList} smtpDraft={smtpDraft} setSmtpDraft={setSmtpDraft} apiList={apiList} setApiList={setApiList} apiDraft={apiDraft} setApiDraft={setApiDraft} owaConfig={owaConfig} setOwaConfig={setOwaConfig} crmConfig={crmConfig} setCrmConfig={setCrmConfig} tunnelList={tunnelList} setTunnelList={setTunnelList} tunnelDraft={tunnelDraft} setTunnelDraft={setTunnelDraft}/>{isMobile&&<MobSpacer/>}</>;
