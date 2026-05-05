@@ -317,6 +317,72 @@ def _sleep_interruptible(seconds: float, uid) -> bool:
     return True
 
 
+def _send_test_email(
+    *,
+    opts,
+    i: int,
+    test_email_addr: str,
+    resolved_sender: dict,
+    servers: list,
+    srv_rot: str,
+    sender_rot: str,
+    pool,
+    mx_ctx,
+    dead_proxies: set,
+    resolved_html: str,
+    resolved_plain: str,
+    test_no: int,
+):
+    """Send an out-of-band deliverability test copy and return a UI event.
+
+    Test emails intentionally do not mutate campaign sent/failed counters; they
+    are operator instrumentation only.
+    """
+    try:
+        test_lead = {"email": test_email_addr, "name": "Deliverability Test", "company": ""}
+        test_srv = _pick(servers, srv_rot, i) if servers else {}
+        test_subject = resolve_tags(
+            _pick(opts.subjects, sender_rot, i) or "",
+            build_context(
+                lead=test_lead,
+                sender=resolved_sender,
+                subject="",
+                counter=test_no,
+                links_cfg=opts.links_cfg,
+            ),
+        )
+        ok, err, via = _send_one(
+            opts=opts,
+            i=i,
+            lead=test_lead,
+            sender=resolved_sender,
+            server=test_srv,
+            subject=test_subject,
+            html=resolved_html,
+            plain=resolved_plain,
+            pool=pool,
+            mx_ctx=mx_ctx,
+            dead_proxies=dead_proxies,
+        )
+        return {
+            "type": "test",
+            "email": test_email_addr,
+            "ok": bool(ok),
+            "msg": err if not ok else f"via {via}",
+            "from": resolved_sender.get("fromEmail", ""),
+            "test_no": test_no,
+        }
+    except Exception as exc:
+        return {
+            "type": "test",
+            "email": test_email_addr,
+            "ok": False,
+            "msg": f"test send error: {exc}",
+            "from": resolved_sender.get("fromEmail", "") if isinstance(resolved_sender, dict) else "",
+            "test_no": test_no,
+        }
+
+
 def _parse_smtp_error(error: Exception, lead_email: str = "") -> str:
     err = str(error).lower()
     domain = lead_email.split("@")[-1] if "@" in lead_email else ""
@@ -2079,30 +2145,15 @@ def run_campaign(opts: CampaignOptions) -> Generator:
                         _since_last_test += 1
                         if _since_last_test >= test_every_n:
                             _since_last_test = 0
-                            try:
-                                _test_lead = {"email": test_email_addr,
-                                              "name":  "Deliverability Test",
-                                              "company": ""}
-                                _test_srv = _pick(servers, srv_rot, i) if servers else {}
-                                _t_ok, _t_err, _t_via = _send_one(
-                                    opts=opts, i=i, lead=_test_lead,
-                                    sender=resolved_sender,
-                                    server=_test_srv,
-                                    subject=resolve_tags(_pick(opts.subjects, sender_rot, i) or "",
-                                                          build_context(lead=_test_lead, sender=resolved_sender,
-                                                                        subject="", counter=_tests_sent+1,
-                                                                        links_cfg=opts.links_cfg)),
-                                    html=resolved_html, plain=resolved_plain,
-                                    pool=pool, mx_ctx=mx_ctx,
-                                    dead_proxies=_dead_proxies,
-                                )
-                            except Exception as _te:
-                                _t_ok, _t_err, _t_via = False, f"test send error: {_te}", ""
                             _tests_sent += 1
-                            yield {"type":"test","email":test_email_addr,"ok":bool(_t_ok),
-                                   "msg": _t_err if not _t_ok else f"via {_t_via}",
-                                   "from": resolved_sender.get("fromEmail",""),
-                                   "test_no": _tests_sent}
+                            yield _send_test_email(
+                                opts=opts, i=i, test_email_addr=test_email_addr,
+                                resolved_sender=resolved_sender,
+                                servers=servers, srv_rot=srv_rot, sender_rot=sender_rot,
+                                pool=pool, mx_ctx=mx_ctx, dead_proxies=_dead_proxies,
+                                resolved_html=resolved_html, resolved_plain=resolved_plain,
+                                test_no=_tests_sent,
+                            )
 
                     if sends_per_sec > 0 and not _sleep_interruptible(1.0/sends_per_sec, campaign_uid):
                         stopped = True
