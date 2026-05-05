@@ -5527,6 +5527,14 @@ function TabTools({filesList, uploadFile, setLeadsRaw, setLeads, setTab}) {
   const [s3Loading, setS3Loading]       = useState(false);
   const [s3Results, setS3Results]       = useState([]);
 
+  // ── Lambda Redirect Script Generator ──
+  const [lambdaTarget, setLambdaTarget] = useState("https://example.com");
+  const [lambdaStatus, setLambdaStatus] = useState(302);
+  const [lambdaPreservePath, setLambdaPreservePath] = useState(true);
+  const [lambdaPreserveQuery, setLambdaPreserveQuery] = useState(true);
+  const [lambdaCache, setLambdaCache] = useState("no-store");
+  const [lambdaMappings, setLambdaMappings] = useState('{\n  "/promo": "https://example.com/promo",\n  "docs/*": "https://example.com/docs"\n}');
+
   // ── ESP Checker ──
   const [espKey, setEspKey]         = useState("");
   const [espSecret, setEspSecret]   = useState("");
@@ -5750,6 +5758,86 @@ function TabTools({filesList, uploadFile, setLeadsRaw, setLeads, setTab}) {
       if(d.error) setS3Results([{error:d.error}]);
     }catch(e){setS3Results([{error:e.message}]);}
     setS3Loading(false);
+  }
+
+  function buildLambdaRedirectScript() {
+    const target = (lambdaTarget || "https://example.com").replace(/\\/g,"\\\\").replace(/"/g,'\\"');
+    const mappings = (lambdaMappings || "{}").replace(/\\/g,"\\\\").replace(/'''/g,"\\'\\'\\'");
+    return `import json
+from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
+
+# Advanced AWS Lambda Function URL redirector.
+# Supports path/S3-key mappings, wildcard prefix mappings, query preservation,
+# UTM/default query injection, and safe Location generation.
+
+DEFAULT_TARGET = "${target}"
+STATUS_CODE = ${parseInt(lambdaStatus)||302}  # 301, 302, 307, 308
+PRESERVE_PATH = ${lambdaPreservePath ? "True" : "False"}
+PRESERVE_QUERY = ${lambdaPreserveQuery ? "True" : "False"}
+CACHE_CONTROL = "${lambdaCache === "cache" ? "public, max-age=3600" : "no-cache, no-store, must-revalidate"}"
+
+# Exact keys start with /; wildcard prefix mappings end in *.
+# Examples:
+#   "/promo": "https://landing.example/promo"
+#   "docs/*": "https://landing.example/docs"
+KEY_MAP = json.loads(r'''${mappings}''')
+
+DEFAULT_APPEND_QUERY = {
+    # "utm_source": "lambda",
+    # "utm_medium": "redirect",
+}
+
+def _event_path(event):
+    return event.get("rawPath") or event.get("path") or "/"
+
+def _event_query(event):
+    if event.get("rawQueryString"):
+        return dict(parse_qsl(event["rawQueryString"], keep_blank_values=True))
+    return event.get("queryStringParameters") or {}
+
+def _pick_target(path):
+    key = path.lstrip("/")
+    if path in KEY_MAP:
+        return KEY_MAP[path], ""
+    if key in KEY_MAP:
+        return KEY_MAP[key], ""
+    for pattern, dest in KEY_MAP.items():
+        if pattern.endswith("*"):
+            prefix = pattern[:-1]
+            clean_prefix = prefix.lstrip("/")
+            if path.startswith(prefix) or key.startswith(clean_prefix):
+                suffix = path[len(prefix):] if path.startswith(prefix) else key[len(clean_prefix):]
+                return dest.rstrip("/"), suffix.lstrip("/")
+    return DEFAULT_TARGET, path.lstrip("/")
+
+def _join_url(base, suffix, query_params):
+    parts = list(urlsplit(base))
+    if PRESERVE_PATH and suffix:
+        parts[2] = (parts[2].rstrip("/") + "/" + suffix).replace("//", "/")
+    existing = dict(parse_qsl(parts[3], keep_blank_values=True))
+    if PRESERVE_QUERY:
+        existing.update(query_params)
+    existing.update(DEFAULT_APPEND_QUERY)
+    parts[3] = urlencode(existing, doseq=True)
+    return urlunsplit(parts)
+
+def lambda_handler(event, context):
+    path = _event_path(event)
+    query = _event_query(event)
+    if path in ("/health", "/favicon.ico"):
+        return {"statusCode": 204, "headers": {"Cache-Control": "no-store"}, "body": ""}
+    target, suffix = _pick_target(path)
+    redirect_url = _join_url(target, suffix, query)
+    return {
+        "statusCode": STATUS_CODE,
+        "headers": {
+            "Location": redirect_url,
+            "Cache-Control": CACHE_CONTROL,
+            "Content-Type": "application/json",
+        },
+        "body": json.dumps({"redirect": redirect_url}),
+    }
+`;
   }
 
   const PROVIDER_LABELS = {
