@@ -6318,6 +6318,64 @@ def lambda_handler(event, context):
               </div>
             )}
           </div>
+
+          <div className="card mt16">
+            <div className="card-title">⚡ Lambda Redirect Script</div>
+            <Info type="i">Generate a Lambda Function URL redirector. It preserves paths/query strings, supports S3-key/path mappings, and can be copied directly into AWS Lambda.</Info>
+            <div className="g3 mt12">
+              <div>
+                <label className="lbl">Default Target URL</label>
+                <input value={lambdaTarget} onChange={e=>setLambdaTarget(e.target.value)}
+                  placeholder="https://example.com" style={{fontSize:14,padding:"10px 12px"}}/>
+              </div>
+              <div>
+                <label className="lbl">Status Code</label>
+                <select value={lambdaStatus} onChange={e=>setLambdaStatus(parseInt(e.target.value)||302)}
+                  style={{fontSize:14,padding:"10px 12px"}}>
+                  <option value={301}>301 Permanent</option>
+                  <option value={302}>302 Temporary</option>
+                  <option value={307}>307 Temporary (method-preserving)</option>
+                  <option value={308}>308 Permanent (method-preserving)</option>
+                </select>
+              </div>
+              <div>
+                <label className="lbl">Cache Control</label>
+                <select value={lambdaCache} onChange={e=>setLambdaCache(e.target.value)}
+                  style={{fontSize:14,padding:"10px 12px"}}>
+                  <option value="no-store">No cache</option>
+                  <option value="cache">Cache 1 hour</option>
+                </select>
+              </div>
+            </div>
+            <div className="row g16 mt12" style={{flexWrap:"wrap"}}>
+              <Tog checked={lambdaPreservePath} onChange={setLambdaPreservePath}
+                label="Preserve path / S3 key" desc="Append the incoming path/key to the target URL"/>
+              <Tog checked={lambdaPreserveQuery} onChange={setLambdaPreserveQuery}
+                label="Preserve query string" desc="Forward incoming query parameters to the target URL"/>
+            </div>
+            <div className="mt12">
+              <label className="lbl">Path / S3 Key Mappings JSON</label>
+              <textarea value={lambdaMappings} onChange={e=>setLambdaMappings(e.target.value)}
+                style={{minHeight:95,fontFamily:"var(--font-mono)",fontSize:12}}
+                placeholder={'{"/promo":"https://example.com/promo","docs/*":"https://example.com/docs"}'}/>
+              <div className="dim2 xs mt4">Exact keys can include a leading slash. Wildcards ending in <code>*</code> preserve the suffix.</div>
+            </div>
+            <div className="row g8 mt12" style={{flexWrap:"wrap"}}>
+              <button className="btn btn-ok btn-sm" onClick={()=>copyToClipboard(buildLambdaRedirectScript())}>📋 Copy Script</button>
+              <button className="btn btn-g btn-sm" onClick={()=>{
+                const a=document.createElement("a");
+                a.href="data:text/x-python;charset=utf-8,"+encodeURIComponent(buildLambdaRedirectScript());
+                a.download="lambda_redirect.py"; a.click();
+              }}>💾 Download lambda_redirect.py</button>
+              <button className="btn btn-g btn-sm" onClick={()=>copyToClipboard(JSON.stringify({
+                rawPath:"/promo/customer-123",
+                rawQueryString:"utm_campaign=test&id=42",
+                requestContext:{http:{method:"GET"}}
+              }, null, 2))}>🧪 Copy Test Event</button>
+            </div>
+            <textarea readOnly value={buildLambdaRedirectScript()}
+              style={{marginTop:12,minHeight:360,fontFamily:"var(--font-mono)",fontSize:11,lineHeight:1.45}}/>
+          </div>
         </div>
       )}
 
