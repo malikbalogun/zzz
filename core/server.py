@@ -1561,6 +1561,11 @@ if(code && window.opener){{
             uid = sess["user_id"]
             with active_campaigns_lock:
                 records = list(CAMPAIGN_SENT_RECORDS.get(uid, []))
+                ev_buf = CAMPAIGN_EVENTS.get(uid) or {}
+                try:
+                    sent_leads = set(ev_buf.get("sent_leads") or set())
+                except Exception:
+                    sent_leads = set()
             eligible = sum(1 for r in records
                            if r.get("message_id") and r.get("sender_email")
                            and r.get("imap_host") and r.get("sender_pass"))
@@ -1571,6 +1576,8 @@ if(code && window.opener){{
                 "eligible": eligible,
                 "skipped":  max(0, len(records) - eligible),
                 "accounts": unique_accounts,
+                "sent_leads": len(sent_leads),
+                "emails": sorted(sent_leads),
             })
 
         elif p.startswith("/api/campaign/events"):
