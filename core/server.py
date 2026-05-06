@@ -146,6 +146,14 @@ CAMPAIGN_CONTROLS: dict = {}  # user_id → {paused: bool, abort: bool, stats: d
 # in the worker's finally clause.
 CAMPAIGN_QUEUES: dict = {}     # user_id → queue.Queue
 CAMPAIGN_THREADS: dict = {}    # user_id → threading.Thread
+# Per-user index-based event buffer for the polling consumer
+# (/api/campaign/events?since=N).  Each entry is the same event dict the
+# worker pushes onto CAMPAIGN_QUEUES; index N is the position in the list.
+# Buffer is replaced fresh on every /api/send (new run) and capped to
+# CAMPAIGN_BUFFER_MAX entries to bound memory on huge campaigns.
+CAMPAIGN_EVENT_BUFFER: dict = {}   # user_id → list[event_dict]
+CAMPAIGN_BUFFER_LOCK: dict  = {}   # user_id → threading.Lock
+CAMPAIGN_BUFFER_MAX = 20000
 # Per-user list of records describing successful sends in the active run.
 # Used by /api/campaign/delete-sent to IMAP-delete from sender mailboxes.
 CAMPAIGN_SENT_RECORDS: dict = {}  # user_id → list[ {message_id, sender_email, sender_pass, imap_host, imap_port, ts, ssl} ]
@@ -180,7 +188,19 @@ def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, start
     last_tg_update = campaign_start_ts
     q = CAMPAIGN_QUEUES.get(uid)
 
+    buf_lock = CAMPAIGN_BUFFER_LOCK.get(uid)
+
     def _put(ev):
+        # Append to the index-based buffer first so polling consumers see
+        # every event even if the bounded queue ever drops one.
+        try:
+            if buf_lock is not None:
+                with buf_lock:
+                    lst = CAMPAIGN_EVENT_BUFFER.setdefault(uid, [])
+                    if len(lst) < CAMPAIGN_BUFFER_MAX:
+                        lst.append(ev)
+        except Exception:
+            pass
         try:
             if q is not None:
                 q.put(ev, timeout=2)
@@ -1326,6 +1346,58 @@ if(code && window.opener){{
             except Exception as e:
                 self._json(500, {"error": str(e)})
 
+        elif p.startswith("/api/campaign/events"):
+            # Polling consumer for the per-user campaign event buffer.
+            # GET /api/campaign/events?since=N  → returns events with
+            # index >= N, plus the next index the client should ask for.
+            # Survives navigation: the worker keeps appending to the
+            # buffer regardless of whether any client is reading.
+            #
+            # Response: { "events": [...], "next": int, "active": bool,
+            #             "stats": {sent,failed,total,...}, "done": bool }
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            try:
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                since = int(qs.get("since", ["0"])[0])
+                if since < 0: since = 0
+            except Exception:
+                since = 0
+            with active_campaigns_lock:
+                active   = ACTIVE_CAMPAIGNS.get(uid, 0) > 0
+                live     = LIVE_CAMPAIGN_STATS.get(uid)
+                buf_lock = CAMPAIGN_BUFFER_LOCK.get(uid)
+            events = []
+            next_idx = since
+            done     = False
+            if buf_lock is not None:
+                with buf_lock:
+                    lst = CAMPAIGN_EVENT_BUFFER.get(uid, [])
+                    total = len(lst)
+                    if since < total:
+                        events   = lst[since:]
+                        next_idx = total
+                    else:
+                        next_idx = total
+                # The worker emits {"type":"done"} as the final event
+                # before the sentinel — flag it so the UI can stop polling.
+                for ev in events:
+                    if isinstance(ev, dict) and ev.get("type") == "done":
+                        done = True
+                        break
+                # If no buffer at all (no run ever) → not active, no events.
+            else:
+                # No active or recent run for this uid.
+                pass
+            self._json(200, {
+                "events": events,
+                "next":   next_idx,
+                "active": bool(active),
+                "live":   live,
+                "done":   done,
+            })
+
         elif p == "/api/campaign/stream":
             # Re-attach to a running campaign's event stream.  Used by the
             # browser when reopening / refreshing after the original /api/send
@@ -1577,6 +1649,9 @@ if(code && window.opener){{
                 # never blocks the campaign loop in practice; if it does,
                 # the worker uses put(timeout=2) and drops the event.
                 CAMPAIGN_QUEUES[uid] = queue.Queue(maxsize=4096)
+                # Fresh index-based buffer for /api/campaign/events polling.
+                CAMPAIGN_EVENT_BUFFER[uid] = []
+                CAMPAIGN_BUFFER_LOCK[uid]  = threading.Lock()
 
             run_id = None
             try:
@@ -1611,16 +1686,17 @@ if(code && window.opener){{
                 CAMPAIGN_THREADS[uid] = worker
             worker.start()
 
-            # Tail the queue back to the client.  If the client drops mid-tail
-            # the worker continues running; the user can re-attach via
-            # /api/campaign/stream.
-            self._stream_start()
-            try:
-                q = CAMPAIGN_QUEUES.get(uid)
-                if q is not None:
-                    self._tail_campaign_queue(uid, q)
-            finally:
-                self._stream_end()
+            # Return immediately — the client tails progress via the
+            # GET /api/campaign/events?since=N polling endpoint.  This
+            # makes the campaign survive page refresh / navigation
+            # naturally without needing a long-lived chunked HTTP stream.
+            self._json(200, {
+                "ok":     True,
+                "run_id": run_id,
+                "total":  total_count,
+                "name":   camp_name,
+                "started_at": started_at,
+            })
 
         # ── Campaign control (UI/API): pause/resume/stop/stats ─────────────
         elif p == "/api/campaign/control":

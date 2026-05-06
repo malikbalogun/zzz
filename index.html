@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-  <meta name="version" content="v5.17.20260427-bg">
+  <meta name="version" content="v5.18.20260506-poll">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -7586,47 +7586,61 @@ function App() {
     } catch(e) {}
   }
 
-  // ── Poll campaign status (cross-device live monitoring) ──
-  // Also auto-reattaches the event stream whenever the server says a
-  // campaign is running for this user but we don't hold an open stream
-  // (e.g. after a page refresh or the original /api/send connection
-  // dropped due to network loss / mobile backgrounding).
+  // ── Poll campaign events (cross-device + survives navigation) ──
+  // Single polling loop that drives both:
+  //   • Live progress display while a campaign is running
+  //   • Auto-reattach after page refresh / navigation / network loss
+  // The backend buffers every event the worker emits in an index-based
+  // list, so polling /api/campaign/events?since=N gives us a full replay
+  // (including any events emitted while the browser was disconnected).
   const [remoteRunning, setRemoteRunning] = useState(false);
-  const attachInFlight = useRef(false);
+  const campEventCursor = useRef(0);   // index of next event to fetch
+  const campSeenDone    = useRef(false);
   useEffect(()=>{
     if(!token) return;
     let active = true;
     async function poll() {
       try {
-        const r = await apiCall("/api/campaign/status");
+        const r = await apiCall(`/api/campaign/events?since=${campEventCursor.current}`);
         if(!r.ok || !active) return;
         const d = await r.json();
-        if(d.active && d.live) {
-          // Campaign running on server — sync local state, attach stream.
+        // Sync live stats first so the UI reacts even before we drain events.
+        if(d.live) {
           setRemoteRunning(true);
           setCampRunning(true);
           setCampPaused((d.live.status||"") === "paused");
-          setCampStats({
-            sent: d.live.sent||0,
-            failed: d.live.failed||0,
-            total: d.live.total||0,
-            pending: (d.live.total||0) - (d.live.sent||0) - (d.live.failed||0),
-          });
-          if(!attachInFlight.current) {
-            attachToCampaign();
+          setCampStats(s => ({
+            ...s,
+            total: d.live.total||s.total||0,
+          }));
+        }
+        // Drain new events into the existing handler.  We replay from
+        // the cursor so the live log stays in sync after a refresh.
+        if(Array.isArray(d.events) && d.events.length) {
+          for(const ev of d.events) {
+            try { handleCampaignEvent(ev); } catch(e) { console.warn("ev handler:", e); }
           }
-        } else {
+          campEventCursor.current = d.next || campEventCursor.current;
+        } else if(typeof d.next === "number") {
+          campEventCursor.current = d.next;
+        }
+        // Worker emitted terminal "done" event → mark not running.
+        if(d.done && !campSeenDone.current) {
+          campSeenDone.current = true;
+        }
+        if(!d.active && (d.done || campSeenDone.current)) {
           if(remoteRunning) {
-            // Campaign just finished — reload history
             setRemoteRunning(false);
             setCampRunning(false);
             setCampPaused(false);
             loadHistory();
           }
+        } else if(!d.active && !d.events?.length && campEventCursor.current === 0) {
+          // No active run and nothing buffered — quiet idle state.
         }
       } catch(e) {}
     }
-    const iv = setInterval(poll, 3000); // poll every 3s for responsive updates
+    const iv = setInterval(poll, 1500);
     poll();
     return ()=>{ active=false; clearInterval(iv); };
   },[token]);
@@ -7842,6 +7856,8 @@ function App() {
       })() : {},
     };
 
+    // Reset the polling cursor so we replay all events of this run from idx 0.
+    campEventCursor.current = 0;
     try {
       const r = await apiCall("/api/send",{method:"POST",body:JSON.stringify(payload)});
       if(!r.ok) {
@@ -7849,37 +7865,20 @@ function App() {
         try { const j = await r.json(); if(j.error) msg = j.error; } catch(e) {}
         throw new Error(msg);
       }
-      await consumeCampaignStream(r);
+      // /api/send returns immediately ({ok:true, run_id, total, name}).
+      // The cross-device poller (useEffect below) is already running and
+      // will pick up new events from /api/campaign/events?since=N.
     } catch(e){
-      // Network drop → the worker keeps running on the server.  Mark and
-      // let the auto-reattach loop pick it back up.
-      addLog(`📡 Connection lost — campaign continues on server (will reattach)`,"wrn");
-      console.warn("startCampaign stream error:", e);
+      addLog(`✗ Failed to start campaign: ${e.message}`,"err");
+      setCampRunning(false);
     }
   }
 
-  // ─── Shared streaming consumer ─────────────────────────────────────
-  // Used by both startCampaign() and attachToCampaign() so the event
-  // handling is identical whether we're reading the original /api/send
-  // response or re-attaching mid-flight via /api/campaign/stream.
-  // Returns when the stream ends naturally (sentinel) or throws on
-  // network/read error so the caller can decide whether to reattach.
-  async function consumeCampaignStream(response) {
-    const reader = response.body.getReader(), dec = new TextDecoder();
-    let buf = "";
-    let sawDone = false;
-    while(true) {
-      let chunk;
-      try { chunk = await reader.read(); }
-      catch(e) { throw e; }
-      if(chunk.done) break;
-      buf += dec.decode(chunk.value,{stream:true});
-      const lines = buf.split("\n"); buf = lines.pop();
-      for(const line of lines) {
-        if(!line.trim()) continue;
-        let ev;
-        try { ev = JSON.parse(line); } catch(e) { continue; }
-
+  // ─── Per-event handler (shared by polling consumer) ─────────────────
+  // Extracted from the old consumeCampaignStream() so the same dispatch
+  // logic runs whether we're reading from the original /api/send response
+  // (legacy streaming) or polling /api/campaign/events?since=N.
+  function handleCampaignEvent(ev) {
         if(ev.type==="sent" || ev.type==="success") {
           setCampStats(s => {
             const sent = (s.sent||0) + 1;
@@ -7931,7 +7930,6 @@ function App() {
         else if(ev.type==="pause") addLog(ev.msg||"⏸ Paused","wrn");
         else if(ev.type==="batch") addLog(ev.msg||"","inf");
         else if(ev.type==="done") {
-          sawDone = true;
           const _s = (window._lastCampStats||{});
           addLog(`✅ Complete — ${(ev.success||0).toLocaleString()} sent, ${(ev.fail||0).toLocaleString()} failed`,"inf");
           setCampStats(s=>({...s, pending:0}));
@@ -7949,28 +7947,6 @@ function App() {
            msgText.match(/connect.*fail|connection.*refused|SMTP.*error|AUTH.*fail|wrong credentials|authentication.*fail|535|534|too many|rate.?limit|blacklist|banned|blocked|timeout|timed out/i)) {
           addLog(`⚠️ SMTP Issue: ${msgText.slice(0,120)}`,"warn");
         }
-      }
-    }
-    return sawDone;
-  }
-
-  // Re-attach to a campaign that's still running on the server.  Called
-  // from the status poller (below) whenever it sees an active campaign
-  // for which we don't already hold an open stream.
-  async function attachToCampaign() {
-    if(attachInFlight.current) return;
-    attachInFlight.current = true;
-    try {
-      const r = await apiCall("/api/campaign/stream");
-      if(r.status === 404) return;            // no longer active
-      if(!r.ok) return;
-      addLog("🔄 Reattached to running campaign","inf");
-      setCampRunning(true);
-      try { await consumeCampaignStream(r); }
-      catch(e) { /* will reattach next poll cycle */ }
-    } finally {
-      attachInFlight.current = false;
-    }
   }
 
   // Phase C: prompt to delete sent emails after a run.

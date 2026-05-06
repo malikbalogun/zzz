@@ -28,12 +28,14 @@ import json
 import logging
 import mimetypes
 import os
+import queue
 import re
 import secrets
 import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -136,8 +138,210 @@ except Exception:
 SESSIONS: dict       = {}   # token → {user_id, username, role, expires}
 ACTIVE_CAMPAIGNS: dict = {}  # user_id → count of running campaigns (thread-safe via lock)
 LIVE_CAMPAIGN_STATS: dict = {}  # user_id → {sent, failed, total, name, status, started_at}
+CAMPAIGN_CONTROLS: dict = {}  # user_id → {paused: bool, abort: bool, stats: dict}
+# Per-user event queues for true background sending. /api/send and
+# /api/campaign/stream tail events from this queue. Queue lives until
+# the worker thread emits its terminal {"type":"done"} event AND no
+# client has been actively reading for a short while; cleanup happens
+# in the worker's finally clause.
+CAMPAIGN_QUEUES: dict = {}     # user_id → queue.Queue
+CAMPAIGN_THREADS: dict = {}    # user_id → threading.Thread
+# Per-user index-based event buffer for the polling consumer
+# (/api/campaign/events?since=N).  Each entry is the same event dict the
+# worker pushes onto CAMPAIGN_QUEUES; index N is the position in the list.
+# Buffer is replaced fresh on every /api/send (new run) and capped to
+# CAMPAIGN_BUFFER_MAX entries to bound memory on huge campaigns.
+CAMPAIGN_EVENT_BUFFER: dict = {}   # user_id → list[event_dict]
+CAMPAIGN_BUFFER_LOCK: dict  = {}   # user_id → threading.Lock
+CAMPAIGN_BUFFER_MAX = 20000
+# Per-user list of records describing successful sends in the active run.
+# Used by /api/campaign/delete-sent to IMAP-delete from sender mailboxes.
+CAMPAIGN_SENT_RECORDS: dict = {}  # user_id → list[ {message_id, sender_email, sender_pass, imap_host, imap_port, ts, ssl} ]
+_INBOX_RUNS: dict    = {}   # run_id → {"done": bool, "results": [...]}
 active_campaigns_lock = Lock()
 LOGIN_ATTEMPTS: dict = {}   # ip → {count, last_attempt}
+
+# Sentinel pushed to per-user queue to mark stream end.
+_CAMP_STREAM_END = object()
+
+
+def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, started_at):
+    """Run a campaign in a background thread.
+
+    Pushes every event from `process_campaign(data)` onto the per-user
+    queue and updates LIVE_CAMPAIGN_STATS / CAMPAIGN_CONTROLS so polling
+    clients (and re-attached streams) see live progress even when no
+    HTTP client is connected.
+
+    Honors pause/abort flags from CAMPAIGN_CONTROLS.  All finalization
+    (DB row, Telegram done message, ACTIVE_CAMPAIGNS decrement) happens
+    in the `finally` block so it always runs — even if the user closes
+    their browser or the worker crashes mid-stream.
+    """
+    method = data.get("method", "smtp")
+    sent_count = 0
+    failed_count = 0
+    proxy_dead_count = 0
+    stopped = False
+    emitted_done = False
+    campaign_start_ts = time.time()
+    last_tg_update = campaign_start_ts
+    q = CAMPAIGN_QUEUES.get(uid)
+
+    buf_lock = CAMPAIGN_BUFFER_LOCK.get(uid)
+
+    def _put(ev):
+        # Append to the index-based buffer first so polling consumers see
+        # every event even if the bounded queue ever drops one.
+        try:
+            if buf_lock is not None:
+                with buf_lock:
+                    lst = CAMPAIGN_EVENT_BUFFER.setdefault(uid, [])
+                    if len(lst) < CAMPAIGN_BUFFER_MAX:
+                        lst.append(ev)
+        except Exception:
+            pass
+        try:
+            if q is not None:
+                q.put(ev, timeout=2)
+        except Exception:
+            pass
+
+    try:
+        data["_uid"] = uid
+        # Reset sent records list for this run so /api/campaign/delete-sent
+        # only operates on the messages from the most recent run.
+        with active_campaigns_lock:
+            CAMPAIGN_SENT_RECORDS[uid] = []
+
+        campaign_iter = iter(process_campaign(data))
+        while True:
+            with active_campaigns_lock:
+                ctrl = CAMPAIGN_CONTROLS.get(uid) or {}
+                is_paused = bool(ctrl.get("paused", False))
+                is_abort = bool(ctrl.get("abort", False))
+            if is_abort:
+                stopped = True
+                try:
+                    campaign_iter.close()
+                except Exception:
+                    pass
+                _put({"type": "done", "stopped": True,
+                      "msg": "⛔ Campaign stopped by user",
+                      "success": sent_count, "fail": failed_count, "total": total_count})
+                emitted_done = True
+                break
+            if is_paused:
+                with active_campaigns_lock:
+                    if uid in LIVE_CAMPAIGN_STATS:
+                        LIVE_CAMPAIGN_STATS[uid]["status"] = "paused"
+                time.sleep(0.25)
+                continue
+            with active_campaigns_lock:
+                if uid in LIVE_CAMPAIGN_STATS:
+                    LIVE_CAMPAIGN_STATS[uid]["status"] = "running"
+            try:
+                event = next(campaign_iter)
+            except StopIteration:
+                break
+            etype = event.get("type")
+            if etype == "success":
+                sent_count += 1
+                # Track sent record for optional IMAP delete-sent later.
+                try:
+                    rec = {
+                        "message_id":   event.get("message_id") or "",
+                        "sender_email": event.get("from") or "",
+                        "sender_pass":  event.get("smtp_pass") or "",
+                        "imap_host":    event.get("imap_host") or "",
+                        "imap_port":    int(event.get("imap_port") or 993),
+                        "ssl":          bool(event.get("imap_ssl", True)),
+                        "ts":           int(time.time()),
+                    }
+                    if rec["message_id"] and rec["sender_email"]:
+                        with active_campaigns_lock:
+                            lst = CAMPAIGN_SENT_RECORDS.setdefault(uid, [])
+                            if len(lst) < 50000:
+                                lst.append(rec)
+                except Exception:
+                    pass
+            elif etype == "error":
+                failed_count += 1
+            elif etype == "proxy_dead":
+                proxy_dead_count += 1
+            elif etype == "done":
+                stopped = event.get("stopped", False)
+                emitted_done = True
+            if etype in ("success", "error", "done"):
+                with active_campaigns_lock:
+                    if uid in LIVE_CAMPAIGN_STATS:
+                        LIVE_CAMPAIGN_STATS[uid]["sent"] = sent_count
+                        LIVE_CAMPAIGN_STATS[uid]["failed"] = failed_count
+                    if uid in CAMPAIGN_CONTROLS:
+                        CAMPAIGN_CONTROLS[uid]["stats"] = {
+                            "sent": sent_count,
+                            "failed": failed_count,
+                            "total": total_count,
+                        }
+            _put(event)
+            now = time.time()
+            if TG_AVAILABLE and tg_msg_id and now - last_tg_update > 10:
+                try:
+                    elapsed = now - campaign_start_ts
+                    speed = sent_count / elapsed if elapsed > 0 else 0
+                    tg.campaign_update_msg(
+                        uid, tg_msg_id, camp_name,
+                        sent_count, failed_count, total_count,
+                        method, speed, proxy_dead_count)
+                except Exception:
+                    pass
+                last_tg_update = now
+    except Exception as e:
+        log.exception("[campaign worker] uid=%s crashed", uid)
+        _put({"type": "error", "error": f"Server error: {str(e)[:300]}"})
+    finally:
+        # Always emit a terminal done event so tailing clients exit cleanly.
+        # Skip if process_campaign already yielded its own done — avoids
+        # the double-done that otherwise hits the consumer.
+        if not emitted_done:
+            _put({"type": "done", "stopped": stopped,
+                  "success": sent_count, "fail": failed_count, "total": total_count})
+        _put(_CAMP_STREAM_END)
+
+        # Finalize state (DB row, Telegram, counters, queue handle).
+        if TG_AVAILABLE and tg_msg_id:
+            try:
+                duration = time.time() - campaign_start_ts
+                tg.campaign_done_msg(
+                    uid, tg_msg_id, camp_name,
+                    sent_count, failed_count, total_count,
+                    stopped=stopped, duration_s=duration)
+            except Exception:
+                pass
+
+        if run_id:
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute(
+                        "UPDATE campaign_runs SET status=?, sent=?, failed=?, finished_at=? WHERE id=?",
+                        ("stopped" if stopped else "done", sent_count, failed_count,
+                         datetime.now().isoformat(), run_id)
+                    )
+                    conn.commit(); conn.close()
+            except Exception:
+                pass
+
+        with active_campaigns_lock:
+            if uid and ACTIVE_CAMPAIGNS.get(uid, 0) > 0:
+                ACTIVE_CAMPAIGNS[uid] -= 1
+            if uid and ACTIVE_CAMPAIGNS.get(uid, 0) <= 0:
+                LIVE_CAMPAIGN_STATS.pop(uid, None)
+                CAMPAIGN_CONTROLS.pop(uid, None)
+                CAMPAIGN_THREADS.pop(uid, None)
+                # Keep CAMPAIGN_QUEUES[uid] alive briefly so any in-flight
+                # tail readers can drain the sentinel.  A subsequent /api/send
+                # for the same uid replaces the queue cleanly.
 
 db_lock       = Lock()
 sessions_lock = Lock()
@@ -146,6 +350,16 @@ sessions_lock = Lock()
 # ═══════════════════════════════════════════════════════════════
 # DATABASE & AUTH
 # ═══════════════════════════════════════════════════════════════
+
+def get_db() -> sqlite3.Connection:
+    """Open a fresh SQLite connection to the SynthTel DB.
+
+    Used by core.campaign.process_campaign() to lazy-load ISP / tunnel
+    rows when the frontend hasn't shipped them in the payload.
+    Caller is responsible for closing the returned connection.
+    """
+    return sqlite3.connect(DB_PATH)
+
 
 def init_db():
     """Create tables and restore active sessions on startup."""
@@ -286,6 +500,32 @@ def init_db():
                 proxy_client_id TEXT NOT NULL, UNIQUE(user_id, rdp_client_id)
             )
         """)
+        # ── Suppression list ──────────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS suppression (
+                id         INTEGER PRIMARY KEY,
+                user_id    INTEGER,
+                email      TEXT,
+                reason     TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, email)
+            )
+        """)
+        # ── Seed accounts ────────────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS seed_accounts (
+                id         INTEGER PRIMARY KEY,
+                user_id    INTEGER,
+                email      TEXT,
+                password   TEXT,
+                imap_host  TEXT,
+                imap_port  INTEGER DEFAULT 993,
+                provider   TEXT DEFAULT 'auto',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, email)
+            )
+        """)
+
         # Schema migrations for new tables
         for migration in [
             "CREATE INDEX IF NOT EXISTS idx_user_files_user ON user_files(user_id,category)",
@@ -331,10 +571,10 @@ def init_db():
             # Add method column to campaign_runs if missing (old DBs don't have it)
             "ALTER TABLE campaign_runs ADD COLUMN method TEXT DEFAULT 'smtp'",
             """CREATE TABLE IF NOT EXISTS user_drafts (
-    user_id INTEGER PRIMARY KEY,
-    config TEXT NOT NULL DEFAULT '{}',
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-)""",
+                user_id INTEGER PRIMARY KEY,
+                config TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""",
         ]:
             try:
                 conn.execute(migration)
@@ -391,7 +631,7 @@ def _cleanup_loop():
         if expired:
             log.info("Cleanup: purged %d expired sessions", len(expired))
         stale = [ip for ip, a in LOGIN_ATTEMPTS.items()
-                 if (now - a["last_attempt"]).total_seconds() > LOCKOUT_MINUTES * 240]
+                 if (now - a["last_attempt"]).total_seconds() > LOCKOUT_MINUTES * 60]
         for ip in stale:
             LOGIN_ATTEMPTS.pop(ip, None)
 
@@ -466,13 +706,19 @@ def authenticate(username: str, password: str) -> dict | None:
     return {"id": uid, "username": username, "role": role}
 
 
-def create_session(user: dict) -> str:
+REMEMBER_DAYS = 30  # "remember me" session duration
+
+def create_session(user: dict, remember: bool = False) -> str:
     token   = secrets.token_hex(32)
-    expires = datetime.now() + timedelta(hours=SESSION_HOURS)
+    if remember:
+        expires = datetime.now() + timedelta(days=REMEMBER_DAYS)
+    else:
+        expires = datetime.now() + timedelta(hours=SESSION_HOURS)
     with sessions_lock:
         SESSIONS[token] = {
             "user_id": user["id"], "username": user["username"],
             "role": user["role"], "expires": expires,
+            "remember": remember,
         }
     with db_lock:
         conn = sqlite3.connect(DB_PATH)
@@ -485,6 +731,29 @@ def create_session(user: dict) -> str:
         conn.execute("DELETE FROM sessions WHERE expires < ?", (datetime.now().isoformat(),))
         conn.commit(); conn.close()
     return token
+
+
+def _refresh_session(token: str, sess: dict):
+    """Extend session expiry on activity (sliding window)."""
+    remaining = (sess["expires"] - datetime.now()).total_seconds()
+    # Refresh if less than half the duration remains
+    threshold = (REMEMBER_DAYS * 86400 / 2) if sess.get("remember") else (SESSION_HOURS * 3600 / 2)
+    if remaining < threshold:
+        if sess.get("remember"):
+            new_exp = datetime.now() + timedelta(days=REMEMBER_DAYS)
+        else:
+            new_exp = datetime.now() + timedelta(hours=SESSION_HOURS)
+        sess["expires"] = new_exp
+        with sessions_lock:
+            SESSIONS[token] = sess
+        try:
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("UPDATE sessions SET expires=? WHERE token=?",
+                             (new_exp.isoformat(), token))
+                conn.commit(); conn.close()
+        except Exception:
+            pass
 
 
 def get_session(token: str) -> dict | None:
@@ -501,6 +770,7 @@ def get_session(token: str) -> dict | None:
                 conn.execute("DELETE FROM sessions WHERE token=?", (token,))
                 conn.commit(); conn.close()
             return None
+        _refresh_session(token, sess)
         return sess
     # Not in memory — check DB (e.g. multi-process or restart race)
     with db_lock:
@@ -660,6 +930,42 @@ class SynthTelHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _tail_campaign_queue(self, uid, q):
+        """Stream events from a per-user campaign queue until sentinel/disconnect.
+
+        Used by both /api/send (which spawns the worker first) and
+        /api/campaign/stream (which re-attaches to an already running campaign).
+        Disconnects are silent — the worker thread keeps running on the server
+        regardless.  Heartbeat pings keep the TCP connection alive.
+        """
+        last_ping = time.time()
+        while True:
+            try:
+                ev = q.get(timeout=15)
+            except queue.Empty:
+                try:
+                    self._stream_chunk({"type": "ping", "ts": int(time.time())})
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+                continue
+            if ev is _CAMP_STREAM_END:
+                return
+            try:
+                self._stream_chunk(ev)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Client gone — campaign continues on the server.  Stop tailing.
+                return
+            except Exception:
+                pass
+            now = time.time()
+            if now - last_ping > 30:
+                try:
+                    self._stream_chunk({"type": "ping", "ts": int(now)})
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+                last_ping = now
+
+
     # ── OPTIONS ──────────────────────────────────────────────
 
     def do_OPTIONS(self):
@@ -785,7 +1091,7 @@ if(code && window.opener){{
                           "created_at": r[6], "updated_at": r[7]} for r in rows]
             self._json(200, {"templates": templates})
 
-        elif p.startswith("/api/files"):
+        elif p.startswith("/api/files") and not p.startswith("/api/files/download/"):
             if not (sess := self._auth()): return
             uid = sess["user_id"]
             # List files: /api/files?category=attachments (or all)
@@ -823,13 +1129,15 @@ if(code && window.opener){{
             with db_lock:
                 conn = sqlite3.connect(DB_PATH)
                 row = conn.execute(
-                    "SELECT filename,orig_name,mime_type FROM user_files WHERE id=? AND user_id=?",
+                    "SELECT filename,orig_name,mime_type,category FROM user_files WHERE id=? AND user_id=?",
                     (fid, uid)
                 ).fetchone()
                 conn.close()
             if not row:
                 self._json(404, {"error": "File not found"}); return
-            fpath = os.path.join(FILES_DIR, str(uid), row[0])
+            # Files are written to FILES_DIR/<uid>/<category>/<filename> by
+            # /api/files/upload — include the category segment when reading.
+            fpath = os.path.join(FILES_DIR, str(uid), row[3], row[0])
             if not os.path.exists(fpath):
                 self._json(404, {"error": "File missing from disk"}); return
             with open(fpath, "rb") as f:
@@ -867,11 +1175,13 @@ if(code && window.opener){{
             token  = tg.get_config("bot_token") if TG_AVAILABLE else ""
             notify = tg.get_config("notify_channel", "") if TG_AVAILABLE else ""
             enabled= tg.get_config("enabled", "0") if TG_AVAILABLE else "0"
+            notify_campaigns = tg.get_config("notify_campaigns", "1") if TG_AVAILABLE else "1"
             self._json(200, {
                 "bot_token": "***" if token else "",
                 "has_token": bool(token),
                 "notify_channel": notify,
                 "enabled": enabled == "1",
+                "notify_campaigns": notify_campaigns == "1",
                 "polling": TG_AVAILABLE,
             })
 
@@ -978,6 +1288,47 @@ if(code && window.opener){{
                                "is_admin":bool(m[3]),"body":m[4],"created_at":m[5]} for m in msgs]
             })
 
+        # ── Suppression list ──────────────────────────────────────
+        elif p == "/api/suppression":
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                rows = conn.execute(
+                    "SELECT email, reason, created_at FROM suppression WHERE user_id=? ORDER BY created_at DESC",
+                    (uid,)
+                ).fetchall()
+                conn.close()
+            self._json(200, {"list": [{"email": r[0], "reason": r[1], "created_at": r[2]} for r in rows]})
+
+        # ── Seed accounts ────────────────────────────────────────
+        elif p == "/api/seed-accounts":
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                rows = conn.execute(
+                    "SELECT email, password, imap_host, imap_port, provider FROM seed_accounts WHERE user_id=? ORDER BY created_at DESC",
+                    (uid,)
+                ).fetchall()
+                conn.close()
+            self._json(200, {"accounts": [
+                {"email": r[0], "password": r[1], "imapHost": r[2], "imapPort": r[3], "provider": r[4]}
+                for r in rows
+            ]})
+
+        # ── Inbox placement test: poll results ───────────────────
+        elif p.startswith("/api/tools/inbox-test/"):
+            if not (sess := self._auth()): return
+            try:
+                run_id = p.split("/")[4]
+            except Exception:
+                self._json(400, {"error": "Invalid run ID"}); return
+            run = _INBOX_RUNS.get(run_id)
+            if not run:
+                self._json(404, {"error": "Run not found"}); return
+            self._json(200, {"done": run["done"], "results": run["results"]})
+
         elif p == "/api/draft":
             if not (sess := self._auth()): return
             try:
@@ -995,21 +1346,105 @@ if(code && window.opener){{
             except Exception as e:
                 self._json(500, {"error": str(e)})
 
+        elif p.startswith("/api/campaign/events"):
+            # Polling consumer for the per-user campaign event buffer.
+            # GET /api/campaign/events?since=N  → returns events with
+            # index >= N, plus the next index the client should ask for.
+            # Survives navigation: the worker keeps appending to the
+            # buffer regardless of whether any client is reading.
+            #
+            # Response: { "events": [...], "next": int, "active": bool,
+            #             "stats": {sent,failed,total,...}, "done": bool }
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            try:
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                since = int(qs.get("since", ["0"])[0])
+                if since < 0: since = 0
+            except Exception:
+                since = 0
+            with active_campaigns_lock:
+                active   = ACTIVE_CAMPAIGNS.get(uid, 0) > 0
+                live     = LIVE_CAMPAIGN_STATS.get(uid)
+                buf_lock = CAMPAIGN_BUFFER_LOCK.get(uid)
+            events = []
+            next_idx = since
+            done     = False
+            if buf_lock is not None:
+                with buf_lock:
+                    lst = CAMPAIGN_EVENT_BUFFER.get(uid, [])
+                    total = len(lst)
+                    if since < total:
+                        events   = lst[since:]
+                        next_idx = total
+                    else:
+                        next_idx = total
+                # The worker emits {"type":"done"} as the final event
+                # before the sentinel — flag it so the UI can stop polling.
+                for ev in events:
+                    if isinstance(ev, dict) and ev.get("type") == "done":
+                        done = True
+                        break
+                # If no buffer at all (no run ever) → not active, no events.
+            else:
+                # No active or recent run for this uid.
+                pass
+            self._json(200, {
+                "events": events,
+                "next":   next_idx,
+                "active": bool(active),
+                "live":   live,
+                "done":   done,
+            })
+
+        elif p == "/api/campaign/stream":
+            # Re-attach to a running campaign's event stream.  Used by the
+            # browser when reopening / refreshing after the original /api/send
+            # connection was dropped.  Streams future events only — caller
+            # already knows the cumulative state via /api/campaign/status.
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            with active_campaigns_lock:
+                active = ACTIVE_CAMPAIGNS.get(uid, 0)
+                q = CAMPAIGN_QUEUES.get(uid)
+            if not active or q is None:
+                self._json(404, {"error": "No active campaign for this user"})
+                return
+            self._stream_start()
+            try:
+                self._tail_campaign_queue(uid, q)
+            finally:
+                self._stream_end()
+
+        elif p == "/api/campaign/sent-records":
+            # How many sent emails are eligible for IMAP delete-sent?
+            # Used by the UI to decide whether to show the delete prompt.
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            with active_campaigns_lock:
+                records = list(CAMPAIGN_SENT_RECORDS.get(uid, []))
+            eligible = sum(1 for r in records
+                           if r.get("message_id") and r.get("sender_email")
+                           and r.get("imap_host") and r.get("sender_pass"))
+            unique_accounts = sorted({r.get("sender_email") for r in records
+                                      if r.get("sender_email")})
+            self._json(200, {
+                "total":    len(records),
+                "eligible": eligible,
+                "skipped":  max(0, len(records) - eligible),
+                "accounts": unique_accounts,
+            })
+
         elif p == "/api/campaign/status":
             if not (sess := self._auth()): return
             uid = sess["user_id"]
             with active_campaigns_lock:
                 active = ACTIVE_CAMPAIGNS.get(uid, 0)
                 live = LIVE_CAMPAIGN_STATS.get(uid)
-            # If campaign is actively running, return live stats
             if live:
-                self._json(200, {
-                    "active": True, "active_count": active,
-                    "live": live,
-                    "latest": None,
-                })
+                self._json(200, {"active": True, "active_count": active, "live": live, "latest": None})
                 return
-            # Otherwise get latest finished campaign run
             latest = None
             try:
                 with db_lock:
@@ -1027,6 +1462,48 @@ if(code && window.opener){{
                 pass
             self._json(200, {"active": False, "active_count": active, "live": None, "latest": latest})
 
+        # ── Server log tail ─────────────────────────────────────────
+        elif p.startswith("/api/logs"):
+            if not (sess := self._auth()): return
+            try:
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                lines = int(qs.get("lines", [100])[0])
+                lines = min(lines, 500)
+            except Exception:
+                lines = 100
+            try:
+                with open(LOG_PATH, "r", errors="replace") as f:
+                    all_lines = f.readlines()
+                tail = "".join(all_lines[-lines:])
+            except Exception as e:
+                tail = f"[Log file not found or unreadable: {e}]"
+            self._json(200, {"log": tail, "path": LOG_PATH})
+
+        # ── Admin in-memory debug ring buffer ───────────────────────
+        elif p.startswith("/api/debug-log"):
+            if not (sess := self._admin()): return
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            clear = qs.get("clear", ["0"])[0] == "1"
+            with _dbg_lock:
+                entries = list(_DEBUG_BUF)
+                if clear: _DEBUG_BUF.clear()
+            self._json(200, {"entries": entries, "count": len(entries)})
+
+        # ── Public IP of this server (for proxy whitelists) ─────────
+        elif p == "/api/server-ip":
+            if not (sess := self._auth()): return
+            try:
+                from urllib.request import urlopen as _uo
+                _ip = _uo("https://api.ipify.org", timeout=5).read().decode().strip()
+            except Exception:
+                try:
+                    _ip = _uo("https://ifconfig.me/ip", timeout=5).read().decode().strip()
+                except Exception:
+                    _ip = "unknown"
+            self._json(200, {"ip": _ip})
+
         else:
             self._json(404, {"error": "Not found"})
 
@@ -1034,7 +1511,17 @@ if(code && window.opener){{
         p = self.path
         try:
             n = int(self.headers.get("Content-Length", 0))
-            self._body_bytes = self.rfile.read(n) if 0 < n <= MAX_BODY_BYTES else b""
+            if n > MAX_BODY_BYTES:
+                # Drain oversized request body to avoid keep-alive parser desync.
+                remaining = n
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                self._json(413, {"error": f"Payload too large (max {MAX_BODY_BYTES} bytes)"})
+                return
+            self._body_bytes = self.rfile.read(n) if n > 0 else b""
         except Exception:
             self._body_bytes = b""
         try:
@@ -1062,7 +1549,8 @@ if(code && window.opener){{
                 self._json(401, {"error": "Invalid username or password"}); return
 
             LOGIN_ATTEMPTS.pop(ip, None)
-            token = create_session(user)
+            remember = bool(data.get("remember", False))
+            token = create_session(user, remember=remember)
 
             # Send login notification via Telegram (non-blocking)
             if TG_AVAILABLE:
@@ -1126,22 +1614,46 @@ if(code && window.opener){{
             self._json(200, {"status": "ok"})
 
         # ── SMTP campaign send (chunked streaming) ───────────
+        # The campaign is executed in a background thread so closing the
+        # browser, refreshing, or losing connection no longer kills it.
+        # The HTTP response is just a *tail* of the per-user event queue —
+        # disconnecting drops the tail but the worker keeps running on the
+        # server until completion / pause / stop.  Reconnect via
+        # /api/campaign/stream.
         elif p == "/api/send":
             if not (sess := self._auth()): return
             try:
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-
-            self._stream_start()
-            sent_count = 0
-            failed_count = 0
+            uid = sess["user_id"]
             total_count = len(data.get("leads", []))
             camp_name = data.get("campaignName", "Campaign")
             started_at = datetime.now().isoformat()
-            run_id = None
+            with active_campaigns_lock:
+                if ACTIVE_CAMPAIGNS.get(uid, 0) > 0:
+                    self._json(409, {"error": "A campaign is already running for this user"}); return
+                ACTIVE_CAMPAIGNS[uid] = ACTIVE_CAMPAIGNS.get(uid, 0) + 1
+                LIVE_CAMPAIGN_STATS[uid] = {
+                    "sent": 0, "failed": 0, "total": total_count,
+                    "name": camp_name, "status": "running",
+                    "method": data.get("method", "smtp"),
+                    "started_at": started_at,
+                }
+                CAMPAIGN_CONTROLS[uid] = {
+                    "paused": False,
+                    "abort": False,
+                    "stats": {"sent": 0, "failed": 0, "total": total_count},
+                }
+                # Fresh queue per run.  maxsize is generous so a slow tailer
+                # never blocks the campaign loop in practice; if it does,
+                # the worker uses put(timeout=2) and drops the event.
+                CAMPAIGN_QUEUES[uid] = queue.Queue(maxsize=4096)
+                # Fresh index-based buffer for /api/campaign/events polling.
+                CAMPAIGN_EVENT_BUFFER[uid] = []
+                CAMPAIGN_BUFFER_LOCK[uid]  = threading.Lock()
 
-            # Create campaign_runs record
+            run_id = None
             try:
                 with db_lock:
                     conn = sqlite3.connect(DB_PATH)
@@ -1155,81 +1667,201 @@ if(code && window.opener){{
             except Exception:
                 pass
 
-            # Track this campaign for the user
+            tg_msg_id = None
+            if TG_AVAILABLE:
+                try:
+                    tg_msg_id = tg.campaign_start_msg(
+                        uid, camp_name, data.get("method", "smtp"), total_count)
+                except Exception:
+                    pass
+
+            # Spawn the background worker.  It outlives this HTTP request.
+            worker = threading.Thread(
+                target=_campaign_worker,
+                args=(uid, data, run_id, camp_name, total_count, tg_msg_id, started_at),
+                daemon=True,
+                name=f"campaign-{uid}",
+            )
+            with active_campaigns_lock:
+                CAMPAIGN_THREADS[uid] = worker
+            worker.start()
+
+            # Return immediately — the client tails progress via the
+            # GET /api/campaign/events?since=N polling endpoint.  This
+            # makes the campaign survive page refresh / navigation
+            # naturally without needing a long-lived chunked HTTP stream.
+            self._json(200, {
+                "ok":     True,
+                "run_id": run_id,
+                "total":  total_count,
+                "name":   camp_name,
+                "started_at": started_at,
+            })
+
+        # ── Campaign control (UI/API): pause/resume/stop/stats ─────────────
+        elif p == "/api/campaign/control":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            action = data.get("action", "")
             uid = sess["user_id"]
             with active_campaigns_lock:
-                ACTIVE_CAMPAIGNS[uid] = ACTIVE_CAMPAIGNS.get(uid, 0) + 1
-                LIVE_CAMPAIGN_STATS[uid] = {
-                    "sent": 0, "failed": 0, "total": total_count,
-                    "name": camp_name, "status": "running",
-                    "method": data.get("method", "smtp"),
-                    "started_at": started_at,
-                }
+                ctrl = CAMPAIGN_CONTROLS.get(uid)
+                live = LIVE_CAMPAIGN_STATS.get(uid)
+                if not ctrl:
+                    self._json(200, {"status": "no_campaign", "message": "No active campaign"}); return
+                if action == "pause":
+                    ctrl["paused"] = True
+                    if live:
+                        live["status"] = "paused"
+                    self._json(200, {"status": "ok", "message": "Campaign paused"})
+                elif action == "resume":
+                    ctrl["paused"] = False
+                    if live:
+                        live["status"] = "running"
+                    self._json(200, {"status": "ok", "message": "Campaign resumed"})
+                elif action == "stop":
+                    ctrl["abort"] = True
+                    if live:
+                        live["status"] = "stopping"
+                    self._json(200, {"status": "ok", "message": "Campaign stopping"})
+                elif action == "stats":
+                    self._json(200, {
+                        "status": "ok",
+                        "paused": bool(ctrl.get("paused", False)),
+                        "aborting": bool(ctrl.get("abort", False)),
+                        "stats": ctrl.get("stats", {}),
+                    })
+                else:
+                    self._json(400, {"error": f"Unknown action: {action}"})
 
+        # ── Delete sent emails from sender mailboxes (IMAP) ─────────
+        # Optional cleanup step that runs after a campaign pauses or
+        # finishes.  Logs into each unique sender via IMAP, finds the
+        # messages we just sent (by HEADER Message-ID), marks them
+        # \\Deleted and EXPUNGES the mailbox.  Per-account results are
+        # returned so the UI can surface successes / failures.
+        elif p == "/api/campaign/delete-sent":
+            if not (sess := self._auth()): return
             try:
-                data["_uid"] = sess["user_id"]
-                last_ping = time.time()
-                for event in process_campaign(data):
-                    etype = event.get("type")
-                    if etype == "success":
-                        sent_count += 1
-                    elif etype == "error":
-                        failed_count += 1
-                    # Update live stats for cross-device polling
-                    if etype in ("success", "error"):
-                        with active_campaigns_lock:
-                            if uid in LIVE_CAMPAIGN_STATS:
-                                LIVE_CAMPAIGN_STATS[uid]["sent"] = sent_count
-                                LIVE_CAMPAIGN_STATS[uid]["failed"] = failed_count
-                    try:
-                        self._stream_chunk(event)
-                    except (BrokenPipeError, ConnectionResetError, OSError):
-                        break  # client disconnected — stop streaming
-                    except Exception:
-                        pass  # never let a stream write error stop the campaign
-                    # Keepalive: send a heartbeat ping every 30s so the connection
-                    # doesn't get killed by TCP idle timeout or OS network stack
-                    now = time.time()
-                    if now - last_ping > 30:
-                        try:
-                            self._stream_chunk({"type": "ping", "ts": int(now)})
-                        except Exception:
-                            pass
-                        last_ping = now
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                pass  # client disconnected — campaign already done
-            except GeneratorExit:
-                pass
-            except Exception as e:
-                try:
-                    self._stream_chunk({"type": "error", "error": f"Server error: {str(e)[:300]}"})
-                except Exception:
-                    pass
-
-            # Decrement active campaign count and clear live stats
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            uid = sess["user_id"]
             with active_campaigns_lock:
-                uid = sess.get("user_id")
-                if uid and ACTIVE_CAMPAIGNS.get(uid, 0) > 0:
-                    ACTIVE_CAMPAIGNS[uid] -= 1
-                if uid and ACTIVE_CAMPAIGNS.get(uid, 0) <= 0:
-                    LIVE_CAMPAIGN_STATS.pop(uid, None)
+                records = list(CAMPAIGN_SENT_RECORDS.get(uid, []))
+            if not records:
+                self._json(200, {"ok": True, "deleted": 0, "failed": 0,
+                                 "byAccount": [], "message": "No sent records to delete"})
+                return
+            # Group records by (imap_host, sender_email) so we IMAP-login once
+            # per mailbox instead of per message.
+            groups = {}
+            skipped_no_creds = 0
+            for r in records:
+                if not r.get("message_id") or not r.get("sender_email"):
+                    skipped_no_creds += 1
+                    continue
+                if not r.get("imap_host") or not r.get("sender_pass"):
+                    skipped_no_creds += 1
+                    continue
+                key = (r["imap_host"], int(r.get("imap_port") or 993),
+                       r["sender_email"], r["sender_pass"])
+                groups.setdefault(key, []).append(r["message_id"])
 
-            # Update campaign_runs record with final stats
-            if run_id:
+            results = []
+            total_deleted = 0
+            total_failed  = 0
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _delete_one_account(key, msgids):
+                host, port, email_addr, password = key
+                deleted = 0
+                failed  = 0
+                err     = None
+                M = None
                 try:
-                    with db_lock:
-                        conn = sqlite3.connect(DB_PATH)
-                        conn.execute(
-                            "UPDATE campaign_runs SET status=?, sent=?, failed=?, finished_at=? WHERE id=?",
-                            ("done", sent_count, failed_count, datetime.now().isoformat(), run_id)
-                        )
-                        conn.commit()
-                        conn.close()
-                except Exception:
-                    pass
+                    import imaplib, ssl as _ssl
+                    M = imaplib.IMAP4_SSL(host, port,
+                                          ssl_context=_ssl.create_default_context(),
+                                          timeout=30)
+                    M.login(email_addr, password)
+                    # Try common Sent folder names in order.
+                    sent_folders = ['"[Gmail]/Sent Mail"', '"Sent Items"',
+                                    '"Sent"', '"INBOX.Sent"', '"INBOX/Sent"',
+                                    '"[Gmail]/Sent"']
+                    for folder in sent_folders:
+                        try:
+                            typ, _ = M.select(folder)
+                            if typ != "OK":
+                                continue
+                            for mid in msgids:
+                                # Strip < > if present so search is consistent.
+                                clean = mid.strip("<>").strip()
+                                if not clean:
+                                    continue
+                                try:
+                                    typ2, msg_nums = M.search(None,
+                                        f'HEADER Message-ID "{clean}"')
+                                    if typ2 != "OK" or not msg_nums or not msg_nums[0]:
+                                        continue
+                                    for num in msg_nums[0].split():
+                                        try:
+                                            M.store(num, "+FLAGS", r"(\Deleted)")
+                                            deleted += 1
+                                        except Exception:
+                                            failed += 1
+                                except Exception:
+                                    failed += 1
+                            try:
+                                M.expunge()
+                            except Exception:
+                                pass
+                        except Exception:
+                            continue
+                except Exception as e:
+                    err = str(e)[:200]
+                    failed = len(msgids)
+                finally:
+                    try:
+                        if M is not None:
+                            M.logout()
+                    except Exception:
+                        pass
+                return {"email": email_addr, "host": host,
+                        "tried": len(msgids), "deleted": deleted,
+                        "failed": max(0, len(msgids) - deleted),
+                        "error": err}
 
-            self._stream_end()
+            with ThreadPoolExecutor(max_workers=4) as exe:
+                futs = {exe.submit(_delete_one_account, k, v): k for k, v in groups.items()}
+                for f in futs:
+                    try:
+                        r = f.result(timeout=120)
+                    except Exception as e:
+                        k = futs[f]
+                        r = {"email": k[2], "host": k[0], "tried": 0,
+                             "deleted": 0, "failed": 0, "error": str(e)[:200]}
+                    results.append(r)
+                    total_deleted += r.get("deleted", 0)
+                    total_failed  += r.get("failed", 0)
 
+            # Drop the records we successfully deleted so a subsequent click
+            # only retries the failed ones.
+            with active_campaigns_lock:
+                CAMPAIGN_SENT_RECORDS[uid] = []  # clear after attempt
+
+            self._json(200, {
+                "ok": True,
+                "deleted": total_deleted,
+                "failed": total_failed,
+                "skipped_no_creds": skipped_no_creds,
+                "byAccount": results,
+            })
+
+        # ── Save draft (cross-device sync) ───────────────────
         elif p == "/api/draft":
             if not (sess := self._auth()): return
             try:
@@ -1282,6 +1914,79 @@ if(code && window.opener){{
                 self._json(200, {"ok": True, "id": camp_id, "name": name})
             except Exception as e:
                 self._json(200, {"ok": False, "error": str(e)})
+
+        # ── User state: save full campaign state server-side ─────────────
+        elif p == "/api/user-state/save":
+            if not (sess := self._auth()): return
+            try: data = self._read_body()
+            except Exception: self._json(400, {"error": "Invalid JSON"}); return
+            uid = sess["user_id"]
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("""CREATE TABLE IF NOT EXISTS user_state (
+                        user_id INTEGER PRIMARY KEY,
+                        state   TEXT NOT NULL,
+                        updated TEXT NOT NULL
+                    )""")
+                    conn.execute(
+                        "INSERT INTO user_state(user_id,state,updated) VALUES(?,?,?) "
+                        "ON CONFLICT(user_id) DO UPDATE SET state=excluded.state, updated=excluded.updated",
+                        (uid, json.dumps(data), datetime.now().isoformat())
+                    )
+                    conn.commit(); conn.close()
+                self._json(200, {"ok": True})
+            except Exception as e:
+                self._json(200, {"ok": False, "error": str(e)})
+
+        # ── User state: load full campaign state ──────────────────────────
+        elif p == "/api/user-state/load":
+            if not (sess := self._auth()): return
+            uid = sess["user_id"]
+            try:
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("""CREATE TABLE IF NOT EXISTS user_state (
+                        user_id INTEGER PRIMARY KEY,
+                        state   TEXT NOT NULL,
+                        updated TEXT NOT NULL
+                    )""")
+                    row = conn.execute(
+                        "SELECT state, updated FROM user_state WHERE user_id=?", (uid,)
+                    ).fetchone()
+                    conn.close()
+                if row:
+                    self._json(200, {"ok": True, "state": json.loads(row[0]), "updated": row[1]})
+                else:
+                    self._json(200, {"ok": False, "state": None})
+            except Exception as e:
+                self._json(200, {"ok": False, "error": str(e)})
+
+        # ── 9proxy: fetch proxies server-side (avoids CORS) ──────────────
+        elif p == "/api/nineproxy/fetch":
+            if not (sess := self._auth()): return
+            try: data = self._read_body()
+            except Exception: self._json(400, {"error": "Invalid JSON"}); return
+            api_key = (data.get("key") or "").strip()
+            if not api_key:
+                self._json(400, {"error": "API key required"}); return
+            try:
+                from urllib.request import urlopen, Request as _Req
+                from urllib.parse import urlencode
+                params = {
+                    "key": api_key,
+                    "num": str(data.get("num", 10)),
+                    "t":   "2",
+                }
+                if data.get("country"): params["country"] = data["country"]
+                if data.get("isp"):     params["isp"]     = data["isp"]
+                url = "https://api.9proxy.com/api/proxy?" + urlencode(params)
+                req = _Req(url, headers={"User-Agent": "SynthTel/1.0"})
+                with urlopen(req, timeout=15) as r:
+                    result = json.loads(r.read().decode())
+                self._json(200, result)
+            except Exception as e:
+                self._json(200, {"error": True, "message": str(e), "data": []})
 
         # ── List saved campaigns ──────────────────────────────
         elif p == "/api/campaigns/saved":
@@ -1365,21 +2070,50 @@ if(code && window.opener){{
                 raw = proxy_cfg.strip()
                 try:
                     import re as _re
-                    if "://" in raw:
-                        m = _re.match(r'(socks5|http|https)://(?:([^:@]+):([^@]*)@)?([^:]+):(\d+)', raw)
-                        if m:
-                            proxy_cfg = {"type": m.group(1), "user": m.group(2) or "",
-                                         "pass": m.group(3) or "", "host": m.group(4),
-                                         "port": int(m.group(5))}
-                        else:
-                            raise ValueError("bad URI")
-                    else:
-                        parts = raw.split(":")
-                        proxy_cfg = {"type": "socks5",
-                                     "host": parts[0] if parts else "",
-                                     "port": int(parts[1]) if len(parts) > 1 else 1080,
-                                     "user": parts[2] if len(parts) > 2 else "",
-                                     "pass": ":".join(parts[3:]) if len(parts) > 3 else ""}
+                    def _parse_proxy_str(s):
+                        """Smart proxy string parser — handles all common formats."""
+                        _type = "socks5"
+                        if "://" in s:
+                            _type, s = s.split("://", 1)
+                            _type = _type.lower()
+                        # user:pass@host:port
+                        if "@" in s:
+                            at = s.rfind("@")
+                            creds, hostport = s[:at], s[at+1:]
+                            cp = creds.split(":", 1)
+                            hp = hostport.rsplit(":", 1)
+                            return {"type": _type, "user": cp[0],
+                                    "pass": cp[1] if len(cp) > 1 else "",
+                                    "host": hp[0],
+                                    "port": int(hp[1]) if len(hp) > 1 else 1080}
+                        parts = s.split(":")
+                        def _dot(x): return "." in x
+                        def _port(x):
+                            try: return 1 <= int(x) <= 65535
+                            except: return False
+                        if len(parts) == 2:
+                            return {"type": _type, "user": "", "pass": "",
+                                    "host": parts[0], "port": int(parts[1]) if _port(parts[1]) else 1080}
+                        if len(parts) == 4:
+                            if _dot(parts[2]) and not _dot(parts[0]) and _port(parts[3]):
+                                # user:pass:host:port (boxboy/niceproxy)
+                                return {"type": _type, "user": parts[0], "pass": parts[1],
+                                        "host": parts[2], "port": int(parts[3])}
+                            if _dot(parts[0]) and _port(parts[1]):
+                                # host:port:user:pass
+                                return {"type": _type, "host": parts[0], "port": int(parts[1]),
+                                        "user": parts[2], "pass": parts[3]}
+                            # fallback: user:pass:host:port
+                            return {"type": _type, "user": parts[0], "pass": parts[1],
+                                    "host": parts[2], "port": int(parts[3]) if _port(parts[3]) else 1080}
+                        if len(parts) >= 3:
+                            if _port(parts[-1]):
+                                return {"type": _type, "user": parts[0], "pass": parts[1],
+                                        "host": ":".join(parts[2:-1]), "port": int(parts[-1])}
+                            return {"type": _type, "user": parts[0], "pass": parts[1],
+                                    "host": ":".join(parts[2:]), "port": 1080}
+                        raise ValueError(f"Cannot parse proxy: {s!r}")
+                    proxy_cfg = _parse_proxy_str(raw)
                 except Exception as _pe:
                     self._json(400, {"error": f"Could not parse proxy string: {_pe}"}); return
 
@@ -1391,133 +2125,157 @@ if(code && window.opener){{
             p_user = (proxy_cfg.get("username") or proxy_cfg.get("user") or "").encode()
             p_pass = (proxy_cfg.get("password") or proxy_cfg.get("pass") or "").encode()
 
-            smtp_host = (data.get("ispSmtpHost") or data.get("smtpHost") or "gmail-smtp-in.l.google.com").encode()
-            smtp_port = int(data.get("ispSmtpPort") or data.get("smtpPort") or 25)
+            smtp_host_str = (data.get("ispSmtpHost") or data.get("smtpHost") or "").strip()
+            smtp_port_req = int(data.get("ispSmtpPort") or data.get("smtpPort") or 0)
+
+            # Ports to try — if caller specified a port, try it first then fall back to others
+            _SMTP_PORTS = [25, 587, 465, 2525, 26]
+            if smtp_port_req and smtp_port_req not in _SMTP_PORTS:
+                _SMTP_PORTS = [smtp_port_req] + _SMTP_PORTS
+            elif smtp_port_req:
+                _SMTP_PORTS = [smtp_port_req] + [p for p in _SMTP_PORTS if p != smtp_port_req]
+
+            # If no SMTP host given, use portquiz.net — a public server that accepts
+            # connections on ANY port specifically for connectivity testing. Unlike gmail,
+            # it won't block proxy IPs and responds on 25, 587, 465, 2525 etc.
+            if not smtp_host_str:
+                smtp_host_str = "portquiz.net"
 
             steps.append(f"CONFIG  {p_host}:{p_port}  user_len={len(p_user)}  pass_len={len(p_pass)}")
-            steps.append(f"TARGET  {smtp_host.decode()}:{smtp_port}")
+            steps.append(f"TARGET  {smtp_host_str} ports={_SMTP_PORTS}")
 
             import socket as _sock, struct as _struct
 
-            # ── Step 1: TCP to proxy ───────────────────────────
+            # ── Helper: do SOCKS5 handshake on a fresh TCP connection ──────────
+            def _socks5_connect(target_host, target_port):
+                """
+                Opens a TCP conn to the proxy and completes SOCKS5 auth + CONNECT.
+                Returns (socket, banner_str, latency_ms) on success.
+                Raises Exception with descriptive message on any failure.
+                """
+                _s = _sock.create_connection((p_host, p_port), timeout=8)
+                try:
+                    _s.settimeout(8)
+                    # Greeting
+                    _greeting = b'\x05\x02\x00\x02' if p_user else b'\x05\x01\x00'
+                    _s.sendall(_greeting)
+                    _resp = _s.recv(2)
+                    if not _resp or len(_resp) < 2:
+                        raise Exception("Proxy closed after SOCKS5 greeting — IP not whitelisted or wrong protocol")
+                    if _resp[0] != 5:
+                        raise Exception(f"Not SOCKS5 (ver byte={_resp[0]}) — may be HTTP proxy")
+                    chosen = _resp[1]
+                    if chosen == 0xFF:
+                        raise Exception(
+                            "Proxy rejected all auth methods (0xFF) — your server IP is not whitelisted. "
+                            "Go to your proxy provider dashboard and add your VPS/server IP to the whitelist. "
+                            f"Your server IP should be visible in the proxy dashboard."
+                        )
+                    # Auth
+                    if chosen == 0x02:
+                        _auth = bytes([1, len(p_user)]) + p_user + bytes([len(p_pass)]) + p_pass
+                        _s.sendall(_auth)
+                        _ar = _s.recv(2)
+                        if not _ar or len(_ar) < 2:
+                            raise Exception("Auth failed — server closed (wrong credentials)")
+                        if _ar[1] != 0:
+                            raise Exception(f"Auth rejected (0x{_ar[1]:02x}) — wrong username/password")
+                    # CONNECT
+                    _hb = target_host.encode() if isinstance(target_host, str) else target_host
+                    _pkt = b'\x05\x01\x00\x03' + bytes([len(_hb)]) + _hb + _struct.pack(">H", target_port)
+                    _s.sendall(_pkt)
+                    _cr = _s.recv(10)
+                    if not _cr:
+                        raise Exception(f"port {target_port} blocked at proxy exit")
+                    _rep = _cr[1] if len(_cr) > 1 else 0xFF
+                    _msgs = {0:"OK",1:"general failure",2:"not allowed",3:"net unreachable",
+                             4:"host unreachable",5:"connection refused",6:"TTL expired"}
+                    if _rep != 0:
+                        raise Exception(f"port {target_port} — {_msgs.get(_rep, f'SOCKS5 error 0x{_rep:02x}')}")
+                    # Banner
+                    _s.settimeout(5)
+                    _t0 = _sock.socket  # just for timing
+                    import time as _time
+                    _t0 = _time.time()
+                    try:
+                        _banner = _s.recv(512).decode("utf-8", errors="replace").strip()[:120]
+                    except Exception:
+                        _banner = ""
+                    _lat = round((_time.time() - _t0) * 1000)
+                    return _s, _banner, _lat
+                except Exception:
+                    try: _s.close()
+                    except: pass
+                    raise
+
+            # ── Step 1: verify proxy TCP is reachable at all ───
             try:
-                _s = _sock.create_connection((p_host, p_port), timeout=10)
+                _test = _sock.create_connection((p_host, p_port), timeout=8)
+                _test.close()
                 steps.append(f"STEP1   TCP {p_host}:{p_port} OPEN")
             except Exception as _e1:
                 steps.append(f"STEP1   TCP {p_host}:{p_port} FAILED: {_e1}")
-                self._json(200, {"status": "error", "message": str(_e1), "log": steps}); return
+                self._json(200, {"status": "error", "message": f"Cannot reach proxy {p_host}:{p_port} — {_e1}", "log": steps}); return
 
-            # ── Step 2: SOCKS5 greeting — offer no-auth AND user/pass ──
-            # 05=SOCKS5, 02=2 methods, 00=no-auth, 02=user/pass
-            try:
-                _s.settimeout(10)
-                _greeting = b'\x05\x02\x00\x02' if p_user else b'\x05\x01\x00'
-                _s.sendall(_greeting)
-                steps.append(f"STEP2a  sent greeting {_greeting.hex()}")
-                _resp = _s.recv(2)
-                steps.append(f"STEP2a  server replied {_resp.hex() if _resp else '(empty — closed)'}")
-                if not _resp or len(_resp) < 2:
-                    steps.append("STEP2a  server closed immediately after greeting")
-                    _s.close()
-                    self._json(200, {"status": "error",
-                        "message": "Proxy closed connection after SOCKS5 greeting — IP may not be whitelisted, or proxy does not speak SOCKS5",
-                        "log": steps}); return
-                if _resp[0] != 5:
-                    steps.append(f"STEP2a  not SOCKS5 (ver={_resp[0]}) — may be HTTP proxy")
-                    _s.close()
-                    self._json(200, {"status": "error",
-                        "message": f"Not SOCKS5 — server version byte={_resp[0]} (may be HTTP CONNECT proxy)",
-                        "log": steps}); return
-                chosen_method = _resp[1]
-                steps.append(f"STEP2a  server chose method 0x{chosen_method:02x}")
-                if chosen_method == 0xFF:
-                    _s.close()
-                    self._json(200, {"status": "error",
-                        "message": "Proxy rejected all auth methods (0xFF) — IP not whitelisted or wrong proxy type",
-                        "log": steps}); return
-            except Exception as _e2a:
-                steps.append(f"STEP2a  FAILED: {_e2a}")
-                self._json(200, {"status": "error", "message": f"SOCKS5 greeting failed: {_e2a}", "log": steps}); return
+            # ── Step 2: probe each SMTP port through the proxy ─
+            port_results = []  # list of {port, ok, banner, latency, error}
+            best_port = None
+            best_banner = ""
+            best_lat = 0
 
-            # ── Step 3: Auth sub-negotiation (if required) ─────
-            if chosen_method == 0x02:
+            for _sp in _SMTP_PORTS:
                 try:
-                    _auth_pkt = (bytes([1, len(p_user)]) + p_user +
-                                 bytes([len(p_pass)]) + p_pass)
-                    _s.sendall(_auth_pkt)
-                    steps.append(f"STEP3   sent auth (user_len={len(p_user)} pass_len={len(p_pass)})")
-                    _auth_resp = _s.recv(2)
-                    steps.append(f"STEP3   server replied {_auth_resp.hex() if _auth_resp else '(empty — closed)'}")
-                    if not _auth_resp or len(_auth_resp) < 2:
-                        _s.close()
-                        self._json(200, {"status": "error",
-                            "message": "Auth sub-negotiation: server closed immediately — credentials rejected",
-                            "log": steps}); return
-                    if _auth_resp[1] != 0:
-                        _s.close()
-                        self._json(200, {"status": "error",
-                            "message": f"Auth rejected by proxy (status=0x{_auth_resp[1]:02x}) — wrong username/password",
-                            "log": steps}); return
-                    steps.append("STEP3   AUTH OK")
-                except Exception as _e3:
-                    steps.append(f"STEP3   FAILED: {_e3}")
-                    self._json(200, {"status": "error", "message": f"Auth failed: {_e3}", "log": steps}); return
-            elif chosen_method == 0x00:
-                steps.append("STEP3   no auth required (method 0x00)")
+                    _sock_conn, _banner, _lat = _socks5_connect(smtp_host_str, _sp)
+                    _sock_conn.close()
+                    port_results.append({"port": _sp, "ok": True, "banner": _banner, "latency_ms": _lat})
+                    steps.append(f"PORT    {_sp} ✓  {_lat}ms  {_banner[:60]!r}")
+                    if best_port is None:
+                        best_port = _sp
+                        best_banner = _banner
+                        best_lat = _lat
+                except Exception as _pe:
+                    port_results.append({"port": _sp, "ok": False, "error": str(_pe)[:100]})
+                    steps.append(f"PORT    {_sp} ✗  {str(_pe)[:80]}")
 
-            # ── Step 4: CONNECT request ────────────────────────
-            try:
-                # Build CONNECT: VER=5 CMD=1 RSV=0 ATYP=3 (domain) + len + domain + port
-                _host_b = smtp_host
-                _connect_pkt = (b'\x05\x01\x00\x03' +
-                                bytes([len(_host_b)]) + _host_b +
-                                _struct.pack(">H", smtp_port))
-                _s.sendall(_connect_pkt)
-                steps.append(f"STEP4   sent CONNECT to {smtp_host.decode()}:{smtp_port}")
-                _conn_resp = _s.recv(10)
-                steps.append(f"STEP4   server replied {_conn_resp.hex() if _conn_resp else '(empty — closed)'}")
-                if not _conn_resp:
-                    _s.close()
-                    self._json(200, {"status": "error",
-                        "message": f"CONNECT to {smtp_host.decode()}:{smtp_port} — server closed (port blocked at exit)",
-                        "log": steps}); return
-                _rep = _conn_resp[1] if len(_conn_resp) > 1 else 0xFF
-                _rep_msgs = {0:"OK",1:"general failure",2:"not allowed",3:"net unreachable",
-                             4:"host unreachable",5:"refused",6:"TTL expired",7:"bad command",8:"bad addr"}
-                steps.append(f"STEP4   REP=0x{_rep:02x} ({_rep_msgs.get(_rep,'unknown')})")
-                if _rep != 0:
-                    _s.close()
-                    self._json(200, {"status": "error",
-                        "message": f"Proxy cannot reach {smtp_host.decode()}:{smtp_port} — {_rep_msgs.get(_rep, f'code 0x{_rep:02x}')}",
-                        "log": steps}); return
-            except Exception as _e4:
-                steps.append(f"STEP4   FAILED: {_e4}")
-                self._json(200, {"status": "error", "message": f"CONNECT failed: {_e4}", "log": steps}); return
+            open_ports = [r["port"] for r in port_results if r["ok"]]
 
-            # ── Step 5: Read SMTP banner ───────────────────────
-            try:
-                _t0 = time.time()
-                _s.settimeout(8)
-                _banner = _s.recv(512).decode("utf-8", errors="replace").strip()[:100]
-                latency = round((time.time() - _t0) * 1000)
-                steps.append(f"STEP5   SMTP banner: {_banner!r}")
-                _s.close()
+            if not open_ports:
+                # Check if HTTP works — confirms proxy is functional, just SMTP blocked
+                _http_ok = False
+                try:
+                    _hs, _, _ = _socks5_connect("example.com", 80)
+                    _hs.close()
+                    _http_ok = True
+                    steps.append("HTTP    port 80 to example.com ✓ — proxy works, SMTP specifically blocked by exit")
+                except Exception as _he:
+                    steps.append(f"HTTP    port 80 to example.com ✗ — {str(_he)[:60]}")
+
+                # Build per-port error summary
+                _errs = "; ".join(f":{r['port']}={r.get('error','?')[:40]}" for r in port_results)
+                _http_note = (
+                    " Proxy works fine for HTTP/web traffic — only outbound SMTP is blocked by the datacenter/ISP. "
+                    "To use these proxies for email: route through a relay server that accepts inbound SMTP on a non-standard port (e.g. 2525, 8025) and forwards out."
+                    if _http_ok else
+                    " Proxy may have connection issues beyond SMTP blocking."
+                )
                 self._json(200, {
-                    "status":     "ok",
-                    "message":    f"Proxy OK — {p_host}:{p_port} → {smtp_host.decode()}:{smtp_port} ({latency}ms) | {_banner}",
-                    "latency_ms": latency,
-                    "log":        steps,
-                })
-            except Exception as _e5:
-                _s.close()
-                steps.append(f"STEP5   banner timeout (non-fatal): {_e5}")
-                # Connected is enough — banner timeout is fine
-                self._json(200, {
-                    "status":     "ok",
-                    "message":    f"Proxy OK — {p_host}:{p_port} → {smtp_host.decode()}:{smtp_port} (no banner)",
-                    "latency_ms": 0,
-                    "log":        steps,
-                })
+                    "status":  "error",
+                    "message": f"Proxy authenticated OK but all SMTP ports blocked at exit. Port errors: {_errs}.{_http_note}",
+                    "port_results": port_results,
+                    "http_works": _http_ok,
+                    "log":     steps,
+                }); return
+
+            self._json(200, {
+                "status":       "ok",
+                "message":      f"Proxy OK — {p_host}:{p_port} → {smtp_host_str}  Open ports: {open_ports}  Best: :{best_port} ({best_lat}ms){(' | ' + best_banner) if best_banner else ''}",
+                "best_port":    best_port,
+                "open_ports":   open_ports,
+                "port_results": port_results,
+                "latency_ms":   best_lat,
+                "log":          steps,
+            })
+
         # ── ISP SMTP Port Probe ───────────────────────────────
         elif p == "/api/isp/probe-smtp":
             if not (sess := self._auth()): return
@@ -1587,41 +2345,42 @@ if(code && window.opener){{
             try:
                 data = self._read_body()
                 uid  = sess["user_id"]
-                db   = get_db()
-                rdps     = data.get("rdps", [])
-                proxies  = data.get("proxies", [])
-                assign   = data.get("assignments", {})
-                # Upsert RDPs
-                for r in rdps:
-                    db.execute("""
-                        INSERT INTO isp_rdps(user_id,client_id,label,host,ssh_port,usr,pass,os,status,data)
-                        VALUES(?,?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(user_id,client_id) DO UPDATE SET
-                            label=excluded.label, host=excluded.host,
-                            ssh_port=excluded.ssh_port, usr=excluded.usr,
-                            pass=excluded.pass, status=excluded.status, data=excluded.data
-                    """, (uid, str(r.get("id","")), r.get("label",""), r.get("host",""),
-                          str(r.get("sshPort","22")), r.get("user",""), r.get("pass",""),
-                          r.get("os","windows"), r.get("status","undeployed"), json.dumps(r)))
-                # Upsert proxies
-                for px in proxies:
-                    db.execute("""
-                        INSERT INTO isp_proxies(user_id,client_id,label,host,port,usr,pass,type,isp_smtp_host,isp_smtp_port,from_domain,status,data)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(user_id,client_id) DO UPDATE SET
-                            label=excluded.label, host=excluded.host,
-                            isp_smtp_host=excluded.isp_smtp_host,
-                            isp_smtp_port=excluded.isp_smtp_port, data=excluded.data
-                    """, (uid, str(px.get("id","")), px.get("label",""), px.get("host",""),
-                          str(px.get("port","17521")), px.get("user",""), px.get("pass",""),
-                          px.get("type","socks5"), px.get("ispSmtpHost",""), str(px.get("ispSmtpPort","25")),
-                          px.get("fromDomain",""), px.get("status","untested"), json.dumps(px)))
-                # Upsert assignments
-                for rdp_id, proxy_id in assign.items():
-                    db.execute("""INSERT INTO isp_assignments(user_id,rdp_client_id,proxy_client_id)
-                        VALUES(?,?,?) ON CONFLICT(user_id,rdp_client_id) DO UPDATE SET proxy_client_id=excluded.proxy_client_id
-                    """, (uid, str(rdp_id), str(proxy_id)))
-                db.commit()
+                with db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    rdps     = data.get("rdps", [])
+                    proxies  = data.get("proxies", [])
+                    assign   = data.get("assignments", {})
+                    # Upsert RDPs
+                    for r in rdps:
+                        conn.execute("""
+                            INSERT INTO isp_rdps(user_id,client_id,label,host,ssh_port,usr,pass,os,status,data)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(user_id,client_id) DO UPDATE SET
+                                label=excluded.label, host=excluded.host,
+                                ssh_port=excluded.ssh_port, usr=excluded.usr,
+                                pass=excluded.pass, status=excluded.status, data=excluded.data
+                        """, (uid, str(r.get("id","")), r.get("label",""), r.get("host",""),
+                              str(r.get("sshPort","22")), r.get("user",""), r.get("pass",""),
+                              r.get("os","windows"), r.get("status","undeployed"), json.dumps(r)))
+                    # Upsert proxies
+                    for px in proxies:
+                        conn.execute("""
+                            INSERT INTO isp_proxies(user_id,client_id,label,host,port,usr,pass,type,isp_smtp_host,isp_smtp_port,from_domain,status,data)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(user_id,client_id) DO UPDATE SET
+                                label=excluded.label, host=excluded.host,
+                                isp_smtp_host=excluded.isp_smtp_host,
+                                isp_smtp_port=excluded.isp_smtp_port, data=excluded.data
+                        """, (uid, str(px.get("id","")), px.get("label",""), px.get("host",""),
+                              str(px.get("port","17521")), px.get("user",""), px.get("pass",""),
+                              px.get("type","socks5"), px.get("ispSmtpHost",""), str(px.get("ispSmtpPort","25")),
+                              px.get("fromDomain",""), px.get("status","untested"), json.dumps(px)))
+                    # Upsert assignments
+                    for rdp_id, proxy_id in assign.items():
+                        conn.execute("""INSERT INTO isp_assignments(user_id,rdp_client_id,proxy_client_id)
+                            VALUES(?,?,?) ON CONFLICT(user_id,rdp_client_id) DO UPDATE SET proxy_client_id=excluded.proxy_client_id
+                        """, (uid, str(rdp_id), str(proxy_id)))
+                    conn.commit(); conn.close()
                 self._json(200, {"ok": True, "rdps": len(rdps), "proxies": len(proxies), "assignments": len(assign)})
             except Exception as e:
                 self._json(500, {"error": str(e)})
@@ -1630,15 +2389,17 @@ if(code && window.opener){{
             # Get ISP tunnels for current user from DB
             if not (sess := self._auth()): return
             uid = sess["user_id"]
-            db  = get_db()
-            rows = db.execute("""
-                SELECT r.client_id, r.label, r.host, r.status,
-                       p.client_id as px_id, p.isp_smtp_host, p.isp_smtp_port, p.data as px_data
-                FROM isp_rdps r
-                JOIN isp_assignments a ON a.rdp_client_id = r.client_id AND a.user_id = r.user_id
-                JOIN isp_proxies p ON p.client_id = a.proxy_client_id AND p.user_id = r.user_id
-                WHERE r.user_id = ?
-            """, (uid,)).fetchall()
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                rows = conn.execute("""
+                    SELECT r.client_id, r.label, r.host, r.status,
+                           p.client_id as px_id, p.isp_smtp_host, p.isp_smtp_port, p.data as px_data
+                    FROM isp_rdps r
+                    JOIN isp_assignments a ON a.rdp_client_id = r.client_id AND a.user_id = r.user_id
+                    JOIN isp_proxies p ON p.client_id = a.proxy_client_id AND p.user_id = r.user_id
+                    WHERE r.user_id = ?
+                """, (uid,)).fetchall()
+                conn.close()
             tunnels = []
             for row in rows:
                 tunnels.append({
@@ -2225,12 +2986,15 @@ fi
                 # Step 2: SOCKS5 → SMTP ports
                 try:
                     import socks as pysocks
+                    _tc_user = data.get("proxyUser") or data.get("username") or None
+                    _tc_pass = data.get("proxyPass") or data.get("password") or None
                     smtp_ports = [int(data.get("smtpPort", 25)), 587, 465, 2525, 26]
                     smtp_ports = list(dict.fromkeys(smtp_ports))  # dedupe keep order
                     for port in smtp_ports:
                         try:
                             s = pysocks.socksocket()
-                            s.set_proxy(pysocks.SOCKS5, socks_host, socks_port)
+                            s.set_proxy(pysocks.SOCKS5, socks_host, socks_port,
+                                        username=_tc_user, password=_tc_pass)
                             s.settimeout(10)
                             s.connect((smtp_host, port))
                             # Try read banner
@@ -2331,10 +3095,12 @@ fi
                         import socks as pysocks
                     except ImportError:
                         self._json(200, {"status": "error", "message": "PySocks not installed: pip install pysocks --break-system-packages"}); return
-                    ph = tunnel.get("sshHost", "")
-                    pp = int(tunnel.get("sshPort", "1080"))
-                    pu = tunnel.get("sshUser", "") or None
-                    pk = tunnel.get("sshKey", "")  or None
+                    ph = tunnel.get("proxyHost") or tunnel.get("socksHost") or tunnel.get("sshHost", "")
+                    pp = int(tunnel.get("proxyPort") or tunnel.get("socksPort") or tunnel.get("sshPort") or 17521)
+                    pu = tunnel.get("proxyUser") or tunnel.get("sshUser") or None
+                    pk = tunnel.get("proxyPass") or tunnel.get("sshKey") or tunnel.get("sshPass") or None
+                    smtp_h = tunnel.get("ispSmtpHost") or "smtp.shaw.ca"
+                    smtp_p = int(tunnel.get("ispSmtpPort") or 25)
                     # Connectivity test
                     step_ok = False
                     for th, tprt in [("httpbin.org", 80), ("google.com", 443), ("1.1.1.1", 80)]:
@@ -2368,12 +3134,12 @@ fi
                         s3 = pysocks.socksocket()
                         s3.set_proxy(pysocks.SOCKS5, ph, pp, username=pu, password=pk)
                         s3.settimeout(12)
-                        s3.connect(("gmail-smtp-in.l.google.com", 25))
+                        s3.connect((smtp_h, smtp_p))
                         banner = s3.recv(1024).decode("utf-8", errors="replace").strip()[:80]
                         s3.close()
                         self._json(200, {
                             "status": "ok",
-                            "message": f"ISP proxy OK → port 25 open — {banner}" + (f" | exit IP: {pub_ip}" if pub_ip else ""),
+                            "message": f"ISP proxy OK → {smtp_h}:{smtp_p} open — {banner}" + (f" | exit IP: {pub_ip}" if pub_ip else ""),
                             "latency_ms": latency, "public_ip": pub_ip, "port25": True,
                         })
                     except Exception as p25e:
@@ -2402,18 +3168,19 @@ fi
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            crm      = data.get("crm", {})
-            provider = crm.get("provider", "hubspot")
-            api_key  = crm.get("apiKey", "")
+            crm      = data.get("crm", data)
+            provider = (crm.get("provider") or data.get("type") or "hubspot").lower()
+            api_key  = crm.get("apiKey") or crm.get("token", "")
             if not api_key:
                 self._json(200, {"status": "error", "message": "No API key configured"}); return
             try:
+                endpoint = (crm.get("endpoint") or crm.get("url") or "").rstrip("/")
                 urls = {
                     "hubspot":    ("GET", "https://api.hubapi.com/crm/v3/objects/contacts?limit=1",
                                    {"Authorization": f"Bearer {api_key}"}),
-                    "salesforce": ("GET", crm.get("endpoint","").rstrip("/") + "/services/data/v58.0/limits",
+                    "salesforce": ("GET", endpoint + "/services/data/v58.0/limits",
                                    {"Authorization": f"Bearer {api_key}"}),
-                    "dynamics":   ("GET", crm.get("endpoint","").rstrip("/") + "/api/data/v9.2/WhoAmI",
+                    "dynamics":   ("GET", endpoint + "/api/data/v9.2/WhoAmI",
                                    {"Authorization": f"Bearer {api_key}"}),
                 }
                 if provider in urls:
@@ -2421,8 +3188,8 @@ fi
                     req = Request(url, headers=hdrs)
                     resp = urlopen(req, timeout=10)
                     self._json(200, {"status": "ok", "message": f"{provider.title()} API connected ({resp.status})"})
-                elif crm.get("endpoint"):
-                    req = Request(crm["endpoint"], headers={"Authorization": f"Bearer {api_key}"})
+                elif endpoint:
+                    req = Request(endpoint, headers={"Authorization": f"Bearer {api_key}"})
                     resp = urlopen(req, timeout=10)
                     self._json(200, {"status": "ok", "message": f"Custom CRM endpoint responded ({resp.status})"})
                 else:
@@ -2437,21 +3204,47 @@ fi
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            from core.smtp_sender import _make_proxy_socket
-            host = data.get("host", "")
-            port = data.get("port", "17521")
-            username = data.get("username") or None
-            password = data.get("password") or None
-            if not host:
+            p_host    = data.get("host", "")
+            p_port    = int(data.get("port") or 17521)
+            p_user    = (data.get("username") or "").encode()
+            p_pass    = (data.get("password") or "").encode()
+            smtp_host = (data.get("ispSmtpHost") or data.get("smtpHost") or "smtp.shaw.ca")
+            smtp_port = int(data.get("ispSmtpPort") or data.get("smtpPort") or 25)
+            if not p_host:
                 self._json(200, {"error": "Proxy host is required"}); return
+
             results = {"socks_connect": False, "port80": False, "port25": False,
                        "public_ip": "", "error": ""}
-            proxy_cfg = {"type": "socks5", "host": host, "port": str(port),
-                         "username": username, "password": password}
+
+            import socket as _ph_sock, struct as _ph_struct
+
+            def _ph_socks5(target_host, target_port, timeout=12):
+                s = _ph_sock.create_connection((p_host, p_port), timeout=8)
+                s.settimeout(timeout)
+                s.sendall(b'\x05\x02\x00\x02' if p_user else b'\x05\x01\x00')
+                resp = s.recv(2)
+                if not resp or len(resp) < 2 or resp[0] != 5:
+                    s.close(); raise Exception(f"Bad SOCKS5 greeting: {resp!r}")
+                if resp[1] == 0xFF:
+                    s.close(); raise Exception("Proxy rejected auth — IP not whitelisted or wrong credentials")
+                if resp[1] == 0x02:
+                    auth = bytes([1, len(p_user)]) + p_user + bytes([len(p_pass)]) + p_pass
+                    s.sendall(auth)
+                    ar = s.recv(2)
+                    if not ar or ar[1] != 0:
+                        s.close(); raise Exception(f"Auth rejected (0x{ar[1]:02x}) — wrong username/password")
+                hb  = target_host.encode()
+                pkt = b'\x05\x01\x00\x03' + bytes([len(hb)]) + hb + _ph_struct.pack(">H", target_port)
+                s.sendall(pkt)
+                cr = s.recv(10)
+                if not cr or (len(cr) > 1 and cr[1] != 0):
+                    rep = cr[1] if len(cr) > 1 else 0xFF
+                    _msgs = {1:"general failure",2:"not allowed",3:"net unreachable",4:"host unreachable",5:"connection refused"}
+                    s.close(); raise Exception(f"SOCKS5 CONNECT failed: {_msgs.get(rep, f'error 0x{rep:02x}')}")
+                return s
+
             try:
-                s = _make_proxy_socket(proxy_cfg)
-                s.settimeout(10)
-                s.connect(("httpbin.org", 80))
+                s = _ph_socks5("httpbin.org", 80)
                 s.sendall(b"GET /ip HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n")
                 resp = s.recv(4096).decode("utf-8", errors="replace")
                 s.close()
@@ -2459,18 +3252,23 @@ fi
                 m = re.search(r'"origin"\s*:\s*"([^"]+)"', resp)
                 if m: results["public_ip"] = m.group(1)
             except Exception as e:
-                results["error"] = str(e)[:150]
+                results["error"] = str(e)[:200]
                 self._json(200, results); return
+
             try:
-                s2 = _make_proxy_socket(proxy_cfg)
-                s2.settimeout(15)
-                s2.connect(("gmail-smtp-in.l.google.com", 25))
-                banner = s2.recv(1024).decode("utf-8", errors="replace").strip()[:100]
+                s2 = _ph_socks5(smtp_host, smtp_port, timeout=15)
+                try:
+                    banner = s2.recv(1024).decode("utf-8", errors="replace").strip()[:120]
+                except Exception:
+                    banner = ""
                 s2.close()
                 results["port25"] = True
                 results["banner"] = banner
+                results["smtp_host"] = smtp_host
+                results["smtp_port"] = smtp_port
             except Exception as e:
-                results["port25_error"] = str(e)[:100]
+                results["port25_error"] = str(e)[:150]
+
             self._json(200, results)
 
         # ── Deploy 3proxy on remote VPS ──────────────────────
@@ -2611,6 +3409,133 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 ssh.close()
             except Exception as e:
                 self._json(200, {"status": "error", "message": f"SSH failed: {e}"})
+
+        # ── 9Proxy Integration (CLI-based, no HTTP API needed) ──
+        elif p == "/api/9proxy/verify":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+
+            import shutil
+            _nine_bin = shutil.which("9proxy")
+            if not _nine_bin:
+                self._json(200, {"status": "error", "message": "9proxy is not installed on this server."}); return
+
+            # If credentials provided, do login first
+            np_user = (data.get("username") or "").strip()
+            np_pass = (data.get("password") or "").strip()
+            if np_user and np_pass:
+                try:
+                    result = subprocess.run(
+                        [_nine_bin, "auth", "-u", np_user, "-p", np_pass],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    auth_out = (result.stdout + result.stderr).strip()
+                    if "error" in auth_out.lower() and result.returncode != 0:
+                        self._json(200, {"status": "error", "message": f"Login failed: {auth_out[:200]}"}); return
+                except Exception as e:
+                    self._json(200, {"status": "error", "message": f"Login error: {str(e)[:200]}"}); return
+
+            # Check if daemon is running, start if not
+            try:
+                ps_out = subprocess.check_output(["pgrep", "-f", "9proxy"], timeout=5).decode().strip()
+            except Exception:
+                ps_out = ""
+            if not ps_out:
+                try:
+                    subprocess.Popen([_nine_bin, "-daemon"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(3)
+                except Exception:
+                    pass
+
+            # Check balance to verify it's working
+            try:
+                result = subprocess.run(
+                    [_nine_bin, "proxy", "-b"],
+                    capture_output=True, text=True, timeout=15
+                )
+                bal_out = (result.stdout + result.stderr).strip()
+                if "log-in" in bal_out.lower() or "login" in bal_out.lower():
+                    self._json(200, {"status": "needs_login", "message": "9proxy needs login. Enter your 9proxy.com email and password."})
+                    return
+                # Parse remaining IPs
+                m = re.search(r"(\d+)", bal_out.split("Remaining")[-1] if "Remaining" in bal_out else bal_out)
+                remaining = m.group(1) if m else "?"
+                self._json(200, {"status": "ok", "message": f"9proxy connected — {remaining} IPs remaining"})
+            except Exception as e:
+                self._json(200, {"status": "error", "message": f"Could not check 9proxy: {str(e)[:200]}"})
+
+        elif p == "/api/9proxy/fetch":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+
+            import shutil
+            _nine_bin = shutil.which("9proxy")
+            if not _nine_bin:
+                self._json(200, {"status": "error", "message": "9proxy not installed"}); return
+
+            country = data.get("country", "CA")
+            count   = int(data.get("count", 10))
+            count   = min(count, 10)  # max 10 ports (60000-60009)
+
+            # Get current port status
+            try:
+                result = subprocess.run(
+                    [_nine_bin, "port", "-s"],
+                    capture_output=True, text=True, timeout=10
+                )
+                port_out = result.stdout
+            except Exception:
+                port_out = ""
+
+            # Find free ports
+            free_ports = []
+            for line in port_out.split("\n"):
+                if "Free" in line:
+                    m = re.search(r":(\d+)", line)
+                    if m:
+                        free_ports.append(int(m.group(1)))
+
+            if not free_ports:
+                # Kill all ports and retry
+                for port in range(60000, 60010):
+                    try:
+                        subprocess.run([_nine_bin, "port", "-k", str(port)],
+                            capture_output=True, timeout=5)
+                    except Exception:
+                        pass
+                free_ports = list(range(60000, 60010))
+
+            use_ports = free_ports[:count]
+            assigned = []
+            errors = []
+
+            for port in use_ports:
+                try:
+                    cmd = [_nine_bin, "proxy", "-c", country, "-p", str(port)]
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    out = (result.stdout + result.stderr).strip()
+                    if result.returncode != 0 and "error" in out.lower():
+                        errors.append(f"Port {port}: {out[:100]}")
+                    else:
+                        assigned.append({
+                            "host": "127.0.0.1",
+                            "port": str(port),
+                            "address": "127.0.0.1",
+                            "raw": f"socks5://127.0.0.1:{port}",
+                        })
+                except Exception as e:
+                    errors.append(f"Port {port}: {str(e)[:100]}")
+
+            if assigned:
+                self._json(200, {"status": "ok", "data": assigned})
+            else:
+                self._json(200, {"status": "error", "message": "; ".join(errors) or "No proxies assigned"})
 
         # ── Validate sender email addresses (MX check) ───────
         elif p == "/api/validate-senders":
@@ -2774,7 +3699,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            from b2b_manager import build_oauth_url
+            from core.b2b_manager import build_oauth_url
             # Use pre-configured creds if caller didn't supply them
             client_id     = data.get("client_id", "").strip() or _AZURE_CLIENT_ID
             client_secret = data.get("client_secret", "").strip() or _AZURE_CLIENT_SECRET
@@ -2802,7 +3727,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            from b2b_manager import exchange_oauth_code, login_token
+            from core.b2b_manager import exchange_oauth_code, login_token
             client_id     = data.get("client_id", "").strip() or _AZURE_CLIENT_ID
             client_secret = data.get("client_secret", "").strip() or _AZURE_CLIENT_SECRET
             redirect_uri  = data.get("redirect_uri", "").strip()
@@ -2825,7 +3750,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 auth  = login_token(email, token, b2b._s)
                 if auth.get("ok"):
                     b2b._s["ms_refresh_token"] = result.get("refresh_token")
-                    self._json(200, {**auth, "session": sess["token"]})
+                    self._json(200, {**auth, "session": self._token()})
                 else:
                     self._json(200, auth)
             else:
@@ -2865,7 +3790,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
 
         elif p == "/api/b2b/install-msal":
             if not (sess := self._auth()): return
-            import subprocess
             try:
                 result = subprocess.run(
                     ["pip", "install", "msal", "requests", "--break-system-packages", "-q"],
@@ -2876,7 +3800,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                     try:
                         import msal as _msal_new
                         import importlib, sys
-                        import b2b_manager as _b2b_mod
+                        import core.b2b_manager as _b2b_mod
                         _b2b_mod._msal = _msal_new
                         _b2b_mod._HAS_MSAL = True
                         self._json(200, {"ok": True, "message": "MSAL installed successfully — Device Code is ready!"})
@@ -2914,7 +3838,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 custom_tenant    = data.get("tenant_id", "").strip(),
             )
             if result is None:
-                from b2b_manager import _MSAL_ERR
+                from core.b2b_manager import _MSAL_ERR
                 self._json(200, {"error": "msal_not_installed",
                                  "message": f"MSAL unavailable: {_MSAL_ERR or 'unknown error'}. Clicking Install will fix this."})
             else:
@@ -3277,14 +4201,15 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 self._json(400, {"error": "Invalid JSON"}); return
             try:
                 from core.imap_extractor import extract_from_inbox
+                # Note: extract_from_inbox/extract_inbox_simple does its own
+                # provider detection, so imap_host/imap_port from the
+                # frontend are informational only (not forwarded here).
                 result = extract_from_inbox(
-                    email       = data.get("email", ""),
-                    password    = data.get("password", ""),
-                    access_token= data.get("accessToken", ""),
-                    imap_host   = data.get("imapHost"),
-                    imap_port   = int(data.get("imapPort", 993) or 993),
-                    limit       = int(data.get("limit", 500) or 500),
-                    filter_generic = data.get("filterGeneric", True),
+                    email_addr     = data.get("email", ""),
+                    password       = data.get("password", ""),
+                    token          = data.get("accessToken", ""),
+                    limit          = int(data.get("limit", 500) or 500),
+                    filter_generic = bool(data.get("filterGeneric", True)),
                 )
                 self._json(200, result)
             except ImportError:
@@ -3436,12 +4361,20 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             orig_name = data.get("name", "file")[:255]
             mime_type = data.get("mime", "application/octet-stream")[:100]
             b64_data  = data.get("data", "")
-            if not b64_data:
+            if not b64_data or not isinstance(b64_data, str):
                 self._json(400, {"error": "No file data"}); return
+            # Tolerate data-URL prefix and stray whitespace, and re-pad if
+            # the client trimmed trailing '=' (some uploaders do).
+            if b64_data.startswith("data:") and "," in b64_data:
+                b64_data = b64_data.split(",", 1)[1]
+            b64_clean = "".join(b64_data.split())
+            pad = (-len(b64_clean)) % 4
+            if pad:
+                b64_clean += "=" * pad
             try:
-                file_bytes = base64.b64decode(b64_data)
-            except Exception:
-                self._json(400, {"error": "Invalid base64 data"}); return
+                file_bytes = base64.b64decode(b64_clean, validate=False)
+            except Exception as _b64e:
+                self._json(400, {"error": f"Invalid base64 data: {str(_b64e)[:80]}"}); return
             if len(file_bytes) > 20 * 1024 * 1024:
                 self._json(400, {"error": "File too large (max 20MB)"}); return
             user_dir = os.path.join(FILES_DIR, str(uid), category)
@@ -3461,6 +4394,66 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 conn.commit(); conn.close()
             self._json(200, {"id": file_id, "name": orig_name, "filename": filename,
                               "size": len(file_bytes), "category": category})
+
+        # ── POST aliases the frontend uses for file delete/rename ─────
+        # The canonical handlers live under DELETE /api/files/{id} and
+        # PATCH /api/files/{id}, but index.html issues these as POSTs
+        # (legacy XMLHttpRequest workaround), so accept both.
+        elif p.startswith("/api/files/delete/"):
+            if not (sess := self._auth()): return
+            try:
+                fid = int(p.split("/")[4])
+            except Exception:
+                self._json(400, {"error": "Invalid file ID"}); return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                row = conn.execute(
+                    "SELECT filename,category FROM user_files WHERE id=? AND user_id=?",
+                    (fid, uid)
+                ).fetchone()
+                if row:
+                    conn.execute("DELETE FROM user_files WHERE id=?", (fid,))
+                    conn.commit()
+                conn.close()
+            if row:
+                fpath = os.path.join(FILES_DIR, str(uid), row[1], row[0])
+                try:
+                    os.remove(fpath)
+                except Exception:
+                    pass
+                self._json(200, {"status": "ok"})
+            else:
+                self._json(404, {"error": "File not found"})
+
+        elif p.startswith("/api/files/rename/"):
+            if not (sess := self._auth()): return
+            try:
+                fid = int(p.split("/")[4])
+            except Exception:
+                self._json(400, {"error": "Invalid file ID"}); return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            uid = sess["user_id"]
+            new_name = (data.get("display_name") or data.get("name") or "")[:255]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                row = conn.execute(
+                    "SELECT id FROM user_files WHERE id=? AND user_id=?", (fid, uid)
+                ).fetchone()
+                if row:
+                    conn.execute(
+                        "UPDATE user_files SET display_name=? WHERE id=?",
+                        (new_name, fid)
+                    )
+                    conn.commit()
+                conn.close()
+            if row:
+                self._json(200, {"status": "ok", "display_name": new_name})
+            else:
+                self._json(404, {"error": "File not found"})
 
         # ── Save user config ─────────────────────────────────
         elif p == "/api/configs/save":
@@ -3545,7 +4538,11 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                     self._json(400, {"error": "accessKey and secretKey required"}); return
                 # AWS SES SMTP password derivation (official algorithm)
                 # https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html
-                import hmac, hashlib, base64
+                # NOTE: do NOT re-import base64 here — that creates a
+                # function-local binding that shadows the module-level
+                # import and makes other branches in this function
+                # (e.g. /api/files/upload) hit UnboundLocalError.
+                import hmac, hashlib
                 DATE      = "11111111"
                 SERVICE   = "ses"
                 MSG       = "SendRawEmail"
@@ -3649,6 +4646,123 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             except Exception as e:
                 self._json(200, {"status": "error", "message": str(e)[:400], "log": log})
 
+        # ── Email sorter ─────────────────────────────────────
+        elif p == "/api/tools/sort-emails":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            emails = data.get("emails", [])
+            if not emails:
+                self._json(200, {"buckets": {}, "total": 0}); return
+            try:
+                from core.email_sorter import sort_emails, bucket_summary, PROVIDER_META
+                buckets  = sort_emails(emails, workers=15, timeout=25)
+                summary  = bucket_summary(buckets)
+                meta     = {k: PROVIDER_META.get(k, {}) for k in buckets}
+                self._json(200, {
+                    "buckets":  buckets,
+                    "summary":  summary,
+                    "meta":     meta,
+                    "total":    len(emails),
+                })
+            except Exception as e:
+                self._json(200, {"error": str(e)[:300]})
+
+        # ── Link encoder preview ──────────────────────────────
+        elif p == "/api/tools/encode-link":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            url    = data.get("url", "").strip()
+            method = int(data.get("method", 0))
+            if not url:
+                self._json(400, {"error": "url required"}); return
+            try:
+                from core.link_encoder import (
+                    encode_link, build_redirect_attachment, METHOD_NAMES
+                )
+                encoded = encode_link(url, method)
+                att_html = ""
+                att_name = ""
+                if method >= 4:
+                    att_bytes, att_name = build_redirect_attachment(url, method)
+                    att_html = att_bytes.decode("utf-8", errors="replace")
+                self._json(200, {
+                    "method":      method,
+                    "method_name": METHOD_NAMES.get(method, "unknown"),
+                    "original":    url,
+                    "encoded":     encoded,
+                    "attachment_html": att_html,
+                    "attachment_name": att_name,
+                })
+            except Exception as e:
+                self._json(200, {"error": str(e)[:300]})
+
+        # ── B2B: connect + status ─────────────────────────────
+        elif p == "/api/b2b/connect":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            try:
+                from core.b2b_manager import B2BSender
+                token  = data.get("token") or data.get("accessToken", "")
+                mailbox = data.get("mailbox") or data.get("email") or "me"
+                b2b    = B2BSender(token=token, mailbox=mailbox)
+                me     = b2b.get_me()
+                self._json(200, {
+                    "status":       "ok",
+                    "message":      f"Connected as {me.get('displayName','')} ({me.get('mail','')})",
+                    "display_name": me.get("displayName", ""),
+                    "email":        me.get("mail") or me.get("userPrincipalName", ""),
+                })
+            except Exception as e:
+                self._json(200, {"status": "error", "message": str(e)[:300]})
+
+        elif p == "/api/b2b/folders":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            try:
+                from core.b2b_manager import B2BSender
+                token   = data.get("token", "")
+                mailbox = data.get("mailbox") or "me"
+                b2b     = B2BSender(token=token, mailbox=mailbox)
+                folders = b2b.list_folders()
+                self._json(200, {"folders": folders})
+            except Exception as e:
+                self._json(200, {"error": str(e)[:300]})
+
+        elif p == "/api/b2b/threads":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            try:
+                from core.b2b_manager import B2BSender
+                token   = data.get("token", "")
+                mailbox = data.get("mailbox") or "me"
+                folder  = data.get("folder", "Inbox")
+                limit   = int(data.get("limit", 50))
+                days    = int(data.get("days", 30))
+                b2b     = B2BSender(token=token, mailbox=mailbox)
+                threads = b2b.list_threads(folder=folder, limit=limit, since_days=days)
+                self._json(200, {
+                    "threads": threads,
+                    "count":   len(threads),
+                    "folder":  folder,
+                })
+            except Exception as e:
+                self._json(200, {"error": str(e)[:300]})
+
         # ── Validate frommail via tunnel/DoH ─────────────────
         elif p == "/api/tools/validate-fromemail":
             if not (sess := self._auth()): return
@@ -3663,7 +4777,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 import concurrent.futures as _cf
                 import socket as _sock2
 
-                # ── Per-domain reputation check (runs all checks in parallel) ──
                 def _check_domain(domain):
                     info = {
                         "mx": "", "mx_method": "",
@@ -3675,7 +4788,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                     }
 
                     def _doh(qname, qtype):
-                        """DoH lookup — returns list of answer dicts. Falls back Cloudflare → Google."""
                         for url in [
                             f"https://cloudflare-dns.com/dns-query?name={qname}&type={qtype}",
                             f"https://dns.google/resolve?name={qname}&type={qtype}",
@@ -3690,7 +4802,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                                 pass
                         return []
 
-                    # ── MX ──────────────────────────────────────────────────
+                    # MX
                     mx_ans = _doh(domain, "MX")
                     recs = []
                     for a in mx_ans:
@@ -3703,7 +4815,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                         info["mx"] = sorted(recs)[0][1]
                         info["mx_method"] = "doh"
                     else:
-                        # DNS fallback
                         try:
                             from core.mx_sender import _resolve_mx_all_methods
                             mx = _resolve_mx_all_methods(domain)
@@ -3713,7 +4824,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                         except Exception:
                             pass
 
-                    # ── SPF ──────────────────────────────────────────────────
+                    # SPF
                     for a in _doh(domain, "TXT"):
                         if a.get("type") == 16:
                             t = (a.get("data") or "").strip('"')
@@ -3721,18 +4832,13 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                                 info["spf"] = t
                                 break
                     spf = info["spf"]
-                    if not spf:
-                        info["spf_status"] = "missing"
-                    elif "-all" in spf:
-                        info["spf_status"] = "strict"
-                    elif "~all" in spf:
-                        info["spf_status"] = "softfail"
-                    elif "+all" in spf:
-                        info["spf_status"] = "permissive"
-                    else:
-                        info["spf_status"] = "present"
+                    if not spf:             info["spf_status"] = "missing"
+                    elif "-all" in spf:     info["spf_status"] = "strict"
+                    elif "~all" in spf:     info["spf_status"] = "softfail"
+                    elif "+all" in spf:     info["spf_status"] = "permissive"
+                    else:                   info["spf_status"] = "present"
 
-                    # ── DMARC ────────────────────────────────────────────────
+                    # DMARC
                     for a in _doh(f"_dmarc.{domain}", "TXT"):
                         if a.get("type") == 16:
                             t = (a.get("data") or "").strip('"')
@@ -3740,105 +4846,80 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                                 info["dmarc"] = t
                                 break
                     dmarc = info["dmarc"]
-                    if not dmarc:
-                        info["dmarc_status"] = "missing"
-                    elif "p=reject" in dmarc:
-                        info["dmarc_status"] = "reject"
-                    elif "p=quarantine" in dmarc:
-                        info["dmarc_status"] = "quarantine"
-                    elif "p=none" in dmarc:
-                        info["dmarc_status"] = "none"
-                    else:
-                        info["dmarc_status"] = "present"
+                    if not dmarc:                 info["dmarc_status"] = "missing"
+                    elif "p=reject" in dmarc:     info["dmarc_status"] = "reject"
+                    elif "p=quarantine" in dmarc: info["dmarc_status"] = "quarantine"
+                    elif "p=none" in dmarc:       info["dmarc_status"] = "none"
+                    else:                         info["dmarc_status"] = "present"
 
-                    # ── DNSBL blacklist checks ───────────────────────────────
-                    # Only use Spamhaus DBL — the only list specifically for
-                    # FROM-address domain reputation. SURBL/URIBL are URL/body
-                    # lists that flag gmail.com, yahoo.com etc. as false positives.
-                    _FREE_PROVIDERS = {
-                        "gmail.com","googlemail.com","yahoo.com","ymail.com",
-                        "yahoo.co.uk","yahoo.ca","hotmail.com","hotmail.co.uk",
-                        "hotmail.fr","outlook.com","outlook.co.uk","live.com",
-                        "live.ca","msn.com","icloud.com","me.com","mac.com",
-                        "aol.com","protonmail.com","proton.me","zoho.com",
-                        "gmx.com","gmx.net","mail.com","cox.net","comcast.net",
-                        "sbcglobal.net","att.net","verizon.net","bellsouth.net",
-                    }
-                    if domain not in _FREE_PROVIDERS:
-                        for zone, name in [("dbl.spamhaus.org", "Spamhaus DBL")]:
-                            try:
-                                _sock2.getaddrinfo(f"{domain}.{zone}", None, _sock2.AF_INET)
-                                info["blacklisted"] = True
-                                info["blacklists"].append(name)
-                            except _sock2.gaierror:
-                                pass  # NXDOMAIN = not listed = good
-                            except Exception:
-                                pass
-
-                    # ── Website reachability ─────────────────────────────────
-                    for scheme in ("https", "http"):
+                    # DNSBL - Spamhaus DBL only
+                    _FREE = {"gmail.com","googlemail.com","yahoo.com","ymail.com","yahoo.co.uk",
+                             "yahoo.ca","hotmail.com","hotmail.co.uk","hotmail.fr","outlook.com",
+                             "outlook.co.uk","live.com","live.ca","msn.com","icloud.com",
+                             "me.com","mac.com","aol.com","protonmail.com","proton.me"}
+                    if domain not in _FREE:
                         try:
-                            req = Request(f"{scheme}://{domain}", headers={"User-Agent":"Mozilla/5.0"})
-                            r = urlopen(req, timeout=3)
-                            if r.status < 400:
-                                info["web_alive"] = True
-                                break
+                            _sock2.getaddrinfo(f"{domain}.dbl.spamhaus.org", None, _sock2.AF_INET)
+                            info["blacklisted"] = True
+                            info["blacklists"].append("Spamhaus DBL")
+                        except _sock2.gaierror:
+                            pass
                         except Exception:
                             pass
 
-                    # ── Reputation score (0-100) ─────────────────────────────
-                    score = 50  # baseline — MX alone is enough to send
-                    if info["mx"]:             score += 20   # MX is mandatory, big bonus
-                    if info["spf_status"] == "strict":   score += 15
-                    elif info["spf_status"] == "softfail": score += 10
-                    elif info["spf_status"] == "present":  score += 8
-                    elif info["spf_status"] == "missing":  score -= 10  # warn, not fatal
-                    if info["dmarc_status"] in ("reject","quarantine","none"): score += 10
-                    elif info["dmarc_status"] == "missing": score -= 5   # warn only
-                    if info["web_alive"]:      score += 5
-                    if info["blacklisted"]:    score -= 50  # hard penalty
+                    # Score
+                    score = 50
+                    if info["mx"]:                                             score += 20
+                    if info["spf_status"] == "strict":                         score += 15
+                    elif info["spf_status"] == "softfail":                     score += 10
+                    elif info["spf_status"] == "present":                      score += 8
+                    elif info["spf_status"] == "missing":                      score -= 10
+                    if info["dmarc_status"] in ("reject","quarantine","none"):  score += 10
+                    elif info["dmarc_status"] == "missing":                    score -= 5
+                    if info["blacklisted"]:                                    score -= 50
                     info["score"] = max(0, min(100, score))
 
-                    # ── Issues + warnings ────────────────────────────────────
+                    # Issues + warnings
                     if not info["mx"]:
-                        info["issues"].append("No MX record — domain doesn't exist or can't receive mail")
+                        info["issues"].append("No MX record — domain cannot receive mail")
                     if info["dmarc_status"] == "reject":
                         info["issues"].append("DMARC p=reject — sends will be rejected by Gmail/Yahoo")
                     if info["blacklisted"]:
-                        info["issues"].append(f"Blacklisted on: {', '.join(info['blacklists'])}")
+                        info["issues"].append(f"Blacklisted: {', '.join(info['blacklists'])}")
                     if info["spf_status"] == "missing":
-                        info["warnings"].append("No SPF — may show 'unverified sender' in Gmail/Outlook")
+                        info["warnings"].append("No SPF record")
                     if info["dmarc_status"] == "missing":
-                        info["warnings"].append("No DMARC — missing trust signal for bulk senders")
+                        info["warnings"].append("No DMARC record")
                     if info["dmarc_status"] == "quarantine":
-                        info["warnings"].append("DMARC p=quarantine — failed sends may go to spam")
-                    if not info["web_alive"]:
-                        info["warnings"].append("Domain has no live website — lower sender trust")
+                        info["warnings"].append("DMARC p=quarantine")
 
-                    info["sendable"] = bool(info["mx"]) and not info["blacklisted"] and info["dmarc_status"] != "reject"
+                    info["sendable"] = (bool(info["mx"]) and not info["blacklisted"]
+                                        and info["dmarc_status"] != "reject")
                     info["valid"]    = bool(info["mx"])
                     return info
 
-                # ── Run checks concurrently, one thread per unique domain ──
+                # ── Build domain map — accept bare domains AND full emails ──
                 domain_map = {}
                 for email in emails:
                     email = email.strip()
+                    if not email:
+                        continue
                     if "@" in email:
                         domain_map.setdefault(email.split("@")[-1].lower(), []).append(email)
                     else:
-                        domain_map  # skip invalid
+                        # Bare domain input e.g. "dktinc.com" → treat as #RANDOMSTR@domain
+                        domain = email.lower()
+                        domain_map.setdefault(domain, []).append(f"#RANDOMSTR@{domain}")
 
-                _TIMED_OUT = object()  # sentinel for domains that didn't finish
-                cache = {}
-                # 25 workers for big lists, 5s per individual check, 90s wall clock
                 if not domain_map:
                     self._json(200, {"results":[],"total":0,"pass_count":0,"warn_count":0,"fail_count":0})
                     return
+
+                # ── Run checks concurrently ──────────────────────────────────
+                cache = {}
                 _n_workers = max(1, min(len(domain_map), 25))
                 with _cf.ThreadPoolExecutor(max_workers=_n_workers) as ex:
                     fut_map = {ex.submit(_check_domain, dom): dom for dom in domain_map}
-                    # Drain completed futures with a generous wall-clock timeout.
-                    # Any stragglers are marked with a timeout result — never crash.
                     try:
                         _iter = _cf.as_completed(fut_map, timeout=90)
                     except Exception:
@@ -3848,37 +4929,412 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                         try:
                             cache[dom] = fut.result(timeout=0)
                         except Exception as _fe:
-                            cache[dom] = {"mx":"","mx_method":"","spf":"","spf_status":"error","dmarc":"","dmarc_status":"error","blacklisted":False,"blacklists":[],"web_alive":False,"score":0,"sendable":False,"valid":False,"issues":[str(_fe)[:120]],"warnings":[]}
-                    # Any domains that still haven't finished → timeout placeholder
+                            cache[dom] = {"mx":"","mx_method":"","spf":"","spf_status":"error",
+                                          "dmarc":"","dmarc_status":"error","blacklisted":False,
+                                          "blacklists":[],"score":0,"sendable":False,"valid":False,
+                                          "issues":[str(_fe)[:120]],"warnings":[]}
                     for _rem_fut, _rem_dom in fut_map.items():
                         if _rem_dom not in cache:
-                            cache[_rem_dom] = {"mx":"","mx_method":"","spf":"","spf_status":"timeout","dmarc":"","dmarc_status":"timeout","blacklisted":False,"blacklists":[],"web_alive":False,"score":0,"sendable":False,"valid":False,"issues":["DNS timeout — could not check domain in time"],"warnings":[]}
+                            cache[_rem_dom] = {"mx":"","mx_method":"","spf":"","spf_status":"timeout",
+                                               "dmarc":"","dmarc_status":"timeout","blacklisted":False,
+                                               "blacklists":[],"score":0,"sendable":False,"valid":False,
+                                               "issues":["DNS timeout"],"warnings":[]}
 
+                # ── Build results list ───────────────────────────────────────
                 results = []
                 for email in emails:
                     email = email.strip()
-                    if "@" not in email:
-                        results.append({"email":email,"valid":False,"sendable":False,"score":0,"issues":["Invalid format"],"warnings":[]})
+                    if not email:
                         continue
-                    dom = email.split("@")[-1].lower()
-                    info = cache.get(dom, {"valid":False,"sendable":False,"score":0,"issues":["Lookup failed"],"warnings":[]})
-                    results.append({**info, "email": email})
+                    if "@" not in email:
+                        dom     = email.lower()
+                        info    = cache.get(dom, {"valid":False,"sendable":False,"score":0,"issues":["Lookup failed"],"warnings":[]})
+                        display = f"#RANDOMSTR@{dom}"
+                        results.append({**info, "email": display})
+                    else:
+                        dom  = email.split("@")[-1].lower()
+                        info = cache.get(dom, {"valid":False,"sendable":False,"score":0,"issues":["Lookup failed"],"warnings":[]})
+                        results.append({**info, "email": email})
 
-                _pass = [r for r in results if r.get("sendable") and r.get("score",0)>=60 and not r.get("blacklisted")]
-                _warn = [r for r in results if r.get("sendable") and (r.get("score",0)<60 or r.get("warnings")) and not r.get("blacklisted")]
+                _pass = [r for r in results if r.get("sendable") and r.get("score",0) >= 60 and not r.get("blacklisted")]
+                _warn = [r for r in results if r.get("sendable") and (r.get("score",0) < 60 or r.get("warnings")) and not r.get("blacklisted")]
                 _fail = [r for r in results if not r.get("sendable")]
                 self._json(200, {
-                    "results":     results,
-                    "total":       len(results),
-                    "pass_count":  len(_pass),
-                    "warn_count":  len(_warn),
-                    "fail_count":  len(_fail),
+                    "results":    results,
+                    "total":      len(results),
+                    "pass_count": len(_pass),
+                    "warn_count": len(_warn),
+                    "fail_count": len(_fail),
                 })
             except Exception as e:
                 try:
                     self._json(200, {"error": str(e)[:300]})
                 except (BrokenPipeError, ConnectionResetError, OSError):
-                    pass  # client disconnected before we could send the error
+                    pass
+
+        elif p == "/api/tools/check-esp":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            api_key = (data.get("key") or "").strip()
+            secret  = (data.get("secret") or "").strip() or None
+            region  = (data.get("region") or "us-east-1").strip()
+            domain  = (data.get("domain") or "").strip() or None
+            if not api_key:
+                self._json(400, {"error": "API key is required"}); return
+            try:
+                import sys as _sys, os as _os
+                _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "core"))
+                import importlib as _il
+                if "email_checker" in _sys.modules:
+                    _il.reload(_sys.modules["email_checker"])
+                from email_checker import create_provider, detect_provider
+                provider = create_provider(api_key, secret, region, domain)
+                if not provider:
+                    pc = detect_provider(api_key, secret)
+                    if pc is None:
+                        self._json(200, {"error": "Could not detect provider. Supported: SendGrid (SG.*), AWS SES (AKIA*), Mailgun (key-*), Postmark (server_*), Mailjet, Brevo, SparkPost"}); return
+                    else:
+                        self._json(200, {"error": f"Provider detected as {pc.__name__.replace('Provider','')} but needs additional credentials (secret key, region, or domain)"}); return
+                status = provider.fetch_status()
+                result = {
+                    "provider":             status.provider,
+                    "account_status":       status.account_status,
+                    "plan":                 status.plan,
+                    "daily_limit":          status.daily_limit,
+                    "monthly_limit":        status.monthly_limit,
+                    "rate_limit":           status.rate_limit,
+                    "sent_today":           status.sent_today,
+                    "sent_this_month":      status.sent_this_month,
+                    "sent_last_24h":        status.sent_last_24h,
+                    "remaining_today":      status.remaining_today,
+                    "remaining_this_month": status.remaining_this_month,
+                    "domains":              status.domains,
+                    "verified_emails":      status.verified_emails,
+                    "extra_info":           status.extra_info,
+                    "errors":               status.errors,
+                }
+                self._json(200, result)
+            except ImportError as e:
+                self._json(200, {"error": f"email_checker.py not found in core/ — {e}"})
+            except Exception as e:
+                try:
+                    self._json(200, {"error": str(e)[:400]})
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+
+        # ── Suppression: add emails ──────────────────────────
+        elif p == "/api/suppression":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            emails = data.get("emails", [])
+            reason = data.get("reason", "manual")
+            if not isinstance(emails, list) or not emails:
+                self._json(400, {"error": "emails list is required"}); return
+            uid = sess["user_id"]
+            added = 0
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                for email in emails:
+                    email = (email or "").strip().lower()
+                    if not email:
+                        continue
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO suppression (user_id, email, reason) VALUES (?,?,?)",
+                            (uid, email, reason),
+                        )
+                        if conn.total_changes:
+                            added += 1
+                    except Exception:
+                        pass
+                conn.commit()
+                conn.close()
+            self._json(200, {"ok": True, "added": added})
+
+        # ── Seed accounts: add ───────────────────────────────
+        elif p == "/api/seed-accounts":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            email     = (data.get("email") or "").strip().lower()
+            password  = data.get("password", "")
+            imap_host = (data.get("imapHost") or "").strip()
+            imap_port = int(data.get("imapPort", 993))
+            provider  = (data.get("provider") or "auto").strip()
+            if not email:
+                self._json(400, {"error": "email is required"}); return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO seed_accounts (user_id, email, password, imap_host, imap_port, provider) VALUES (?,?,?,?,?,?)",
+                        (uid, email, password, imap_host, imap_port, provider),
+                    )
+                    conn.commit()
+                except Exception as e:
+                    conn.close()
+                    self._json(500, {"error": str(e)[:300]}); return
+                conn.close()
+            self._json(200, {"ok": True})
+
+        # ── Inbox placement test: start ──────────────────────
+        elif p == "/api/tools/inbox-test":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            subject = (data.get("subject") or "").strip()
+            html    = data.get("html", "")
+            if not subject:
+                self._json(400, {"error": "subject is required"}); return
+            uid = sess["user_id"]
+            # Get user's seed accounts
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                accounts = conn.execute(
+                    "SELECT email, password, imap_host, imap_port, provider FROM seed_accounts WHERE user_id=?",
+                    (uid,)
+                ).fetchall()
+                conn.close()
+            if not accounts:
+                self._json(400, {"error": "No seed accounts configured"}); return
+            run_id = str(uuid.uuid4())
+            _INBOX_RUNS[run_id] = {"done": False, "results": []}
+
+            def _inbox_test_worker(run_id, accounts, subject):
+                import imaplib
+                results = []
+                for acct in accounts:
+                    email, pw, host, port, prov = acct
+                    start = time.time()
+                    folder = "not_found"
+                    try:
+                        imap = imaplib.IMAP4_SSL(host, int(port))
+                        imap.login(email, pw)
+                        for folder_name, target_label in [("INBOX", "inbox"), ("Junk", "spam"),
+                                                           ("[Gmail]/Spam", "spam"),
+                                                           ("Spam", "spam"),
+                                                           ("INBOX", "promotions")]:
+                            try:
+                                status, _ = imap.select(folder_name, readonly=True)
+                                if status != "OK":
+                                    continue
+                                status, msgs = imap.search(None, 'SUBJECT', f'"{subject}"')
+                                if status == "OK" and msgs[0]:
+                                    folder = target_label
+                                    break
+                            except Exception:
+                                continue
+                        imap.logout()
+                    except Exception:
+                        pass
+                    elapsed = int((time.time() - start) * 1000)
+                    results.append({"email": email, "folder": folder, "latency_ms": elapsed})
+                _INBOX_RUNS[run_id]["results"] = results
+                _INBOX_RUNS[run_id]["done"] = True
+
+            Thread(target=_inbox_test_worker, args=(run_id, accounts, subject), daemon=True).start()
+            self._json(200, {"run_id": run_id})
+
+        # ── IP Blacklist Checker ─────────────────────────────
+        elif p == "/api/tools/ip-blacklist":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            ips = data.get("ips", [])
+            if not isinstance(ips, list) or not ips:
+                self._json(400, {"error": "ips list is required"}); return
+            dnsbls = [
+                "zen.spamhaus.org",
+                "b.barracudacentral.org",
+                "bl.spamcop.net",
+                "dnsbl-1.uceprotect.net",
+                "dnsbl.sorbs.net",
+            ]
+            results = []
+            for ip in ips:
+                ip = (ip or "").strip()
+                if not ip:
+                    continue
+                parts = ip.split(".")
+                if len(parts) != 4:
+                    results.append({"ip": ip, "listed": [], "clean": [], "error": "Invalid IPv4"})
+                    continue
+                reversed_ip = ".".join(reversed(parts))
+                listed = []
+                clean  = []
+                for bl in dnsbls:
+                    query = f"{reversed_ip}.{bl}"
+                    try:
+                        socket.getaddrinfo(query, None)
+                        listed.append(bl)
+                    except socket.gaierror:
+                        clean.append(bl)
+                    except Exception:
+                        clean.append(bl)
+                results.append({"ip": ip, "listed": listed, "clean": clean})
+            self._json(200, {"results": results})
+
+        # ── S3 Redirect Generator ────────────────────────────
+        elif p == "/api/tools/s3-redirects":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            try:
+                import boto3
+            except ImportError:
+                self._json(200, {"error": "boto3 is not installed. Run: pip install boto3"}); return
+            access_key = (data.get("accessKey") or "").strip()
+            secret_key = (data.get("secretKey") or "").strip()
+            region     = (data.get("region") or "us-east-1").strip()
+            dest_url   = (data.get("destUrl") or "").strip()
+            count      = int(data.get("count", 5))
+            cf_config  = data.get("cloudflare")
+            if not access_key or not secret_key or not dest_url:
+                self._json(400, {"error": "accessKey, secretKey, and destUrl are required"}); return
+            if count < 1 or count > 50:
+                self._json(400, {"error": "count must be between 1 and 50"}); return
+            redirects = []
+            try:
+                s3 = boto3.client("s3", aws_access_key_id=access_key,
+                                  aws_secret_access_key=secret_key, region_name=region)
+                for _ in range(count):
+                    bucket = "r-" + uuid.uuid4().hex[:12]
+                    s3.create_bucket(
+                        Bucket=bucket,
+                        **({"CreateBucketConfiguration": {"LocationConstraint": region}} if region != "us-east-1" else {})
+                    )
+                    # Disable block public access
+                    s3.put_public_access_block(
+                        Bucket=bucket,
+                        PublicAccessBlockConfiguration={
+                            "BlockPublicAcls": False,
+                            "IgnorePublicAcls": False,
+                            "BlockPublicPolicy": False,
+                            "RestrictPublicBuckets": False,
+                        }
+                    )
+                    redirect_html = f'<html><head><meta http-equiv="refresh" content="0;url={dest_url}"></head><body>Redirecting...</body></html>'
+                    s3.put_object(Bucket=bucket, Key="index.html", Body=redirect_html,
+                                  ContentType="text/html", ACL="public-read")
+                    s3.put_bucket_website(
+                        Bucket=bucket,
+                        WebsiteConfiguration={"IndexDocument": {"Suffix": "index.html"}}
+                    )
+                    url = f"http://{bucket}.s3-website-{region}.amazonaws.com"
+                    cname = None
+                    if cf_config and isinstance(cf_config, dict):
+                        cf_api_key = cf_config.get("apiKey", "")
+                        cf_email   = cf_config.get("email", "")
+                        cf_zone    = cf_config.get("zoneId", "")
+                        cf_domain  = cf_config.get("domain", "")
+                        if cf_api_key and cf_zone and cf_domain:
+                            subdomain = bucket + "." + cf_domain
+                            try:
+                                import urllib.request, urllib.error
+                                cf_body = json.dumps({
+                                    "type": "CNAME", "name": subdomain,
+                                    "content": f"{bucket}.s3-website-{region}.amazonaws.com",
+                                    "ttl": 1, "proxied": True,
+                                }).encode()
+                                cf_req = urllib.request.Request(
+                                    f"https://api.cloudflare.com/client/v4/zones/{cf_zone}/dns_records",
+                                    data=cf_body, method="POST",
+                                    headers={
+                                        "Content-Type": "application/json",
+                                        "X-Auth-Email": cf_email,
+                                        "X-Auth-Key": cf_api_key,
+                                    }
+                                )
+                                urllib.request.urlopen(cf_req, timeout=15)
+                                cname = subdomain
+                            except Exception:
+                                pass
+                    redirects.append({"url": url, "bucket": bucket, "cname": cname})
+            except Exception as e:
+                self._json(200, {"error": str(e)[:400], "redirects": redirects}); return
+            self._json(200, {"redirects": redirects})
+
+        # ── Add domain to ESP ────────────────────────────────
+        elif p == "/api/tools/add-domain":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            api_key = (data.get("key") or "").strip()
+            secret  = (data.get("secret") or "").strip() or None
+            region  = (data.get("region") or "us-east-1").strip()
+            domain  = (data.get("domain") or "").strip()
+            if not api_key or not domain:
+                self._json(400, {"error": "API key and domain are required"}); return
+            try:
+                import sys as _sys, os as _os
+                _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "core"))
+                import importlib as _il
+                if "email_checker" in _sys.modules:
+                    _il.reload(_sys.modules["email_checker"])
+                from email_checker import create_provider
+                provider = create_provider(api_key, secret, region, domain)
+                if not provider:
+                    self._json(200, {"error": "Could not create provider for given credentials"}); return
+                result = provider.add_domain(domain)
+                self._json(200, {"ok": True, "domain_id": result.get("domain_id", ""), "dns_records": result.get("dns_records", [])})
+            except ImportError as e:
+                self._json(200, {"error": f"email_checker.py not found in core/ — {e}"})
+            except Exception as e:
+                try:
+                    self._json(200, {"error": str(e)[:400]})
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+
+        # ── Verify domain on ESP ─────────────────────────────
+        elif p == "/api/tools/verify-domain":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            api_key   = (data.get("key") or "").strip()
+            secret    = (data.get("secret") or "").strip() or None
+            region    = (data.get("region") or "us-east-1").strip()
+            domain    = (data.get("domain") or "").strip()
+            domain_id = (data.get("domain_id") or "").strip()
+            if not api_key or not domain:
+                self._json(400, {"error": "API key and domain are required"}); return
+            try:
+                import sys as _sys, os as _os
+                _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "core"))
+                import importlib as _il
+                if "email_checker" in _sys.modules:
+                    _il.reload(_sys.modules["email_checker"])
+                from email_checker import create_provider
+                provider = create_provider(api_key, secret, region, domain)
+                if not provider:
+                    self._json(200, {"error": "Could not create provider for given credentials"}); return
+                result = provider.verify_domain(domain, domain_id)
+                self._json(200, {"ok": True, "status": result.get("status", "pending"), "records": result.get("records", [])})
+            except ImportError as e:
+                self._json(200, {"error": f"email_checker.py not found in core/ — {e}"})
+            except Exception as e:
+                try:
+                    self._json(200, {"error": str(e)[:400]})
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
 
         # ── Admin: create user ───────────────────────────────
         elif p == "/api/admin/users":
@@ -4002,6 +5458,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 tg.start_polling()
             tg.set_config("enabled", "1" if data.get("enabled") else "0")
             tg.set_config("notify_channel", data.get("notify_channel", ""))
+            tg.set_config("notify_campaigns", "1" if data.get("notify_campaigns", True) else "0")
             self._json(200, {"status": "ok"})
 
         # ── Telegram: generate link code for current user ─────────────────
@@ -4047,6 +5504,48 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 conn.execute("UPDATE users SET tg_2fa_enabled=? WHERE id=?", (new_val, uid))
                 conn.commit(); conn.close()
             self._json(200, {"enabled": bool(new_val)})
+
+        # ── Telegram: campaign control (pause/resume/stop/stats) ─────────────
+        elif p == "/api/tg/campaign-control":
+            # Called by telegram_bot.py to control campaigns
+            client_ip = (self.client_address[0] if self.client_address else "") or ""
+            if client_ip not in ("127.0.0.1", "::1"):
+                self._json(403, {"error": "Forbidden"}); return
+            internal_secret = os.environ.get("SYNTHTEL_INTERNAL_SECRET", "").strip()
+            if internal_secret:
+                req_secret = self.headers.get("X-SynthTel-Internal-Secret", "").strip()
+                if not req_secret or req_secret != internal_secret:
+                    self._json(403, {"error": "Forbidden"}); return
+            try: data = self._read_body()
+            except Exception: self._json(400, {"error": "Invalid JSON"}); return
+            action  = data.get("action", "")   # pause|resume|stop|stats
+            user_id = data.get("user_id")
+            if not user_id:
+                self._json(400, {"error": "user_id required"}); return
+            with active_campaigns_lock:
+                ctrl = CAMPAIGN_CONTROLS.get(user_id)
+                live = LIVE_CAMPAIGN_STATS.get(user_id)
+                if not ctrl:
+                    self._json(200, {"status": "no_campaign", "message": "No active campaign"}); return
+                if action == "pause":
+                    ctrl["paused"] = True
+                    if live:
+                        live["status"] = "paused"
+                    self._json(200, {"status": "ok", "message": "Campaign paused"})
+                elif action == "resume":
+                    ctrl["paused"] = False
+                    if live:
+                        live["status"] = "running"
+                    self._json(200, {"status": "ok", "message": "Campaign resumed"})
+                elif action == "stop":
+                    ctrl["abort"] = True
+                    if live:
+                        live["status"] = "stopping"
+                    self._json(200, {"status": "ok", "message": "Campaign stopped"})
+                elif action == "stats":
+                    self._json(200, {"status": "ok", "stats": ctrl.get("stats", {})})
+                else:
+                    self._json(400, {"error": f"Unknown action: {action}"})
 
         # ── Login: verify OTP (2FA second step) ───────────────────────────
         elif p == "/api/login/verify-otp":
@@ -4237,8 +5736,17 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 tid = int(p.split("/")[3])
             except Exception:
                 self._json(400, {"error": "Invalid ticket ID"}); return
+            uid  = sess["user_id"]
+            role = sess["role"]
             with db_lock:
                 conn = sqlite3.connect(DB_PATH)
+                ticket = conn.execute(
+                    "SELECT user_id FROM support_tickets WHERE id=?", (tid,)
+                ).fetchone()
+                if not ticket:
+                    conn.close(); self._json(404, {"error": "Ticket not found"}); return
+                if role not in ("admin","superadmin","moderator") and ticket[0] != uid:
+                    conn.close(); self._json(403, {"error": "Access denied"}); return
                 conn.execute(
                     "UPDATE support_tickets SET status='open', updated_at=? WHERE id=?",
                     (datetime.now().isoformat(), tid)
@@ -4262,28 +5770,6 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             tg.notify_user(int(uid),
                 "📢 <b>Message from Admin</b>\n\n" + msg)
             self._json(200, {"status": "ok"})
-
-        elif p == "/api/logs":
-            if not (sess := self._auth()): return
-            try:
-                lines = int(self.params.get("lines", [100])[0])
-                lines = min(lines, 500)
-            except Exception:
-                lines = 100
-            try:
-                with open(LOG_PATH, "r", errors="replace") as f:
-                    all_lines = f.readlines()
-                tail = "".join(all_lines[-lines:])
-            except Exception as e:
-                tail = f"[Log file not found or unreadable: {e}]"
-            self._json(200, {"log": tail, "path": LOG_PATH})
-
-        elif p == "/api/debug-log":
-            clear = self.params.get("clear", ["0"])[0] == "1"
-            with _dbg_lock:
-                entries = list(_DEBUG_BUF)
-                if clear: _DEBUG_BUF.clear()
-            self._json(200, {"entries": entries, "count": len(entries)})
 
         elif p == "/api/debug-tags":
             if not (sess := self._auth()): return
@@ -4455,6 +5941,38 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 self._json(200, {"status": "ok"})
             else:
                 self._json(404, {"error": "Config not found"})
+
+        # ── Suppression: delete ──────────────────────────────
+        elif p.startswith("/api/suppression/"):
+            if not (sess := self._auth()): return
+            from urllib.parse import unquote
+            try:
+                email = unquote(p.split("/api/suppression/", 1)[1]).strip().lower()
+            except Exception:
+                self._json(400, {"error": "Invalid email"}); return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("DELETE FROM suppression WHERE user_id=? AND email=?", (uid, email))
+                conn.commit()
+                conn.close()
+            self._json(200, {"ok": True})
+
+        # ── Seed accounts: delete ────────────────────────────
+        elif p.startswith("/api/seed-accounts/"):
+            if not (sess := self._auth()): return
+            from urllib.parse import unquote
+            try:
+                email = unquote(p.split("/api/seed-accounts/", 1)[1]).strip().lower()
+            except Exception:
+                self._json(400, {"error": "Invalid email"}); return
+            uid = sess["user_id"]
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("DELETE FROM seed_accounts WHERE user_id=? AND email=?", (uid, email))
+                conn.commit()
+                conn.close()
+            self._json(200, {"ok": True})
 
         elif p.startswith("/api/admin/users/"):
             if not (sess := self._admin()): return
