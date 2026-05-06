@@ -133,6 +133,35 @@ if [ -f "$SRC_DIR/index.html" ]; then
     ok "Deployed index.html → $WEB_DIR/index.html"
 fi
 
+# JS libs (React + Babel — referenced by index.html as /libs/*.min.js).
+# These MUST be served as real files; otherwise nginx's SPA-fallback
+# returns index.html with text/html and the browser refuses to execute
+# the scripts ("strict MIME type checking").  Auto-fetched if missing.
+if [ -d "$SRC_DIR/libs" ] && ls "$SRC_DIR/libs"/*.min.js >/dev/null 2>&1; then
+    mkdir -p "$WEB_DIR/libs"
+    LIB_COUNT=0
+    for libfile in "$SRC_DIR"/libs/*.min.js; do
+        cp "$libfile" "$WEB_DIR/libs/$(basename "$libfile")"
+        LIB_COUNT=$((LIB_COUNT+1))
+    done
+    ok "Deployed ${LIB_COUNT} JS lib(s) → $WEB_DIR/libs/"
+else
+    warn "$SRC_DIR/libs is missing JS files — fetching from CDN"
+    mkdir -p "$WEB_DIR/libs"
+    for entry in \
+        "react.min.js|https://unpkg.com/react@18/umd/react.production.min.js" \
+        "react-dom.min.js|https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" \
+        "babel.min.js|https://unpkg.com/@babel/standalone/babel.min.js"; do
+        name="${entry%%|*}"
+        url="${entry##*|}"
+        if curl -fsSL --max-time 60 -o "$WEB_DIR/libs/$name" "$url"; then
+            ok "Fetched $name from CDN"
+        else
+            err "Failed to fetch $name — frontend will fall back to CDN at runtime"
+        fi
+    done
+fi
+
 # ── Pin the installed SHA so the auto-updater is in sync ─────
 step "Step 5/6 — Pin installed commit SHA for auto-updater"
 echo -n "$COMMIT_SHA" > "$INSTALL_DIR/.installed_sha"

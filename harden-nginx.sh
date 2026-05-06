@@ -128,6 +128,23 @@ server {
     server_tokens off;
     autoindex off;
 
+    # ── JS libs (React + Babel) — MUST NOT SPA-fallback ──
+    # If /libs/foo.js is missing we need a real 404 so the inline
+    # onerror handler in index.html can swap to a CDN URL.  The
+    # SPA fallback would otherwise serve index.html with text/html
+    # and the browser would reject it under strict MIME checking.
+    location /libs/ {
+        try_files \$uri =404;
+        add_header Cache-Control "public, max-age=86400";
+        add_header X-Content-Type-Options nosniff;
+        types {
+            application/javascript js;
+            text/css               css;
+            font/woff2             woff2;
+        }
+        limit_req zone=general burst=50 nodelay;
+    }
+
     # ── Frontend (SPA) ──
     location / {
         try_files \$uri \$uri/ /index.html;

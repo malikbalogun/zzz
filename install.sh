@@ -124,6 +124,21 @@ server {
     index index.html;
     client_max_body_size 25M;
 
+    # Static asset directories must NOT fall back to /index.html — if
+    # /libs/react.min.js doesn't exist we want a real 404 so the inline
+    # onerror handler can swap to a CDN URL.  Otherwise the browser gets
+    # index.html with text/html and refuses with strict MIME checking.
+    location /libs/ {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=86400";
+        add_header X-Content-Type-Options nosniff;
+        types {
+            application/javascript js;
+            text/css               css;
+            font/woff2             woff2;
+        }
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
         add_header Cache-Control "no-cache, no-store, must-revalidate";

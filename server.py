@@ -151,7 +151,16 @@ UPDATE_TRACKED_FILES = [
     "core/telegram_bot.py",
     "core/tunnel_manager.py",
 ]
-# index.html is special — installed to WEB_DIR not INSTALL_DIR.
+# Frontend assets — installed to WEB_DIR/<name> (not INSTALL_DIR).
+# index.html is the SPA shell; libs/*.min.js are React + Babel that
+# the browser loads from /libs/ (must exist as real files or nginx's
+# SPA fallback will serve index.html with the wrong MIME type).
+UPDATE_TRACKED_WEB = [
+    "index.html",
+    "libs/react.min.js",
+    "libs/react-dom.min.js",
+    "libs/babel.min.js",
+]
 
 # Pre-configured Azure App — set these once as env vars or in /opt/synthtel/.env
 # Users will never need to enter credentials manually if these are set
@@ -584,27 +593,45 @@ def _apply_update() -> dict:
             except Exception as e:
                 failed.append({"file": rel, "error": str(e)[:200]})
 
-        # 2. index.html → WEB_DIR/index.html  (best-effort; may not be writable)
-        try:
-            data = _gh_raw("index.html")
-            if data and len(data) > 1000 and os.path.isdir(WEB_DIR):
-                dest = os.path.join(WEB_DIR, "index.html")
-                tmp  = dest + ".new"
-                with open(tmp, "wb") as f:
-                    f.write(data)
-                if os.path.exists(dest):
-                    try: os.replace(dest, dest + ".bak")
-                    except Exception: pass
-                os.replace(tmp, dest)
-                applied.append("index.html")
-            elif data:
-                # Not writable — write to INSTALL_DIR as fallback
-                fallback = os.path.join(INSTALL_DIR, "index.html")
-                with open(fallback, "wb") as f:
-                    f.write(data)
-                applied.append("index.html (fallback)")
-        except Exception as e:
-            failed.append({"file": "index.html", "error": str(e)[:200]})
+        # 2. Frontend assets → WEB_DIR/<rel>  (best-effort; may not be writable)
+        # Each entry in UPDATE_TRACKED_WEB is a path relative to the repo
+        # root; we mirror it under WEB_DIR.  Falls back to INSTALL_DIR on
+        # write failure so the auto-updater never silently no-ops.
+        for rel in UPDATE_TRACKED_WEB:
+            try:
+                data = _gh_raw(rel)
+                if not data:
+                    failed.append({"file": rel, "error": "Downloaded file empty"})
+                    continue
+                # Refuse very small responses for index.html / JS libs
+                # (protects against catching a 404 HTML page as content).
+                min_size = 1000 if rel.endswith(".html") else 4000
+                if len(data) < min_size:
+                    failed.append({"file": rel, "error": f"Downloaded file too small ({len(data)} bytes)"})
+                    continue
+                # Sanity: JS libs should NOT start with '<'
+                if rel.endswith(".js") and data.lstrip().startswith(b"<"):
+                    failed.append({"file": rel, "error": "Downloaded JS looks like HTML — bad path?"})
+                    continue
+                if os.path.isdir(WEB_DIR):
+                    dest = os.path.join(WEB_DIR, rel)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    tmp = dest + ".new"
+                    with open(tmp, "wb") as f:
+                        f.write(data)
+                    if os.path.exists(dest):
+                        try: os.replace(dest, dest + ".bak")
+                        except Exception: pass
+                    os.replace(tmp, dest)
+                    applied.append(rel)
+                else:
+                    fallback = os.path.join(INSTALL_DIR, rel)
+                    os.makedirs(os.path.dirname(fallback), exist_ok=True)
+                    with open(fallback, "wb") as f:
+                        f.write(data)
+                    applied.append(f"{rel} (fallback)")
+            except Exception as e:
+                failed.append({"file": rel, "error": str(e)[:200]})
 
         # 3. Mark installed SHA
         if applied:
