@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-  <meta name="version" content="v5.20.20260506-attach">
+  <meta name="version" content="v5.21.20260506-split">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -2449,7 +2449,13 @@ function TabCompose({
 }) {
   const isMobile = useIsMobile();
   const [subTab, setSubTab] = React.useState("editor");
-  const [splitView, setSplitView] = React.useState(false);
+  const [splitView, setSplitView] = React.useState(()=>{
+    try { return localStorage.getItem("st_compose_split") === "1"; } catch(e) { return false; }
+  });
+  React.useEffect(()=>{
+    try { localStorage.setItem("st_compose_split", splitView ? "1" : "0"); } catch(e){}
+  },[splitView]);
+  const [prevDevice, setPrevDevice] = React.useState("desk");  // 'desk' | 'mob'
   // Preview state
   const [prevEmail,   setPrevEmail]   = React.useState("");
   const [prevName,    setPrevName]    = React.useState("John Smith");
@@ -2666,7 +2672,9 @@ function TabCompose({
             <textarea ref={bodyRef} value={htmlBody} onChange={e=>setHtmlBody(e.target.value)}
               onFocus={()=>setActiveRef(bodyRef)}
               placeholder={"<html>…your email HTML here…</html>\n\nUse #FIRSTNAME, #EMAIL, #COMPANY, #INVOICE_NUM etc."}
-              style={{minHeight:260,fontFamily:"var(--font-mono)",fontSize:12,lineHeight:1.6}}/>
+              style={{minHeight: splitView && !isMobile ? "calc(100vh - 280px)" : 260,
+                      fontFamily:"var(--font-mono)",fontSize:12,lineHeight:1.6,
+                      resize:"vertical"}}/>
           </div>
 
           {/* Plain text */}
@@ -2818,13 +2826,21 @@ function TabCompose({
         </div>
         {/* RIGHT PANEL: live preview (split view only) */}
         {splitView && (
-          <div style={{position:"sticky",top:16}}>
+          <div style={{position:"sticky",top:16,maxHeight:"calc(100vh - 32px)",overflow:"auto"}}>
             <div className="card" style={{padding:"12px 14px"}}>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:6}}>
                 <span style={{fontWeight:600,fontSize:13}}>👁 Live Preview</span>
-                <div style={{display:"flex",gap:4}}>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
                   {[["html","HTML"],["plain","Plain"],["source","Source"]].map(([k,l])=>(
                     <button key={k} className={`tb ${prevMode===k?"on":""}`} style={{fontSize:11,padding:"3px 8px"}} onClick={()=>setPrevMode(k)}>{l}</button>
+                  ))}
+                  <span style={{display:"inline-block",width:1,background:"var(--border)",margin:"0 4px"}}/>
+                  {[["desk","🖥"],["mob","📱"]].map(([k,ico])=>(
+                    <button key={k}
+                      className={`tb ${prevDevice===k?"on":""}`}
+                      style={{fontSize:11,padding:"3px 8px"}}
+                      title={k==="desk"?"Desktop preview":"Mobile preview"}
+                      onClick={()=>setPrevDevice(k)}>{ico}</button>
                   ))}
                 </div>
               </div>
@@ -2833,19 +2849,32 @@ function TabCompose({
                 <strong style={{color:"var(--t2)"}}>Subj:</strong> {previewSubject||subject||"(no subject)"}
               </div>
               {prevMode==="html" && (
-                <div style={{background:"#fff",borderRadius:6,overflow:"hidden",minHeight:400,border:"1px solid var(--border)"}}>
+                <div style={{background:"#fff",borderRadius:6,overflow:"auto",
+                             border:"1px solid var(--border)",
+                             height:"calc(100vh - 240px)",minHeight:480,
+                             display:"flex",justifyContent:"center"}}>
                   {htmlBody
-                    ? <iframe srcDoc={previewHtml} style={{width:"100%",minHeight:400,border:"none"}} sandbox="allow-same-origin"/>
-                    : <div style={{padding:30,color:"#aaa",textAlign:"center",fontSize:13}}>Write HTML body on the left to preview</div>}
+                    ? <iframe srcDoc={previewHtml}
+                              style={{width: prevDevice==="mob" ? 380 : "100%",
+                                      maxWidth:"100%",
+                                      height:"100%",
+                                      border:"none",
+                                      transition:"width .2s"}}
+                              sandbox="allow-same-origin"/>
+                    : <div style={{padding:30,color:"#aaa",textAlign:"center",fontSize:13,alignSelf:"center"}}>
+                        Write HTML body on the left to preview
+                      </div>}
                 </div>
               )}
               {prevMode==="plain" && (
-                <div className="code" style={{minHeight:200,whiteSpace:"pre-wrap",fontSize:12}}>
+                <div className="code" style={{minHeight:200,whiteSpace:"pre-wrap",fontSize:12,
+                                              maxHeight:"calc(100vh - 240px)",overflow:"auto"}}>
                   {resolveTags(plainBody||htmlBody.replace(/<[^>]+>/g,""), autoEmail, resolvedSenderEmail, subject, autoName, 1, sampleLead)||"(empty)"}
                 </div>
               )}
               {prevMode==="source" && (
-                <div className="code" style={{minHeight:200,fontSize:11}}>{htmlBody||"(no HTML)"}</div>
+                <div className="code" style={{minHeight:200,fontSize:11,
+                                              maxHeight:"calc(100vh - 240px)",overflow:"auto"}}>{htmlBody||"(no HTML)"}</div>
               )}
               <div style={{marginTop:8,display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
                 <button className="btn btn-g btn-xs" onClick={()=>setSampleIdx(i=>(i+1)%SAMPLE_EMAILS.length)}>
