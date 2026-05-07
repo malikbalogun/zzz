@@ -234,16 +234,21 @@ def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, start
     buf_lock = CAMPAIGN_BUFFER_LOCK.get(uid)
 
     def _put(ev):
-        # Append to the index-based buffer first so polling consumers see
-        # every event even if the bounded queue ever drops one.
-        try:
-            if buf_lock is not None:
-                with buf_lock:
-                    lst = CAMPAIGN_EVENT_BUFFER.setdefault(uid, [])
-                    if len(lst) < CAMPAIGN_BUFFER_MAX:
-                        lst.append(ev)
-        except Exception:
-            pass
+        # The queue carries the same payloads PLUS the _CAMP_STREAM_END
+        # sentinel for legacy chunked-stream readers.  The index buffer
+        # (consumed by /api/campaign/events) is JSON-serialised on every
+        # poll, so it MUST only hold dict events — pushing the sentinel
+        # there crashes json.dumps with "Object of type object is not
+        # JSON serializable" and no events ever reach the polling client.
+        if isinstance(ev, dict):
+            try:
+                if buf_lock is not None:
+                    with buf_lock:
+                        lst = CAMPAIGN_EVENT_BUFFER.setdefault(uid, [])
+                        if len(lst) < CAMPAIGN_BUFFER_MAX:
+                            lst.append(ev)
+            except Exception:
+                pass
         try:
             if q is not None:
                 q.put(ev, timeout=2)
@@ -1702,10 +1707,14 @@ if(code && window.opener){{
                         next_idx = total
                     else:
                         next_idx = total
+                # Defensive: drop any non-dict entries so a stray sentinel
+                # can never crash json.dumps and silently break the entire
+                # polling consumer.
+                events = [ev for ev in events if isinstance(ev, dict)]
                 # The worker emits {"type":"done"} as the final event
                 # before the sentinel — flag it so the UI can stop polling.
                 for ev in events:
-                    if isinstance(ev, dict) and ev.get("type") == "done":
+                    if ev.get("type") == "done":
                         done = True
                         break
                 # If no buffer at all (no run ever) → not active, no events.
