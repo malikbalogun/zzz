@@ -441,6 +441,89 @@ sessions_lock = Lock()
 
 
 # ═══════════════════════════════════════════════════════════════
+# SHARED SMTP PROBE
+# ═══════════════════════════════════════════════════════════════
+# Used by /api/test-smtp (single) and /api/test-smtp/bulk (batch).
+# Returns a dict the same shape both endpoints expose:
+#   {status: "ok"|"error", message, latency_ms?, log: [...]}
+
+def _smtp_probe(smtp: dict, timeout: int = 20) -> dict:
+    import smtplib, ssl as ssl_mod
+    host     = (smtp.get("host") or "").strip()
+    if not host:
+        return {"status": "error", "message": "host required", "log": []}
+    try:
+        port = int(smtp.get("port") or 587)
+    except (TypeError, ValueError):
+        port = 587
+    username = smtp.get("username", smtp.get("user", "")) or ""
+    password = smtp.get("password", smtp.get("pass", "")) or ""
+    ssl_bool   = smtp.get("ssl", smtp.get("ssl_tls", None))
+    encryption = str(smtp.get("encryption", "")).upper()
+    if port == 465 or encryption == "SSL":
+        mode = "SSL"
+    elif port in (587, 25, 2525):
+        mode = "STARTTLS"
+    elif ssl_bool is True:
+        mode = "SSL"
+    elif ssl_bool is False:
+        mode = "PLAIN"
+    else:
+        mode = "STARTTLS"
+    ctx = ssl_mod.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl_mod.CERT_NONE
+    log_lines = []
+    server = None
+    try:
+        t0 = time.time()
+        if mode == "SSL":
+            log_lines.append(f"Connecting SMTP_SSL {host}:{port}")
+            server = smtplib.SMTP_SSL(host, port, timeout=timeout, context=ctx)
+        else:
+            log_lines.append(f"Connecting SMTP {host}:{port} ({mode})")
+            server = smtplib.SMTP(host, port, timeout=timeout)
+            server.ehlo_or_helo_if_needed()
+            if mode == "STARTTLS":
+                log_lines.append("Running STARTTLS")
+                server.starttls(context=ctx)
+                server.ehlo()
+        if username and password:
+            log_lines.append(f"AUTH as {username}")
+            server.login(username, password)
+        try: server.quit()
+        except Exception:
+            try: server.close()
+            except Exception: pass
+        latency = round((time.time() - t0) * 1000)
+        return {"status": "ok",
+                "message": f"Connected & authenticated — {host}:{port} ({mode}) {latency}ms",
+                "latency_ms": latency, "log": log_lines}
+    except smtplib.SMTPAuthenticationError as e:
+        raw = str(e)
+        hint = ""
+        if "535" in raw and "ses" in host.lower():
+            hint = " — AWS SES auth failed. Use the SMTP password from the generator (not your IAM secret), and verify your domain in SES."
+        elif "535" in raw:
+            hint = " — Wrong username/password. For Gmail use an App Password."
+        return {"status": "error", "message": f"Auth failed{hint} [{raw[:200]}]", "log": log_lines}
+    except smtplib.SMTPConnectError:
+        return {"status": "error",
+                "message": f"Cannot connect to {host}:{port} — port may be blocked",
+                "log": log_lines}
+    except (ConnectionRefusedError, OSError) as e:
+        return {"status": "error",
+                "message": f"Connection refused on {host}:{port} — check host/port ({e.__class__.__name__})",
+                "log": log_lines}
+    except ssl_mod.SSLError as e:
+        return {"status": "error",
+                "message": f"SSL error — try toggling SSL/TLS or use port 587 (STARTTLS). Detail: {str(e)[:200]}",
+                "log": log_lines}
+    except Exception as e:
+        return {"status": "error", "message": str(e)[:400], "log": log_lines}
+
+
+# ═══════════════════════════════════════════════════════════════
 # GITHUB AUTO-UPDATE HELPERS
 # ═══════════════════════════════════════════════════════════════
 # Lightweight, dependency-free check against GitHub's REST API.  Compares
@@ -5127,72 +5210,77 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 data = self._read_body()
             except Exception:
                 self._json(400, {"error": "Invalid JSON"}); return
-            # Frontend sends smtp object directly OR nested under "smtp" key
             smtp = data.get("smtp", data)
             host = smtp.get("host", "")
             if not host:
                 self._json(400, {"error": "SMTP host required"}); return
-            import smtplib, ssl as ssl_mod
-            port     = int(smtp.get("port", 587))
-            username = smtp.get("username", smtp.get("user", ""))
-            password = smtp.get("password", smtp.get("pass", ""))
-            # Frontend uses ssl:true/false boolean; also support legacy encryption string
-            ssl_bool   = smtp.get("ssl", smtp.get("ssl_tls", None))
-            encryption = str(smtp.get("encryption", "")).upper()
-            # Port 587 is always STARTTLS — ignore ssl flag if port is 587
-            # Port 465 is always SSL/TLS
-            if port == 465 or encryption == "SSL":
-                mode = "SSL"
-            elif port == 587 or port == 25 or port == 2525:
-                mode = "STARTTLS"
-            elif ssl_bool is True:
-                mode = "SSL"
-            elif ssl_bool is False:
-                mode = "PLAIN"
-            else:
-                mode = "STARTTLS"
-            # Permissive SSL ctx - don't fail on self-signed certs
-            ctx = ssl_mod.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl_mod.CERT_NONE
-            log = []
+            self._json(200, _smtp_probe(smtp, timeout=20))
+
+        # ── Bulk SMTP validator ─────────────────────────────────
+        # Test many SMTPs in parallel.  Streams one JSON line per
+        # finished probe so the UI can show progress as results come
+        # in instead of waiting for the whole batch.  Capped at 500
+        # entries per request so a runaway paste doesn't exhaust the
+        # server.
+        elif p == "/api/test-smtp/bulk":
+            if not (sess := self._auth()): return
             try:
-                t0 = time.time()
-                if mode == "SSL":
-                    log.append(f"Connecting SMTP_SSL {host}:{port}")
-                    server = smtplib.SMTP_SSL(host, port, timeout=20, context=ctx)
-                else:
-                    log.append(f"Connecting SMTP {host}:{port} ({mode})")
-                    server = smtplib.SMTP(host, port, timeout=20)
-                    server.ehlo_or_helo_if_needed()
-                    if mode == "STARTTLS":
-                        log.append("Running STARTTLS")
-                        server.starttls(context=ctx)
-                        server.ehlo()
-                if username and password:
-                    log.append(f"AUTH as {username}")
-                    server.login(username, password)
-                server.quit()
-                latency = round((time.time() - t0) * 1000)
-                self._json(200, {"status": "ok",
-                    "message": f"Connected & authenticated — {host}:{port} ({mode}) {latency}ms",
-                    "latency_ms": latency, "log": log})
-            except smtplib.SMTPAuthenticationError as e:
-                raw = str(e)
-                hint = ""
-                if "535" in raw and "ses" in host.lower():
-                    hint = " — AWS SES auth failed. Make sure you used the SMTP password from the generator (not your IAM secret key). Also verify your sending domain/email is verified in SES and your account is out of sandbox mode."
-                elif "535" in raw:
-                    hint = " — Wrong username/password. For Gmail use an App Password, not your account password."
-                self._json(200, {"status": "error", "message": f"Auth failed{hint} [{raw[:200]}]", "log": log})
-            except smtplib.SMTPConnectError as e:
-                self._json(200, {"status": "error", "message": f"Cannot connect to {host}:{port} — port may be blocked", "log": log})
-            except (ConnectionRefusedError, OSError) as e:
-                self._json(200, {"status": "error", "message": f"Connection refused on {host}:{port} — check host/port", "log": log})
-            except ssl_mod.SSLError as e:
-                self._json(200, {"status": "error", "message": f"SSL error — try toggling SSL/TLS or use port 587 with STARTTLS. Detail: {str(e)[:200]}", "log": log})
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            servers = data.get("servers") or data.get("smtps") or []
+            if not isinstance(servers, list) or not servers:
+                self._json(400, {"error": "servers list required"}); return
+            if len(servers) > 500:
+                self._json(400, {"error": "Max 500 servers per batch"}); return
+            workers = max(1, min(int(data.get("workers", 12) or 12), 32))
+            timeout = max(3,  min(int(data.get("timeout", 12) or 12), 30))
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            self._stream_start()
+            try:
+                self._stream_chunk({"type": "start", "total": len(servers),
+                                    "workers": workers, "timeout": timeout})
+                done = 0
+                ok_n = 0
+                fail_n = 0
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    futs = {ex.submit(_smtp_probe, s, timeout): (i, s)
+                            for i, s in enumerate(servers)}
+                    for fut in as_completed(futs):
+                        idx, src = futs[fut]
+                        try:
+                            res = fut.result()
+                        except Exception as e:
+                            res = {"status": "error", "message": f"crashed: {e}"}
+                        done += 1
+                        if res.get("status") == "ok":
+                            ok_n += 1
+                        else:
+                            fail_n += 1
+                        try:
+                            self._stream_chunk({
+                                "type": "result",
+                                "idx":  idx,
+                                "host": src.get("host",""),
+                                "port": src.get("port",""),
+                                "username": src.get("username", src.get("user","")),
+                                "ok":   res.get("status") == "ok",
+                                "message":    res.get("message", ""),
+                                "latency_ms": res.get("latency_ms", None),
+                                "done":       done,
+                                "total":      len(servers),
+                                "ok_count":   ok_n,
+                                "fail_count": fail_n,
+                            })
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            return
+                self._stream_chunk({"type": "done", "total": len(servers),
+                                    "ok": ok_n, "failed": fail_n})
             except Exception as e:
-                self._json(200, {"status": "error", "message": str(e)[:400], "log": log})
+                try: self._stream_chunk({"type": "error", "message": str(e)[:300]})
+                except Exception: pass
+            self._stream_end()
 
         # ── Email sorter ─────────────────────────────────────
         elif p == "/api/tools/sort-emails":

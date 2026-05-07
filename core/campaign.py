@@ -729,6 +729,12 @@ class CampaignOptions:
                 "testEmail":      data.get("testEmail", ""),
                 "testEveryN":     data.get("testEveryN", 0),
                 "htmlRotateMode": data.get("htmlRotateMode", "random"),
+                # Per-SMTP failover settings (UI: Method → SMTP → Rotation
+                # & Failover card).  Defaults match what the campaign code
+                # used before the option existed.
+                "smtpAutoDisable":   bool(data.get("smtpAutoDisable", True)),
+                "smtpFailThreshold": int(data.get("smtpFailThreshold", 3) or 3),
+                "smtpCooldownSecs":  float(data.get("smtpCooldownSecs", 60) or 60),
             },
             links_cfg      = cls._build_links_cfg_from_data(data),
             custom_headers = data.get("customHeaders") or data.get("headers", []),
@@ -1696,6 +1702,58 @@ def run_campaign(opts: CampaignOptions) -> Generator:
 
     # Dead proxy blacklist — proxies that failed are removed from rotation
     _dead_proxies: set = set()
+    # Per-SMTP health tracking with exponential backoff.
+    #   _smtp_health[host:port] = {fails: int, success: int, dead: bool,
+    #                              cooldown_until: float}
+    # When fails reaches the threshold the server is marked dead and skipped
+    # for `cooldown_secs * 2**fails_over_threshold` seconds.  A successful
+    # send halves the fail count; sustained successes recover full health.
+    _smtp_health: dict = {}
+    SMTP_FAIL_THRESHOLD  = int(sending.get("smtpFailThreshold", 3) or 3)
+    SMTP_COOLDOWN_SECS   = float(sending.get("smtpCooldownSecs", 60) or 60)
+    SMTP_AUTO_DISABLE    = bool(sending.get("smtpAutoDisable", True))
+
+    def _smtp_key(srv):
+        if not isinstance(srv, dict):
+            return ""
+        return f"{(srv.get('host') or '').strip()}:{srv.get('port', '')}"
+
+    def _smtp_alive(srv) -> bool:
+        if not SMTP_AUTO_DISABLE: return True
+        h = _smtp_health.get(_smtp_key(srv))
+        if not h or not h.get("dead"): return True
+        return time.time() >= h.get("cooldown_until", 0)
+
+    def _record_smtp_fail(srv, err_str=""):
+        if not SMTP_AUTO_DISABLE: return False
+        k = _smtp_key(srv)
+        if not k: return False
+        h = _smtp_health.setdefault(k, {"fails":0,"success":0,"dead":False,"cooldown_until":0})
+        h["fails"] += 1
+        # Connection-level errors warrant longer cooldowns than transient
+        # 4xx greylists; auth errors are basically permanent until the
+        # campaign ends.
+        es = (err_str or "").lower()
+        if any(x in es for x in ("auth", "535", "530", "credentials", "username")):
+            h["fails"] += 5    # treat as terminal
+        if h["fails"] >= SMTP_FAIL_THRESHOLD:
+            over = h["fails"] - SMTP_FAIL_THRESHOLD
+            backoff = SMTP_COOLDOWN_SECS * (2 ** min(over, 6))
+            h["dead"] = True
+            h["cooldown_until"] = time.time() + backoff
+            return True
+        return False
+
+    def _record_smtp_ok(srv):
+        if not SMTP_AUTO_DISABLE: return
+        k = _smtp_key(srv)
+        if not k: return
+        h = _smtp_health.setdefault(k, {"fails":0,"success":0,"dead":False,"cooldown_until":0})
+        h["success"] += 1
+        h["fails"] = max(0, h["fails"] - 1)
+        if h["fails"] < SMTP_FAIL_THRESHOLD and h["dead"]:
+            h["dead"] = False
+            h["cooldown_until"] = 0
 
     # Resume support — skip already-processed leads
     effective_start = min(resume_from, total_cap)
@@ -1721,14 +1779,28 @@ def run_campaign(opts: CampaignOptions) -> Generator:
     # each future completes.
 
     def _pick_sender_locked(i):
-        """Pick a live sender under the send lock (thread-safe rotation)."""
+        """Pick a live sender under the send lock (thread-safe rotation).
+
+        Also filters servers by per-SMTP health so we never hand out a
+        server that's currently in a backoff cooldown.  When every server
+        is dead we hand back the least-recently-failed one (better than
+        stalling indefinitely).
+        """
         if pairs:
             pair = _pick(pairs, sender_rot, i)
             return pair["sender"], pair["server"]
         _live = [s for s in opts.senders if (s.get("fromEmail","") if isinstance(s,dict) else s) not in _dead_senders]
         if not _live:
             return None, None
-        return _pick(_live, sender_rot, i), (_pick(servers, srv_rot, i) if servers else {})
+        if servers:
+            _live_srv = [s for s in servers if _smtp_alive(s)]
+            if not _live_srv:
+                # All servers in cooldown — pick the one whose cooldown
+                # expires soonest so we get back to sending fastest.
+                _live_srv = sorted(servers,
+                    key=lambda s: _smtp_health.get(_smtp_key(s),{}).get("cooldown_until", 0))
+            return _pick(_live, sender_rot, i), _pick(_live_srv, srv_rot, i)
+        return _pick(_live, sender_rot, i), {}
 
     def _execute_send(work_item):
         """
@@ -1942,6 +2014,26 @@ def run_campaign(opts: CampaignOptions) -> Generator:
                     i_r, lead_r, ok, err, via, resolved_sender, link_url = fut.result()
                 except Exception as exc:
                     ok, err, via, resolved_sender, link_url = False, f"network error: {exc}", "", pre_sender, ""
+
+                # ── Track per-SMTP health (auto-disable on repeated fails) ──
+                # We can only track health for SMTP-style methods that
+                # actually picked from `servers`.  API/OWA/CRM still pick
+                # but their work_meta carries the picked server in
+                # _pick_sender_locked — easier to record health by
+                # re-picking the canonical server label from the via.
+                if method in ("smtp", "tunnel", "isp"):
+                    try:
+                        _picked_srv = _pick(servers, srv_rot, i) if servers else None
+                        if _picked_srv and isinstance(_picked_srv, dict):
+                            if ok:
+                                _record_smtp_ok(_picked_srv)
+                            else:
+                                just_died = _record_smtp_fail(_picked_srv, err or "")
+                                if just_died:
+                                    yield {"type": "warn",
+                                           "msg": f"⚠ SMTP {_smtp_key(_picked_srv)} disabled — {SMTP_FAIL_THRESHOLD} consecutive fails (cooldown {int(SMTP_COOLDOWN_SECS)}s+, doubles each retry)"}
+                    except Exception:
+                        pass
 
                 # ── Track dead proxies on IP block errors ──────────────────
                 # ── Dead proxy detection ──────────────────────────────────

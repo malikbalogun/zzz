@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-  <meta name="version" content="v5.30.20260507-stuck-detect">
+  <meta name="version" content="v5.31.20260507-bulk-smtp">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -3543,6 +3543,10 @@ function TabMethod({
   apiList, setApiList, apiDraft, setApiDraft,
   owaConfig, setOwaConfig, crmConfig, setCrmConfig,
   tunnelList, setTunnelList, tunnelDraft, setTunnelDraft,
+  smtpRotation, setSmtpRotation,
+  smtpAutoDisable, setSmtpAutoDisable,
+  smtpFailThreshold, setSmtpFailThreshold,
+  smtpCooldownSecs, setSmtpCooldownSecs,
 }) {
   const [mTab, setMTab] = useState("smtp");
   const [smtpPreset, setSmtpPreset] = useState("");
@@ -3550,6 +3554,134 @@ function TabMethod({
   const [testL, setTestL] = useState({});
   const [apiTestResult, setApiTestResult] = useState(null);
   const [apiTestLoading, setApiTestLoading] = useState(false);
+
+  // ── Bulk SMTP upload + validate ──
+  const [bulkRaw, setBulkRaw]         = useState("");
+  const [bulkParsed, setBulkParsed]   = useState([]);   // [{host,port,username,password,ssl,_keep:true,_status:null}]
+  const [bulkValidating, setBulkValidating] = useState(false);
+  const [bulkProgress, setBulkProgress]     = useState({done:0,total:0,ok:0,fail:0});
+  const [bulkAddedMsg, setBulkAddedMsg]     = useState("");
+
+  function parseBulkLine(line) {
+    line = (line||"").trim();
+    if (!line || line.startsWith("#")) return null;
+
+    // Form 1 (most common):  host:port:user:pass[:ssl]
+    // Form 2:                user:pass@host:port
+    // Form 3:                host|port|user|pass
+    // Form 4 (JSON):         {"host":"...","port":587,...}
+    // Form 5:                host,port,user,pass
+
+    if (line.startsWith("{") && line.endsWith("}")) {
+      try { const j = JSON.parse(line);
+            if (j.host) return {host:String(j.host).trim(),
+                                port:parseInt(j.port||587),
+                                username:j.username||j.user||"",
+                                password:j.password||j.pass||"",
+                                ssl:!!j.ssl}; }
+      catch(e){ return null; }
+    }
+    // user:pass@host:port — detect '@' that splits creds from server
+    const at = line.lastIndexOf("@");
+    if (at > 0 && /:/.test(line.slice(0,at)) && /:/.test(line.slice(at+1))) {
+      const [u,p] = [line.slice(0,at).split(":")[0], line.slice(0,at).slice(line.slice(0,at).indexOf(":")+1)];
+      const [h,po] = line.slice(at+1).split(":");
+      return {host:h.trim(), port:parseInt(po)||587, username:u, password:p,
+              ssl:parseInt(po)===465};
+    }
+    // Pipe / comma / colon separated
+    const sep = line.includes("|") ? "|" : line.includes(",") ? "," : ":";
+    const parts = line.split(sep).map(p=>p.trim());
+    if (parts.length < 2) return null;
+    const host = parts[0];
+    const port = parseInt(parts[1]) || 587;
+    const username = parts[2] || "";
+    const password = parts[3] || "";
+    const sslPart  = (parts[4]||"").toLowerCase();
+    const ssl = sslPart === "ssl" || sslPart === "true" || sslPart === "1" || port === 465;
+    return {host, port, username, password, ssl};
+  }
+
+  function parseBulkSmtps() {
+    const lines = (bulkRaw||"").split(/\r?\n/);
+    const seen = new Set();
+    const out = [];
+    for (const line of lines) {
+      const p = parseBulkLine(line);
+      if (!p || !p.host) continue;
+      const key = `${p.host}:${p.port}:${p.username}`.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({...p, _keep:true, _status:null, _msg:"", _latency:null});
+    }
+    setBulkParsed(out);
+    setBulkProgress({done:0, total:out.length, ok:0, fail:0});
+    setBulkAddedMsg("");
+  }
+
+  async function validateBulk() {
+    const candidates = bulkParsed.filter(p => p._keep);
+    if (!candidates.length) { showToast("err","Empty","No SMTPs to validate"); return; }
+    setBulkValidating(true);
+    setBulkProgress({done:0, total:candidates.length, ok:0, fail:0});
+    // Reset all statuses
+    setBulkParsed(p => p.map(x => x._keep ? {...x,_status:"pending",_msg:"",_latency:null} : x));
+    try {
+      const r = await apiCall("/api/test-smtp/bulk",{
+        method:"POST",
+        body: JSON.stringify({servers: candidates.map(({_keep,_status,_msg,_latency,...rest})=>rest)}),
+      });
+      if (!r.ok) { showToast("err","Failed","HTTP "+r.status); setBulkValidating(false); return; }
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value,{stream:true});
+        const lines = buf.split("\n"); buf = lines.pop();
+        for (const ln of lines) {
+          if (!ln.trim()) continue;
+          let ev; try { ev = JSON.parse(ln); } catch(e){ continue; }
+          if (ev.type === "result") {
+            setBulkParsed(prev => prev.map(p =>
+              (p.host===ev.host && p.port==ev.port && (p.username||"")===(ev.username||""))
+                ? {...p, _status: ev.ok ? "ok":"fail", _msg: ev.message, _latency: ev.latency_ms}
+                : p));
+            setBulkProgress({done:ev.done, total:ev.total,
+                             ok:ev.ok_count||0, fail:ev.fail_count||0});
+          }
+          if (ev.type === "done") {
+            setBulkProgress(p => ({...p, done:ev.total, ok:ev.ok, fail:ev.failed}));
+          }
+        }
+      }
+    } catch(e) {
+      showToast("err","Validation error", e.message);
+    } finally {
+      setBulkValidating(false);
+    }
+  }
+
+  function addWorkingToList(onlyOk) {
+    const winners = bulkParsed.filter(p => p._keep && (onlyOk ? p._status==="ok" : true));
+    if (!winners.length) { showToast("err","Empty","Nothing to add"); return; }
+    const existing = new Set(smtpList.map(s => `${s.host}:${s.port}:${s.username}`.toLowerCase()));
+    let added = 0;
+    setSmtpList(prev => {
+      const out = [...prev];
+      for (const w of winners) {
+        const key = `${w.host}:${w.port}:${w.username}`.toLowerCase();
+        if (existing.has(key)) continue;
+        existing.add(key);
+        out.push({host:w.host, port:w.port, username:w.username,
+                  password:w.password, ssl:w.ssl, id:Date.now()+added});
+        added++;
+      }
+      return out;
+    });
+    setBulkAddedMsg(`✓ Added ${added} new SMTP${added===1?"":"s"} (${winners.length-added} duplicates skipped)`);
+    showToast("ok","Added", `${added} SMTP${added===1?"":"s"} added to your list`);
+  }
 
   async function testSmtp(smtp, key) {
     setTestL(p=>({...p,[key]:true}));
@@ -3612,6 +3744,105 @@ function TabMethod({
       {/* ── SMTP ── */}
       {mTab==="smtp" && (
         <div>
+          {/* ── Bulk upload + validate ── */}
+          <div className="card mb12" style={{borderLeft:"3px solid var(--accent)"}}>
+            <div className="row jb ac-center mb8">
+              <div className="card-title" style={{margin:0}}>📦 Bulk Upload SMTPs</div>
+              {bulkParsed.length>0 && (
+                <span className="bdg bdg-n">{bulkParsed.length} parsed · {bulkParsed.filter(p=>p._status==="ok").length} working</span>
+              )}
+            </div>
+            <div className="dim sm mb10">
+              Paste many SMTP servers, one per line.  Supported formats:
+              <code style={{margin:"0 4px"}}>host:port:user:pass</code> ·
+              <code style={{margin:"0 4px"}}>host:port:user:pass:ssl</code> ·
+              <code style={{margin:"0 4px"}}>user:pass@host:port</code> ·
+              <code style={{margin:"0 4px"}}>host|port|user|pass</code> ·
+              <code style={{margin:"0 4px"}}>{`{"host":...,"port":...}`}</code>
+              · or a <code>.txt</code> file (drop / pick).
+            </div>
+            <textarea value={bulkRaw} onChange={e=>setBulkRaw(e.target.value)}
+              placeholder={"smtp.gmail.com:587:user@gmail.com:apppassword\nemail-smtp.us-east-1.amazonaws.com:587:AKIA...:smtp_pass\nsmtp.mailgun.org:587:postmaster@mg.x.com:mg-pass"}
+              style={{minHeight:120,fontFamily:"var(--font-mono)",fontSize:11,resize:"vertical"}}/>
+            <div className="row g8 mt8 ac-center" style={{flexWrap:"wrap"}}>
+              <button className="btn btn-g btn-sm" onClick={parseBulkSmtps} disabled={!bulkRaw.trim()}>
+                🔍 Parse {bulkRaw.split(/\r?\n/).filter(l=>l.trim()).length || ""} lines
+              </button>
+              <input type="file" accept=".txt,.csv,.list" id="bulk-smtp-file" style={{display:"none"}}
+                onChange={async e=>{
+                  const f = e.target.files[0]; if(!f) return;
+                  const txt = await f.text();
+                  setBulkRaw(prev => prev ? (prev.replace(/\s+$/,"") + "\n" + txt) : txt);
+                }}/>
+              <button className="btn btn-g btn-sm" onClick={()=>document.getElementById("bulk-smtp-file").click()}>
+                📎 Upload .txt
+              </button>
+              {bulkParsed.length>0 && (
+                <>
+                  <button className="btn btn-p btn-sm" onClick={validateBulk} disabled={bulkValidating}>
+                    {bulkValidating
+                      ? `Testing ${bulkProgress.done}/${bulkProgress.total}…`
+                      : `🔬 Validate ${bulkParsed.filter(p=>p._keep).length}`}
+                  </button>
+                  <button className="btn btn-ok btn-sm" disabled={bulkValidating || !bulkParsed.some(p=>p._status==="ok")}
+                    onClick={()=>addWorkingToList(true)}>
+                    ➕ Add {bulkParsed.filter(p=>p._status==="ok"&&p._keep).length} working
+                  </button>
+                  <button className="btn btn-d btn-sm" onClick={()=>{setBulkParsed([]); setBulkProgress({done:0,total:0,ok:0,fail:0}); setBulkAddedMsg("");}}>
+                    Clear
+                  </button>
+                </>
+              )}
+              {bulkAddedMsg && <span className="dim2 sm" style={{marginLeft:"auto",color:"var(--ok)"}}>{bulkAddedMsg}</span>}
+            </div>
+
+            {/* Progress bar while validating */}
+            {bulkValidating && bulkProgress.total>0 && (
+              <div className="mt10" style={{background:"var(--bg2)",borderRadius:6,overflow:"hidden",height:8}}>
+                <div style={{height:"100%",width:`${(bulkProgress.done/bulkProgress.total)*100}%`,
+                             background:"linear-gradient(90deg,#22c55e,#3b82f6)",transition:"width .15s"}}/>
+              </div>
+            )}
+            {!bulkValidating && bulkProgress.total>0 && (
+              <div className="row g12 mt8 sm">
+                <span style={{color:"var(--ok)"}}>✓ {bulkProgress.ok} working</span>
+                <span style={{color:"var(--err)"}}>✗ {bulkProgress.fail} failed</span>
+                <span className="dim2">{bulkProgress.done}/{bulkProgress.total} tested</span>
+              </div>
+            )}
+
+            {/* Parsed list */}
+            {bulkParsed.length>0 && (
+              <div className="mt12 col g4" style={{maxHeight:280,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,padding:6}}>
+                {bulkParsed.map((p,i)=>{
+                  const color = p._status==="ok" ? "#22c55e" : p._status==="fail" ? "#ef4444" : p._status==="pending" ? "#f59e0b" : "var(--t2)";
+                  return (
+                    <div key={i} className="row ac-center g8" style={{padding:"4px 8px",background: i%2?"var(--bg2)":"transparent",borderRadius:4}}>
+                      <input type="checkbox" checked={p._keep} onChange={e=>setBulkParsed(prev=>prev.map((x,j)=>j===i?{...x,_keep:e.target.checked}:x))}
+                        style={{width:14,height:14,margin:0,cursor:"pointer"}}/>
+                      <span style={{fontFamily:"var(--font-mono)",fontSize:11,minWidth:200,color: p._keep?"var(--tx)":"var(--t3)"}}>
+                        {p.host}:{p.port}
+                      </span>
+                      <span className="dim2 xs" style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.username||"—"}</span>
+                      {p._latency != null && <span className="xs dim2">{p._latency}ms</span>}
+                      <span style={{fontSize:11,color,minWidth:60,textAlign:"right"}}>
+                        {p._status==="ok" ? "✓ OK"
+                          : p._status==="fail" ? "✗ Fail"
+                          : p._status==="pending" ? "…"
+                          : "·"}
+                      </span>
+                      {p._status==="fail" && (
+                        <span title={p._msg} className="xs" style={{color:"#f87171",cursor:"help",maxWidth:240,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                          {p._msg||""}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <div className="card mb12">
             <div className="card-title">Add SMTP Server</div>
             <div className="mb10">
@@ -3700,6 +3931,39 @@ function TabMethod({
               </div>
             )}
           </div>
+
+          {smtpList.length>0 && (
+            <div className="card mb12" style={{borderLeft:"3px solid #6366f1"}}>
+              <div className="card-title">🔁 Rotation &amp; Failover</div>
+              <div className="g3 mb10" style={{alignItems:"end"}}>
+                <div>
+                  <label className="lbl">Rotation mode</label>
+                  <select value={smtpRotation} onChange={e=>setSmtpRotation(e.target.value)}
+                    style={{fontSize:14,padding:"10px 12px"}}>
+                    <option value="random">Random — different SMTP each lead</option>
+                    <option value="sequential">Sequential — round-robin in order</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="lbl">Auto-disable threshold</label>
+                  <input type="number" min={1} max={20} value={smtpFailThreshold}
+                    onChange={e=>setSmtpFailThreshold(parseInt(e.target.value)||3)}
+                    style={{fontSize:14,padding:"10px 12px"}}/>
+                  <div className="dim2 xs mt4">Fails before backoff kicks in</div>
+                </div>
+                <div>
+                  <label className="lbl">Cooldown (seconds)</label>
+                  <input type="number" min={5} max={3600} value={smtpCooldownSecs}
+                    onChange={e=>setSmtpCooldownSecs(parseInt(e.target.value)||60)}
+                    style={{fontSize:14,padding:"10px 12px"}}/>
+                  <div className="dim2 xs mt4">Doubles after each retry (exp. backoff)</div>
+                </div>
+              </div>
+              <Tog checked={smtpAutoDisable} onChange={setSmtpAutoDisable}
+                label="Auto-disable failed SMTPs"
+                desc="Skip a server after N consecutive failures.  Auto-recovers when its cooldown expires.  Off = use even broken servers (not recommended)."/>
+            </div>
+          )}
 
           {smtpList.length>0 && (
             <div className="card">
@@ -8522,6 +8786,11 @@ function App() {
   // ── Method ──
   const [activeMethod, setActiveMethod] = useState(_g("activeMethod","smtp"));
   const [smtpList, setSmtpList]       = useState(_g("smtpList",[]));
+  // SMTP rotation + failover settings — applied at campaign send time.
+  const [smtpRotation,      setSmtpRotation]      = useState(_g("smtpRotation","random"));
+  const [smtpAutoDisable,   setSmtpAutoDisable]   = useState(_g("smtpAutoDisable", true));
+  const [smtpFailThreshold, setSmtpFailThreshold] = useState(_g("smtpFailThreshold", 3));
+  const [smtpCooldownSecs,  setSmtpCooldownSecs]  = useState(_g("smtpCooldownSecs", 60));
   const [smtpDraft, setSmtpDraft]     = useState({host:"",port:587,username:"",password:"",ssl:false});
   const [apiList, setApiList]         = useState(_g("apiList",[]));
   const [apiDraft, setApiDraft]       = useState({provider:"sendgrid",key:"",secret:"",region:"us-east-1",mailgunDomain:"",mailgunRegion:"us",sparkpostRegion:"us"});
@@ -8622,6 +8891,7 @@ function App() {
       leadsRaw, allowDupes,
       sendersRaw, senderName, senderNames, senderReplyTo, rotMode,
       activeMethod, smtpList, apiList, owaConfig, crmConfig, tunnelList,
+      smtpRotation, smtpAutoDisable, smtpFailThreshold, smtpCooldownSecs,
       priority, batchSize, concurrent, cooldownEvery, cooldownSecs,
       batchPauseSecs, testEmail, testEveryN,
       htmlBodies, htmlRotateMode, delay, delayUnit,
@@ -8646,6 +8916,7 @@ function App() {
     linkRot, linkRotDraft, linkRotMode, leadsRaw, allowDupes,
     sendersRaw, senderName, senderNames, senderReplyTo, rotMode,
     activeMethod, smtpList, apiList, owaConfig, crmConfig, tunnelList,
+    smtpRotation, smtpAutoDisable, smtpFailThreshold, smtpCooldownSecs,
     priority, batchSize, concurrent, cooldownEvery, cooldownSecs,
     batchPauseSecs, testEmail, testEveryN,
     htmlBodies, htmlRotateMode, delay, delayUnit,
@@ -8689,6 +8960,8 @@ function App() {
       _s("sendersRaw",setSendersRaw); _s("senderName",setSenderName); _s("senderNames",setSenderNames);
       _s("senderReplyTo",setSenderReplyTo); _s("rotMode",setRotMode);
       _s("activeMethod",setActiveMethod); _s("smtpList",setSmtpList); _s("apiList",setApiList);
+      _s("smtpRotation",setSmtpRotation); _s("smtpAutoDisable",setSmtpAutoDisable);
+      _s("smtpFailThreshold",setSmtpFailThreshold); _s("smtpCooldownSecs",setSmtpCooldownSecs);
       _s("owaConfig",setOwaConfig); _s("crmConfig",setCrmConfig);
       _s("tunnelList",setTunnelList);
       _s("priority",setPriority); _s("batchSize",setBatchSize); _s("concurrent",setConcurrent);
@@ -9122,6 +9395,13 @@ function App() {
       skipPreflightDns,
       bcc: bccEnabled && bccEmail.trim() ? bccEmail.trim() : null,
       campaignName:campName, rotationMode:rotMode,
+      // SMTP-specific rotation + auto-disable settings.  Backend reads
+      // these out of `sending` (CampaignOptions.from_dict copies them).
+      smtpRotation, smtpAutoDisable, smtpFailThreshold, smtpCooldownSecs,
+      // Override the legacy 'rotation' map so the SMTP rotation mode
+      // selected in the UI actually takes effect (was hard-coded to
+      // rotationMode for every method type).
+      rotation: { sender: rotMode, smtp: smtpRotation, mx: rotMode },
       linkRotation:linkRot.length>0 ? linkRot : linkRotDraft.split('\n').map(s=>s.trim()).filter(Boolean), linkRotMode,
       // Attachment config: dynamic generators (ics/pdf/ghost_pdf/html_image)
       // PLUS user-uploaded files selected in the Compose → Select Attachments
@@ -9640,7 +9920,11 @@ function App() {
       case "compose":     return <>{isMobile&&<MobTopBar/>}<TabCompose subject={subject} setSubject={setSubject} extraSubjects={extraSubjects} setExtraSubjects={setExtraSubjects} htmlBody={htmlBody} setHtmlBody={setHtmlBody} plainBody={plainBody} setPlainBody={setPlainBody} autoPlain={autoPlain} filesList={filesList} sendersRaw={sendersRaw} linkRot={linkRot} setLinkRot={setLinkRot} linkRotDraft={linkRotDraft} setLinkRotDraft={setLinkRotDraft} linkRotMode={linkRotMode} setLinkRotMode={setLinkRotMode} spamFilter={spamFilter} setSpamFilter={setSpamFilter} htmlBodies={htmlBodies} setHtmlBodies={setHtmlBodies} htmlRotateMode={htmlRotateMode} setHtmlRotateMode={setHtmlRotateMode} preheader={preheader} setPreheader={setPreheader} selectedAttachIds={selectedAttachIds} setSelectedAttachIds={setSelectedAttachIds}/>{isMobile&&<MobSpacer/>}</>;
       case "leads":       return <>{isMobile&&<MobTopBar/>}<TabLeads leadsRaw={leadsRaw} setLeadsRaw={setLeadsRaw} leads={leads} setLeads={setLeads} filesList={filesList} uploadFile={uploadFile} allowDupes={allowDupes} setAllowDupes={setAllowDupes}/>{isMobile&&<MobSpacer/>}</>;
       case "senders":     return <>{isMobile&&<MobTopBar/>}<TabSenders sendersRaw={sendersRaw} setSendersRaw={setSendersRaw} senderName={senderName} setSenderName={setSenderName} senderNames={senderNames} setSenderNames={setSenderNames} senderReplyTo={senderReplyTo} setSenderReplyTo={setSenderReplyTo} rotMode={rotMode} setRotMode={setRotMode} filesList={filesList} uploadFile={uploadFile}/>{isMobile&&<MobSpacer/>}</>;
-      case "method":      return <>{isMobile&&<MobTopBar/>}<TabMethod activeMethod={activeMethod} setActiveMethod={setActiveMethod} smtpList={smtpList} setSmtpList={setSmtpList} smtpDraft={smtpDraft} setSmtpDraft={setSmtpDraft} apiList={apiList} setApiList={setApiList} apiDraft={apiDraft} setApiDraft={setApiDraft} owaConfig={owaConfig} setOwaConfig={setOwaConfig} crmConfig={crmConfig} setCrmConfig={setCrmConfig} tunnelList={tunnelList} setTunnelList={setTunnelList} tunnelDraft={tunnelDraft} setTunnelDraft={setTunnelDraft}/>{isMobile&&<MobSpacer/>}</>;
+      case "method":      return <>{isMobile&&<MobTopBar/>}<TabMethod activeMethod={activeMethod} setActiveMethod={setActiveMethod} smtpList={smtpList} setSmtpList={setSmtpList} smtpDraft={smtpDraft} setSmtpDraft={setSmtpDraft} apiList={apiList} setApiList={setApiList} apiDraft={apiDraft} setApiDraft={setApiDraft} owaConfig={owaConfig} setOwaConfig={setOwaConfig} crmConfig={crmConfig} setCrmConfig={setCrmConfig} tunnelList={tunnelList} setTunnelList={setTunnelList} tunnelDraft={tunnelDraft} setTunnelDraft={setTunnelDraft}
+                                          smtpRotation={smtpRotation} setSmtpRotation={setSmtpRotation}
+                                          smtpAutoDisable={smtpAutoDisable} setSmtpAutoDisable={setSmtpAutoDisable}
+                                          smtpFailThreshold={smtpFailThreshold} setSmtpFailThreshold={setSmtpFailThreshold}
+                                          smtpCooldownSecs={smtpCooldownSecs} setSmtpCooldownSecs={setSmtpCooldownSecs}/>{isMobile&&<MobSpacer/>}</>;
       case "proxies":     return <>{isMobile&&<MobTopBar/>}<TabProxies proxies={proxies} setProxies={setProxies} proxyDraft={proxyDraft} setProxyDraft={setProxyDraft} proxyType={proxyType} setProxyType={setProxyType}/>{isMobile&&<MobSpacer/>}</>;
       case "b2b":         return <>{isMobile&&<MobTopBar/>}<TabB2B setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/>{isMobile&&<MobSpacer/>}</>;
       case "attachments": return <>{isMobile&&<MobTopBar/>}<TabAttachments filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} selectedType={selectedType} setSelectedType={setSelectedType} attachConfig={attachConfig} setAttachConfig={setAttachConfig}/>{isMobile&&<MobSpacer/>}</>;
