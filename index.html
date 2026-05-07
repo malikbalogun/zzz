@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-  <meta name="version" content="v5.28.20260507-split-default">
+  <meta name="version" content="v5.29.20260507-paste-detect">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -2729,7 +2729,58 @@ function TabCompose({
             </div>
             <textarea ref={bodyRef} value={htmlBody} onChange={e=>setHtmlBody(e.target.value)}
               onFocus={()=>setActiveRef(bodyRef)}
-              placeholder={"<html>…your email HTML here…</html>\n\nUse #FIRSTNAME, #EMAIL, #COMPANY, #INVOICE_NUM etc."}
+              onPaste={async e => {
+                // Smart-detect a raw RFC822 paste (Gmail "Show original" →
+                // Copy to clipboard, .eml file content, etc.) and offer
+                // to extract the HTML body so the user doesn't have to
+                // detour through the Letter Ripper tab.
+                const text = (e.clipboardData || window.clipboardData).getData("text") || "";
+                const looksLikeRaw =
+                  /^[A-Za-z\-]+:\s*\S/m.test(text) &&    // has header line
+                  /\b(Content-Type|MIME-Version|From|Received):/i.test(text) &&
+                  (/Content-Type:\s*multipart\//i.test(text) ||
+                   /Content-Transfer-Encoding:\s*(quoted-printable|base64)/i.test(text) ||
+                   /=\r?\n[A-Za-z0-9]/.test(text));
+                if (!looksLikeRaw) return;   // let the normal paste happen
+                e.preventDefault();
+                const ok = await showPopup({
+                  title: "Looks like a raw email",
+                  msg:   "This looks like raw RFC822 source (headers + MIME + quoted-printable). "
+                       + "Want me to extract just the HTML body?  Click cancel to paste it as-is.",
+                  ico:   "📨",
+                  type:  "confirm",
+                  okText:"Extract HTML",
+                  cancelText:"Paste raw",
+                });
+                if (!ok) {
+                  // User said paste raw — insert at cursor position.
+                  const ta = bodyRef.current;
+                  const start = ta.selectionStart || 0;
+                  const end   = ta.selectionEnd   || 0;
+                  const next  = htmlBody.slice(0, start) + text + htmlBody.slice(end);
+                  setHtmlBody(next);
+                  return;
+                }
+                try {
+                  const r = await apiCall("/api/tools/letters/parse-eml",
+                                          {method:"POST", body: JSON.stringify({raw: text})});
+                  const d = await r.json();
+                  if (!d.ok || (!d.html && !d.plain)) {
+                    showPopup({title:"Couldn't extract",
+                               msg: d.error || "No HTML or plain body found in this content.",
+                               ico:"⚠️", type:"alert"});
+                    return;
+                  }
+                  if (d.html)    setHtmlBody(d.html);
+                  if (d.plain)   setPlainBody(d.plain);
+                  if (d.subject) setSubject(d.subject);
+                  showToast("ok","Extracted",
+                    `${(d.html||"").length.toLocaleString()} bytes of HTML pulled from the pasted email.`);
+                } catch(err) {
+                  showPopup({title:"Extract failed", msg: err.message, ico:"✗", type:"alert"});
+                }
+              }}
+              placeholder={"<html>…your email HTML here…</html>\n\nUse #FIRSTNAME, #EMAIL, #COMPANY, #INVOICE_NUM etc.\n\nTip: paste raw email source (Gmail → Show original → Copy to clipboard) here and I'll auto-extract the HTML body."}
               style={{minHeight: splitView && !isMobile ? "calc(100vh - 280px)" : 260,
                       fontFamily:"var(--font-mono)",fontSize:12,lineHeight:1.6,
                       resize:"vertical"}}/>
