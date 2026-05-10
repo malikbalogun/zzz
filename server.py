@@ -200,7 +200,9 @@ CAMPAIGN_BUFFER_MAX = 20000
 # Per-user list of records describing successful sends in the active run.
 # Used by /api/campaign/delete-sent to IMAP-delete from sender mailboxes.
 CAMPAIGN_SENT_RECORDS: dict = {}  # user_id → list[ {message_id, sender_email, sender_pass, imap_host, imap_port, ts, ssl} ]
-_INBOX_RUNS: dict    = {}   # run_id → {"done": bool, "results": [...]}
+_INBOX_RUNS: dict    = {}   # run_id → {"done": bool, "results": [...],
+                            #            "user_id": int}  ← user_id added so
+                            # only the run's owner can poll its results.
 active_campaigns_lock = Lock()
 LOGIN_ATTEMPTS: dict = {}   # ip → {count, last_attempt}
 
@@ -416,10 +418,14 @@ def _campaign_worker(uid, data, run_id, camp_name, total_count, tg_msg_id, start
             try:
                 with db_lock:
                     conn = sqlite3.connect(DB_PATH)
+                    # Bind to user_id even though run_id is unique — defense
+                    # in depth so a future bug elsewhere can't let one user
+                    # finalize another user's row.
                     conn.execute(
-                        "UPDATE campaign_runs SET status=?, sent=?, failed=?, finished_at=? WHERE id=?",
+                        "UPDATE campaign_runs SET status=?, sent=?, failed=?, finished_at=? "
+                        "WHERE id=? AND user_id=?",
                         ("stopped" if stopped else "done", sent_count, failed_count,
-                         datetime.now().isoformat(), run_id)
+                         datetime.now().isoformat(), run_id, uid)
                     )
                     conn.commit(); conn.close()
             except Exception:
@@ -1481,7 +1487,8 @@ def record_attempt(ip: str):
 # ═══════════════════════════════════════════════════════════════
 
 _b2b_sessions: dict = {}   # user_id → B2BSession
-_PENDING_TOKENS: dict = {}  # email → {token, ts} from bookmarklet
+_PENDING_TOKENS: dict = {}  # uid → {token, ts, email}  (per-user only;
+                            # email substring matching removed for safety)
 _b2b_lock = Lock()
 
 
@@ -2185,6 +2192,10 @@ if(code && window.opener){{
                 self._json(400, {"error": "Invalid run ID"}); return
             run = _INBOX_RUNS.get(run_id)
             if not run:
+                self._json(404, {"error": "Run not found"}); return
+            # Only the user who started the run can read its results.
+            # Pre-fix this returned results to anyone with the run_id.
+            if run.get("user_id") not in (None, sess["user_id"]):
                 self._json(404, {"error": "Run not found"}); return
             self._json(200, {"done": run["done"], "results": run["results"]})
 
@@ -4798,36 +4809,51 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 self._json(200, {"ok": False, "error": result.get("error_description") or result.get("error", "Exchange failed")})
 
         elif p == "/api/b2b/token-receive":
-            # No auth required — bookmarklet posts from outlook.office365.com
+            # SECURITY: previously this endpoint was unauthenticated and stored
+            # bookmarklet-posted OAuth tokens in a global dict keyed only by
+            # email.  Combined with token-poll's substring matching ("alice" in
+            # "alice@example.com") it let any logged-in user fetch any other
+            # user's posted token.  Now it REQUIRES the calling user's session
+            # token (passed in the Authorization header OR in the body as
+            # `auth_token`) and stores tokens keyed strictly by uid.
             try:
                 data = self._read_body()
-                tok  = (data.get("token") or "").strip()
-                if tok.lower().startswith("bearer "): tok = tok[7:].strip()
-                if not tok or len(tok) < 100:
-                    self._json(400, {"error": "No valid token"}); return
-                email_key = data.get("email", "unknown")
-                _PENDING_TOKENS[email_key] = {"token": tok, "ts": time.time()}
-                self._json(200, {"ok": True})
-            except Exception as e:
-                self._json(200, {"ok": False, "error": str(e)})
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            # Auth: session-token in standard Authorization header, OR
+            # supplied as a field in the body for cross-origin bookmarklet
+            # posts where setting Authorization is awkward.
+            tok_session = (data.get("auth_token") or "").strip()
+            sess = self._auth() if not tok_session else None
+            if not sess and tok_session:
+                with sessions_lock:
+                    sess_row = SESSIONS.get(tok_session)
+                if sess_row and sess_row.get("expires", 0) > time.time():
+                    sess = sess_row
+            if not sess:
+                self._json(401, {"error": "Authentication required"}); return
+            tok  = (data.get("token") or "").strip()
+            if tok.lower().startswith("bearer "): tok = tok[7:].strip()
+            if not tok or len(tok) < 100:
+                self._json(400, {"error": "No valid token"}); return
+            uid = sess["user_id"]
+            _PENDING_TOKENS[uid] = {
+                "token": tok,
+                "ts":    time.time(),
+                "email": (data.get("email") or "")[:200],
+            }
+            self._json(200, {"ok": True})
 
         elif p.startswith("/api/b2b/token-poll"):
             if not (sess := self._auth()): return
-            from urllib.parse import parse_qs, urlparse
-            qs = parse_qs(urlparse(self.path).query)
-            email_key = qs.get("email", ["unknown"])[0]
-            # Check any key that matches
-            found = None
-            for k, v in list(_PENDING_TOKENS.items()):
-                if time.time() - v["ts"] < 300:  # 5 min TTL
-                    if email_key in k or k in email_key or k == "unknown":
-                        found = v["token"]
-                        del _PENDING_TOKENS[k]
-                        break
-            if found:
-                self._json(200, {"token": found})
-            else:
-                self._json(200, {"token": None})
+            uid = sess["user_id"]
+            entry = _PENDING_TOKENS.get(uid)
+            # 5 min TTL on stored tokens; only this user's slot is checked.
+            if entry and (time.time() - entry["ts"] < 300):
+                tok = entry["token"]
+                _PENDING_TOKENS.pop(uid, None)
+                self._json(200, {"token": tok}); return
+            self._json(200, {"token": None})
 
         elif p == "/api/b2b/install-msal":
             if not (sess := self._auth()): return
@@ -6475,7 +6501,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             if not accounts:
                 self._json(400, {"error": "No seed accounts configured"}); return
             run_id = str(uuid.uuid4())
-            _INBOX_RUNS[run_id] = {"done": False, "results": []}
+            _INBOX_RUNS[run_id] = {"done": False, "results": [], "user_id": uid}
 
             def _inbox_test_worker(run_id, accounts, subject):
                 import imaplib
