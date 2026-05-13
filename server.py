@@ -753,8 +753,12 @@ def _smtp_probe(smtp: dict, timeout: int = 20) -> dict:
 # Endpoints:
 #   GET  /api/update/check  → {current_sha, latest_sha, behind, files_changed}
 #   POST /api/update/apply  → {ok, applied_files, restart_required}
-#   GET  /api/update/config → {owner, repo, branch, auto_check, auto_apply}
+#   GET  /api/update/config → {owner, repo, branch, + server_auto_pull, ...}
 #   POST /api/update/config → save settings (admin)
+#
+# Server-side auto-pull (no browser; for VPS/systemd installs):
+#   SYNTHTEL_GITHUB_AUTO_PULL=1
+#   SYNTHTEL_GITHUB_AUTO_PULL_INTERVAL=300   # seconds, optional, default 300, clamped 60–3600
 
 UPDATE_SHA_FILE   = os.path.join(INSTALL_DIR, ".installed_sha")
 UPDATE_LOCK       = Lock()
@@ -868,6 +872,17 @@ def _apply_update() -> dict:
         if not latest:
             raise RuntimeError("Could not resolve latest commit SHA")
 
+        cur = (check.get("current_sha") or "").strip()
+        if cur and latest == cur:
+            return {
+                "ok": True,
+                "applied": [],
+                "failed": [],
+                "new_sha": latest,
+                "restart_required": False,
+                "up_to_date": True,
+            }
+
         applied = []
         failed  = []
 
@@ -956,6 +971,92 @@ def _apply_update() -> dict:
     finally:
         UPDATE_STATE["in_progress"] = False
         UPDATE_LOCK.release()
+
+
+def _schedule_service_restart_after_update():
+    """Restart the synthtel unit after code changes (systemd, else re-exec)."""
+
+    def _restart_later():
+        time.sleep(1.5)
+        try:
+            rc = subprocess.call(
+                ["systemctl", "restart", "synthtel"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if rc != 0:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:
+            log.warning("[update] restart failed: %s", e)
+
+    threading.Thread(target=_restart_later, daemon=True).start()
+
+
+def _env_truthy(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _auto_github_pull_interval_sec() -> int:
+    try:
+        n = int(os.environ.get("SYNTHTEL_GITHUB_AUTO_PULL_INTERVAL", "300") or "300")
+    except ValueError:
+        n = 300
+    return max(60, min(n, 3600))
+
+
+def _auto_github_pull_loop():
+    """Poll GitHub and run _apply_update() when the tracked branch moves.
+
+    Does not require an admin session.  Controlled entirely by env vars
+    (see module docstring above).
+    """
+    if not _env_truthy("SYNTHTEL_GITHUB_AUTO_PULL"):
+        return
+    interval = _auto_github_pull_interval_sec()
+    log.info("[update] SYNTHTEL_GITHUB_AUTO_PULL enabled — every %ss", interval)
+    time.sleep(20)
+    while True:
+        try:
+            info = _check_for_update()
+            UPDATE_STATE["last_check"] = int(time.time())
+            UPDATE_STATE["last_result"] = info
+            if not info.get("behind"):
+                time.sleep(interval)
+                continue
+            log.info(
+                "[update] auto-pull installing %s → %s",
+                (info.get("current_sha") or "")[:7],
+                (info.get("latest_sha") or "")[:7],
+            )
+            try:
+                result = _apply_update()
+            except RuntimeError as e:
+                log.warning("[update] auto-pull skipped: %s", e)
+                time.sleep(interval)
+                continue
+            except Exception as e:
+                log.warning("[update] auto-pull apply failed: %s", e)
+                time.sleep(interval)
+                continue
+
+            if result.get("up_to_date"):
+                time.sleep(interval)
+                continue
+            ap = result.get("applied") or []
+            if ap:
+                log.info(
+                    "[update] auto-pull updated %d path(s); restart_required=%s",
+                    len(ap),
+                    result.get("restart_required"),
+                )
+            if result.get("restart_required"):
+                _schedule_service_restart_after_update()
+                return
+        except Exception as e:
+            log.warning("[update] auto-pull: %s", e)
+        time.sleep(interval)
 
 
 def _bootstrap_installed_sha():
@@ -2679,6 +2780,7 @@ if(code && window.opener){{
 
         elif p == "/api/update/config":
             if not (sess := self._auth()): return
+            _iv = _auto_github_pull_interval_sec()
             self._json(200, {
                 "owner":  GITHUB_OWNER,
                 "repo":   GITHUB_REPO,
@@ -2687,6 +2789,8 @@ if(code && window.opener){{
                 "last_check":   UPDATE_STATE.get("last_check", 0),
                 "last_apply":   UPDATE_STATE.get("last_apply"),
                 "in_progress":  UPDATE_STATE.get("in_progress", False),
+                "server_auto_pull": _env_truthy("SYNTHTEL_GITHUB_AUTO_PULL"),
+                "server_auto_pull_interval_sec": _iv if _env_truthy("SYNTHTEL_GITHUB_AUTO_PULL") else None,
             })
 
         # ── Public IP of this server (for proxy whitelists) ─────────
@@ -5838,22 +5942,7 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
             # systemctl restart in the background (after the response is
             # written) so the client gets a clean response first.
             if do_restart and result.get("restart_required"):
-                def _restart_later():
-                    time.sleep(1.5)
-                    try:
-                        # Try systemctl restart synthtel; fall back to
-                        # exec'ing python on argv[0].  systemd is the
-                        # supported deployment, so prefer that.
-                        rc = subprocess.call(
-                            ["systemctl", "restart", "synthtel"],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL)
-                        if rc != 0:
-                            # Fall back to in-process re-exec if no systemd.
-                            os.execv(sys.executable, [sys.executable] + sys.argv)
-                    except Exception as e:
-                        log.warning("[update] restart failed: %s", e)
-                threading.Thread(target=_restart_later, daemon=True).start()
+                _schedule_service_restart_after_update()
                 result["restart_scheduled"] = True
             self._json(200, result)
 
@@ -7768,6 +7857,10 @@ def main():
     # delay startup, and silently no-ops if offline.
     try:
         threading.Thread(target=_bootstrap_installed_sha, daemon=True).start()
+    except Exception:
+        pass
+    try:
+        threading.Thread(target=_auto_github_pull_loop, daemon=True).start()
     except Exception:
         pass
     # Start Telegram bot polling if configured

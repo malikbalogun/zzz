@@ -137,6 +137,7 @@ WantedBy=multi-user.target
 SVCEOF
 systemctl daemon-reload && systemctl enable synthtel 2>/dev/null || true
 echo "  systemd service: ok"
+echo "  Optional auto-updates: set Environment=SYNTHTEL_GITHUB_AUTO_PULL=1 in /etc/systemd/system/synthtel.service, then daemon-reload && restart synthtel"
 command -v nginx &>/dev/null || (apt-get update -qq && apt-get install -y -qq nginx >/dev/null 2>&1)
 cat > /etc/nginx/sites-available/synthtel << 'NGXEOF'
 server {
