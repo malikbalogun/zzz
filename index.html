@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-  <meta name="version" content="v5.45.20260513-mx-providers">
+  <meta name="version" content="v5.46.20260513-office-method">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -4168,6 +4168,7 @@ function TabMethod({
           {[
             {id:"smtp",   ico:"📨", name:"SMTP Relay",      desc:"Your own SMTP servers"},
             {id:"api",    ico:"🔌", name:"API / ESP",       desc:"SendGrid, Mailchimp, etc."},
+            {id:"office", ico:"📮", name:"Office Admin",    desc:"M365 inbound connector via your IP"},
             {id:"owa",    ico:"📮", name:"OWA / Exchange",  desc:"Exchange Web Services"},
             {id:"crm",    ico:"🗄️", name:"CRM Integration", desc:"Salesforce, HubSpot, etc."},
             {id:"tunnel", ico:"🔑", name:"SSH Tunnel",      desc:"Route via remote server"},
@@ -4186,10 +4187,38 @@ function TabMethod({
 
       {/* Config tabs */}
       <div className="tab-bar">
-        {["smtp","api","owa","crm","tunnel","isp"].map(t=>(
-          <button key={t} className={`tb ${mTab===t?"on":""}`} onClick={()=>setMTab(t)}>{t.toUpperCase()}</button>
+        {["smtp","api","office","owa","crm","tunnel","isp"].map(t=>(
+          <button key={t} className={`tb ${mTab===t?"on":""}`} onClick={()=>setMTab(t)}>
+            {t==="office"?"OFFICE ADMIN":t.toUpperCase()}
+          </button>
         ))}
       </div>
+
+      {/* ── OFFICE ADMIN ── */}
+      {mTab==="office" && (
+        <div>
+          <Info type="i">
+            <strong>Office Admin / M365 Inbound Connector</strong> route — sends through your Microsoft 365 tenant via an inbound connector that allows mail from THIS VPS's public IP.  Requires Global Admin access to the tenant once for setup.
+          </Info>
+          <div className="card mb12 mt12" style={{borderLeft:"3px solid #0078d4"}}>
+            <div className="card-title">Step 1 — Probe this VPS</div>
+            <div className="dim sm mb12">
+              We check if outbound port 25 is open and grab the public IP needed for the connector.
+            </div>
+            <OfficeConnectorPanel/>
+          </div>
+          <div className="card mb12">
+            <div className="card-title">Step 2 — Use as a sending method</div>
+            <Info type="w">
+              <strong>Pre-MVP:</strong> the actual send through the M365 connector reuses the SMTP path under the hood.
+              For now, configure your connector with the IP shown above, then add the connector hostname (e.g.
+              <code> yourtenant-com.mail.protection.outlook.com</code>) as a regular SMTP server in the SMTP tab on
+              port 25.  Future versions will fold this into a dedicated send path.
+            </Info>
+            <button className="btn btn-g btn-sm mt12" onClick={()=>setMTab("smtp")}>→ Open SMTP tab</button>
+          </div>
+        </div>
+      )}
 
       {/* ── SMTP ── */}
       {mTab==="smtp" && (
@@ -4398,8 +4427,6 @@ function TabMethod({
               </div>
             )}
           </div>
-
-          <OfficeConnectorPanel/>
 
           {smtpList.length>0 && (
             <div className="card mb12" style={{borderLeft:"3px solid #6366f1"}}>
