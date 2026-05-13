@@ -257,6 +257,64 @@ def _make_tls_ctx(strict: bool = False) -> ssl.SSLContext:
 # PROXY SOCKET
 # ═══════════════════════════════════════════════════════════════
 
+# ── SSH-tunnel pool (Office Admin relay) ───────────────────────────
+# Caches one paramiko Transport per (sshHost,sshPort,sshUser).
+# Channels are cheap; transports are expensive.  Threadsafe.
+import threading as _ssh_th
+_SSH_TUNNELS: dict = {}
+_SSH_TUNNELS_LOCK = _ssh_th.Lock()
+
+
+def _get_ssh_transport(sshHost: str, sshPort: int, sshUser: str, sshPass: str, timeout: int = 12):
+    """Return a live paramiko Transport, opening a new one if needed."""
+    import paramiko
+    key = (sshHost, sshPort, sshUser)
+    with _SSH_TUNNELS_LOCK:
+        t = _SSH_TUNNELS.get(key)
+        if t and t.is_active():
+            return t
+        sock = socket.create_connection((sshHost, sshPort), timeout=timeout)
+        transport = paramiko.Transport(sock)
+        transport.set_keepalive(30)
+        transport.start_client(timeout=timeout)
+        transport.auth_password(sshUser, sshPass)
+        if not transport.is_authenticated():
+            try: transport.close()
+            except Exception: pass
+            raise Exception(f"SSH auth failed for {sshUser}@{sshHost}:{sshPort}")
+        _SSH_TUNNELS[key] = transport
+        return transport
+
+
+def _make_ssh_tunnel_socket(
+    host:            str,
+    port:            int,
+    proxy_cfg:       dict,
+    connect_timeout: int = 12,
+):
+    """
+    Open a paramiko direct-tcpip channel as an SMTP transport.
+    smtplib's SMTP class only needs an object with recv/send/sendall/
+    close/makefile/settimeout — paramiko.Channel implements all of
+    these natively.
+    """
+    sshHost = proxy_cfg.get("sshHost") or proxy_cfg.get("host") or ""
+    sshPort = int(proxy_cfg.get("sshPort") or 22)
+    sshUser = proxy_cfg.get("sshUser") or proxy_cfg.get("username") or "Administrator"
+    sshPass = proxy_cfg.get("sshPass") or proxy_cfg.get("password") or ""
+    if not sshHost:
+        raise Exception("ssh-tunnel proxy requires sshHost")
+    transport = _get_ssh_transport(sshHost, sshPort, sshUser, sshPass, timeout=connect_timeout)
+    chan = transport.open_channel(
+        kind            = "direct-tcpip",
+        dest_addr       = (host, int(port)),
+        src_addr        = ("127.0.0.1", 0),
+        timeout         = connect_timeout,
+    )
+    chan.settimeout(connect_timeout)
+    return chan
+
+
 def _make_proxy_socket(
     host:            str,
     port:            int,
@@ -266,12 +324,23 @@ def _make_proxy_socket(
     """
     Open a raw TCP socket to host:port routed through a SOCKS4/5 or HTTP proxy.
     Tries PySocks first; falls back to plain HTTP CONNECT for HTTP proxies.
+
+    Special proxy_cfg.type "ssh-tunnel" opens a paramiko direct-tcpip
+    channel through an SSH server.  Required keys:
+        sshHost, sshPort, sshUser, sshPass
+    The returned object is a paramiko Channel that quacks like a socket
+    (recv/send/sendall/close/makefile) — smtplib treats it identically.
+    Used by the Office Admin send method when the user wants the M365
+    inbound-connector to see the relay's IP, not the sender VPS's IP.
     """
     proxy_type = (proxy_cfg.get("type") or "http").lower()
     proxy_host = proxy_cfg.get("host", "")
     proxy_port = int(proxy_cfg.get("port") or 8080)
     proxy_user = proxy_cfg.get("username") or None
     proxy_pass = proxy_cfg.get("password") or None
+
+    if proxy_type == "ssh-tunnel":
+        return _make_ssh_tunnel_socket(host, port, proxy_cfg, connect_timeout)
 
     # ── PySocks (SOCKS4 / SOCKS5 / HTTP) ──
     try:

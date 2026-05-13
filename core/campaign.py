@@ -971,7 +971,13 @@ def _send_one(
     # ─── SMTP ────────────────────────────────────────────────
     if method == "smtp":
         proxy_cfg = None
-        if override_proxy:
+        # Per-server inline proxy (used by Office Admin relay path) wins
+        # over the global proxy pool — it carries the SSH-tunnel info
+        # for the M365 connector route.
+        if isinstance(server, dict) and isinstance(server.get("proxy"), dict):
+            proxy_cfg = server["proxy"]
+            via += f" via {proxy_cfg.get('type','tunnel')}:{proxy_cfg.get('sshHost') or proxy_cfg.get('host','')}"
+        elif override_proxy:
             proxy_cfg = override_proxy
             via += f" via {proxy_cfg.get('type','socks5')}:{proxy_cfg.get('host','')}"
         elif opts.proxy:
@@ -2473,6 +2479,74 @@ def process_campaign(data: dict) -> Generator:
     # Raw dump of what frontend sent
     logging.getLogger("synthtel").info("[RAW] method=%s tunnels_raw=%s ispTunnels_raw=%s",
         data.get("method"), data.get("tunnels"), data.get("ispTunnels"))
+
+    # ── Office Admin → smtp/tunnel rewrite ────────────────────────
+    # When the frontend sends method='office', it carries an `office`
+    # config: {connectorHost, useRelay, relayHost, relaySshPort,
+    # relaySshUser, relaySshPass}.  We translate it into an existing
+    # send path:
+    #   - If useRelay is OFF → method='smtp' with a single SMTP entry
+    #     pointing at the M365 connector hostname:25 (no auth — the
+    #     connector trusts by IP).  Sender VPS must have port 25 open.
+    #   - If useRelay is ON  → method='tunnel' with an ISP-style
+    #     tunnel: SSH-tunnel through the relay, deliver to the
+    #     connector hostname.  The connector must be allow-listed
+    #     for the RELAY's public IP, not the sender VPS's.
+    if data.get("method") == "office":
+        ocfg = data.get("office") or data.get("officeConfig") or {}
+        connector = (ocfg.get("connectorHost") or "").strip()
+        if not connector:
+            yield {"type": "error", "msg": "Office Admin: connector hostname required (e.g. mytenant-com.mail.protection.outlook.com — see Method → Office Admin tab)"}
+            return
+        connector_port = int(ocfg.get("connectorPort") or 25)
+        use_relay = bool(ocfg.get("useRelay"))
+        # Both paths rewrite to method=smtp pointing at the connector.
+        # The relay path additionally attaches an ssh-tunnel proxy so
+        # smtp_sender opens a paramiko direct-tcpip channel from the
+        # relay box → connector:25.  The connector's allow-list sees
+        # the relay's IP, not this VPS.
+        data["method"] = "smtp"
+        existing_smtps = data.get("smtpServers") or data.get("smtps") or []
+        smtp_entry = {
+            "host":       connector,
+            "port":       connector_port,
+            "username":   "",
+            "password":   "",
+            # M365 connector accepts plaintext on port 25 then upgrades
+            # to TLS via STARTTLS on its own (relay scenario) or refuses
+            # plaintext mail (direct).  STARTTLS is always honoured if
+            # advertised.
+            "encryption": "STARTTLS",
+            "ssl":        False,
+            "label":      f"M365 Connector ({connector})",
+            "from_domain": ocfg.get("fromDomain") or "",
+        }
+        if use_relay:
+            relay_host = (ocfg.get("relayHost") or "").strip()
+            if not relay_host:
+                yield {"type": "error", "msg": "Office Admin: relay enabled but relayHost is empty"}
+                return
+            # Inline proxy_cfg for this SMTP entry — smtp_sender picks
+            # it up automatically and opens an SSH direct-tcpip channel.
+            smtp_entry["proxy"] = {
+                "type":    "ssh-tunnel",
+                "sshHost": relay_host,
+                "sshPort": int(ocfg.get("relaySshPort") or 22),
+                "sshUser": ocfg.get("relaySshUser") or "Administrator",
+                "sshPass": ocfg.get("relaySshPass") or "",
+            }
+            smtp_entry["label"] = f"M365 Connector via {relay_host}"
+            logging.getLogger("synthtel").info(
+                "[office] rewrote → smtp via ssh-tunnel relay=%s → connector=%s:%s",
+                relay_host, connector, connector_port,
+            )
+        else:
+            logging.getLogger("synthtel").info(
+                "[office] rewrote → smtp direct to connector=%s:%s",
+                connector, connector_port,
+            )
+        data["smtpServers"] = list(existing_smtps) + [smtp_entry]
+        data["smtps"] = data["smtpServers"]
 
     # If no tunnels from frontend, fetch from DB using user session
     if not data.get("tunnels") and not data.get("ispTunnels") and data.get("method") in ("isp","tunnel"):

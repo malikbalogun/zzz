@@ -6219,6 +6219,95 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
         # {domain → provider_key}.  Used by the Leads tab to upgrade
         # the heuristic 'business' classification to a precise host.
         # In-memory cache keyed by domain; lasts for the server lifetime.
+        # ── /api/tools/test-office-relay ───────────────────────
+        # Verify a port-25 RDP/VPS relay is usable as the egress for
+        # the Office Admin send method.  Steps performed:
+        #   1. SSH-connect to the relay (host:sshPort, sshUser:sshPass)
+        #   2. From inside the relay, fetch its public IP (curl ipify)
+        #   3. From inside the relay, open port 25 to the connector
+        #      hostname to confirm the relay can reach it
+        # Returns relay_ip so the UI can show which IP belongs in
+        # the M365 inbound connector's allow-list.
+        elif p == "/api/tools/test-office-relay":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            host    = (data.get("host") or "").strip()
+            sshPort = int(data.get("sshPort") or 22)
+            sshUser = (data.get("sshUser") or "Administrator").strip()
+            sshPass = data.get("sshPass") or ""
+            connector = (data.get("connectorHost") or "").strip()
+            if not host:
+                self._json(400, {"error": "host required"}); return
+            try:
+                import paramiko
+            except Exception:
+                self._json(500, {
+                    "ok": False,
+                    "error": "paramiko not installed on this VPS — run: pip install paramiko",
+                }); return
+            try:
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(
+                    hostname=host, port=sshPort,
+                    username=sshUser, password=sshPass,
+                    timeout=10, allow_agent=False, look_for_keys=False,
+                )
+                # Detect OS (Windows vs *nix) for the right command syntax.
+                _in, _out, _err = ssh.exec_command("uname -s", timeout=8)
+                uname = _out.read().decode(errors="ignore").strip()
+                is_unix = bool(uname) and "windows" not in uname.lower()
+
+                # 1. Public IP from inside the relay
+                if is_unix:
+                    cmd_ip = "curl -fsS --max-time 5 https://api.ipify.org || wget -qO- --timeout=5 https://api.ipify.org"
+                else:
+                    cmd_ip = ('powershell -Command "(Invoke-WebRequest -UseBasicParsing '
+                              '-Uri https://api.ipify.org -TimeoutSec 5).Content"')
+                _in, _out, _err = ssh.exec_command(cmd_ip, timeout=15)
+                relay_ip = _out.read().decode(errors="ignore").strip().split("\n")[0].strip()
+
+                # 2. Probe port 25 to the connector from inside the relay
+                port25_msg = ""
+                if connector:
+                    if is_unix:
+                        cmd_p25 = (f"timeout 6 bash -c 'cat < /dev/tcp/{connector}/25' "
+                                   f"&& echo OPEN || echo CLOSED")
+                    else:
+                        cmd_p25 = (f'powershell -Command "Test-NetConnection -ComputerName '
+                                   f'{connector} -Port 25 -InformationLevel Quiet"')
+                    _in, _out, _err = ssh.exec_command(cmd_p25, timeout=15)
+                    p25_out = _out.read().decode(errors="ignore").strip().lower()
+                    if "true" in p25_out or "open" in p25_out:
+                        port25_msg = f"\n✓ Relay can reach {connector}:25"
+                    else:
+                        port25_msg = (f"\n⚠ Relay could NOT reach {connector}:25 "
+                                      f"(check firewall on relay; output: {p25_out[:120]})")
+                ssh.close()
+                if not relay_ip:
+                    self._json(200, {
+                        "ok": False,
+                        "error": "SSH connected, but couldn't fetch relay's public IP — install curl (or PowerShell ≥5) on the relay.",
+                    }); return
+                self._json(200, {
+                    "ok":       True,
+                    "relay_ip": relay_ip,
+                    "os":       "linux/unix" if is_unix else "windows",
+                    "message":  (
+                        f"✓ SSH OK ({'Linux' if is_unix else 'Windows'})\n"
+                        f"✓ Relay public IP: {relay_ip}\n"
+                        f"  → Add this IP to your M365 connector allow-list."
+                        + port25_msg
+                    ),
+                })
+            except paramiko.AuthenticationException:
+                self._json(200, {"ok": False, "error": "SSH auth failed — wrong username/password."})
+            except Exception as e:
+                self._json(200, {"ok": False, "error": f"SSH/test failed: {str(e)[:200]}"})
+
         elif p == "/api/tools/detect-providers":
             if not (sess := self._auth()): return
             try:
