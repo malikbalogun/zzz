@@ -526,6 +526,9 @@ textarea { resize: vertical; min-height: 80px; }
 .mc-ic   { font-size: 22px; margin-bottom: 8px; }
 .mc-name { font-size: 13px; font-weight: 700; }
 .mc-desc { font-size: 11px; color: var(--t3); margin-top: 3px; flex: 1; }
+/* Active Sending Method grid — 4×2 on desktop, 2×4 on tablet, 1×8 on phone */
+@media (max-width: 900px) { .method-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }
+@media (max-width: 480px) { .method-grid { grid-template-columns: 1fr !important; } }
 
 /* ═══════════════ PROXY ITEM ═══════════════ */
 .pi { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); }
@@ -4370,10 +4373,10 @@ function TabMethod({
         <div className="ph-sub">Configure your sending infrastructure — settings are saved per account</div>
       </div>
 
-      {/* Active method selector */}
+      {/* Active method selector — 4 across, 2 rows */}
       <div className="card mb16">
         <div className="card-title">Active Sending Method</div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:12}}>
+        <div className="method-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:12}}>
           {[
             {id:"smtp",   ico:"📨", name:"SMTP Relay",      desc:"Your own SMTP servers"},
             {id:"api",    ico:"🔌", name:"API / ESP",       desc:"SendGrid, Mailchimp, etc."},
