@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-  <meta name="version" content="v5.42.20260513-b2b-cookie">
+  <meta name="version" content="v5.43.20260513-tags">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -1176,6 +1176,20 @@ const TAG_SECTIONS = [
     {tag:"#IS_GMAIL",              desc:"true if recipient is Gmail"},
     {tag:"#IS_OUTLOOK",            desc:"true if recipient is Outlook/Hotmail/Live"},
     {tag:"#IS_CORPORATE",          desc:"true if recipient is corporate (not free email)"},
+  ]},
+  { label:"TRACKING & LINKS", tags:[
+    {tag:"#LINK",                  desc:"Your campaign link — substituted with the next URL from your Link Rotation list (Compose → Link Rotation card).  Pair with the Letter Ripper auto-#LINK feature so action buttons in ripped emails point here."},
+    {tag:"#LINK1",                 desc:"Always the first URL from your Link Rotation list (no rotation).  Useful when you have a primary CTA + a secondary helper link."},
+    {tag:"#LINK2",                 desc:"Always the second URL from your Link Rotation list."},
+    {tag:"#LINK3",                 desc:"Always the third URL from your Link Rotation list."},
+    {tag:"#REDIRECT",              desc:"Alias for #LINK — same per-recipient rotation."},
+    {tag:"#PIXEL_URL",             desc:"Open-tracking image URL.  Create an Image Tracking redirect in the Redirects tab and paste the resulting <img> snippet, or use this tag inline as <img src=\"#PIXEL_URL\" width=\"1\" height=\"1\">."},
+    {tag:"#TRACKING_NUM",          desc:"Random shipping-style tracking number (e.g. 1Z9X4A82043817)."},
+    {tag:"#UNSUB",                 desc:"Plain unsubscribe URL with the recipient email URL-encoded in the query string.  Set the base URL in Send Method → Compliance → Unsubscribe URL."},
+    {tag:"#UNSUB_URL",             desc:"Same as #UNSUB — full URL form."},
+    {tag:"#PREF_URL",              desc:"Email preferences page URL (per-recipient).  Falls back to #UNSUB if no preferences URL is configured."},
+    {tag:"#VIEW_ONLINE",           desc:"View-online / web-version URL.  Useful in the email header (\"Trouble viewing? View it online\")."},
+    {tag:"#LIST_ID",               desc:"List-ID identifier for List-Unsubscribe header (auto-derived from sender domain when empty)."},
   ]},
   { label:"FUNCTIONAL / SMART", tags:[
     {tag:"#SHUF{A|B|C}",           desc:"Pick random option from pipe-separated list"},
