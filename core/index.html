@@ -3972,12 +3972,12 @@ function TabMethod({
     line = (line||"").trim();
     if (!line || line.startsWith("#")) return null;
 
-    // Form 1 (most common):  host:port:user:pass[:ssl]
-    // Form 2:                user:pass@host:port
-    // Form 3:                host|port|user|pass
-    // Form 4 (JSON):         {"host":"...","port":587,...}
-    // Form 5:                host,port,user,pass
+    function dec(s) {
+      if (s == null || s === "") return s;
+      try { return decodeURIComponent(s); } catch (e) { return s; }
+    }
 
+    // Form (JSON): {"host":"...","port":587,...}
     if (line.startsWith("{") && line.endsWith("}")) {
       try { const j = JSON.parse(line);
             if (j.host) return {host:String(j.host).trim(),
@@ -3987,15 +3987,54 @@ function TabMethod({
                                 ssl:!!j.ssl}; }
       catch(e){ return null; }
     }
-    // user:pass@host:port — detect '@' that splits creds from server
-    const at = line.lastIndexOf("@");
-    if (at > 0 && /:/.test(line.slice(0,at)) && /:/.test(line.slice(at+1))) {
-      const [u,p] = [line.slice(0,at).split(":")[0], line.slice(0,at).slice(line.slice(0,at).indexOf(":")+1)];
-      const [h,po] = line.slice(at+1).split(":");
-      return {host:h.trim(), port:parseInt(po)||587, username:u, password:p,
-              ssl:parseInt(po)===465};
+
+    let sslFromScheme = false;
+    const low = line.toLowerCase();
+    if (low.startsWith("smtps://")) {
+      line = line.slice(8);
+      sslFromScheme = true;
+    } else if (low.startsWith("smtp://")) {
+      line = line.slice(7);
     }
-    // Pipe / comma / colon separated
+
+    // smtp(s)://user:pass@host:port  or  email-like-user:password@host:port
+    // The *last* '@' separates credentials from host (username may contain '@').
+    // If userinfo contains '@', the *last* ':' separates username from password.
+    const at = line.lastIndexOf("@");
+    if (at > 0) {
+      const left = line.slice(0, at).trim();
+      const right = line.slice(at + 1).trim();
+      if (left && right && left.includes(":")) {
+        const hm = right.match(/^([^:]+)(?::(\d+))?$/);
+        if (hm && hm[1]) {
+          const h = dec(hm[1].trim());
+          let po = hm[2] !== undefined && hm[2] !== ""
+            ? parseInt(hm[2], 10)
+            : (sslFromScheme ? 465 : 587);
+          if (!Number.isFinite(po) || po < 1 || po > 65535) {
+            po = sslFromScheme ? 465 : 587;
+          }
+          let u, rawP;
+          if (left.includes("@")) {
+            const ci = left.lastIndexOf(":");
+            if (ci <= 0) return null;
+            u = dec(left.slice(0, ci).trim());
+            rawP = left.slice(ci + 1);
+          } else {
+            const ci = left.indexOf(":");
+            if (ci <= 0) return null;
+            u = dec(left.slice(0, ci).trim());
+            rawP = left.slice(ci + 1);
+          }
+          const p = dec(rawP);
+          if (!u || !h) return null;
+          const ssl = sslFromScheme || po === 465;
+          return { host: h, port: po, username: u, password: p, ssl };
+        }
+      }
+    }
+
+    // host:port:user:pass[:ssl]  |  host|port|user|pass  |  host,port,...
     const sep = line.includes("|") ? "|" : line.includes(",") ? "," : ":";
     const parts = line.split(sep).map(p=>p.trim());
     if (parts.length < 2) return null;
