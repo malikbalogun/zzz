@@ -3967,6 +3967,12 @@ function TabMethod({
   const [bulkValidating, setBulkValidating] = useState(false);
   const [bulkProgress, setBulkProgress]     = useState({done:0,total:0,ok:0,fail:0});
   const [bulkAddedMsg, setBulkAddedMsg]     = useState("");
+  const [bulkAutoValidateAfterParse, setBulkAutoValidateAfterParse] = useState(false);
+  const [configuredListValidating, setConfiguredListValidating] = useState(false);
+  const [configuredListProgress, setConfiguredListProgress] = useState({done:0,total:0,ok:0,fail:0});
+  const [configuredProbeById, setConfiguredProbeById] = useState({}); // server id → bulk probe result
+  const [configuredDeadCount, setConfiguredDeadCount] = useState(0);
+  const configuredFailedIdsRef = useRef(new Set());
 
   function parseBulkLine(line) {
     line = (line||"").trim();
@@ -4033,6 +4039,17 @@ function TabMethod({
     setBulkParsed(out);
     setBulkProgress({done:0, total:out.length, ok:0, fail:0});
     setBulkAddedMsg("");
+    if (bulkAutoValidateAfterParse && out.length) {
+      setTimeout(() => { validateBulk(); }, 0);
+    }
+  }
+
+  function removeFailedBulkRows() {
+    const n = bulkParsed.filter(p => p._status === "fail").length;
+    if (!n) { showToast("i","Nothing to remove","No failed rows in the bulk list — validate first."); return; }
+    setBulkParsed(prev => prev.filter(p => p._status !== "fail"));
+    setBulkProgress({done:0, total:0, ok:0, fail:0});
+    showToast("ok","Removed", `Dropped ${n} dead row${n===1?"":"s"} from the bulk list.`);
   }
 
   async function validateBulk() {
@@ -4086,6 +4103,81 @@ function TabMethod({
     } finally {
       setBulkValidating(false);
     }
+  }
+
+  async function validateConfiguredBulk() {
+    if (!smtpList.length) { showToast("err","Empty","Add SMTP servers to the list first."); return; }
+    const snapshot = smtpList.slice();
+    configuredFailedIdsRef.current = new Set();
+    setConfiguredDeadCount(0);
+    setConfiguredProbeById({});
+    setConfiguredListValidating(true);
+    setConfiguredListProgress({done:0, total:snapshot.length, ok:0, fail:0});
+    const reqList = snapshot.map(s => ({
+      host:s.host, port:s.port, username:s.username, password:s.password, ssl:!!s.ssl,
+    }));
+    const reqIdxToId = snapshot.map(s => s.id);
+    try {
+      const r = await apiCall("/api/test-smtp/bulk",{
+        method:"POST",
+        body: JSON.stringify({servers: reqList}),
+      });
+      if (!r.ok) { showToast("err","Failed","HTTP "+r.status); return; }
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value,{stream:true});
+        const lines = buf.split("\n"); buf = lines.pop();
+        for (const ln of lines) {
+          if (!ln.trim()) continue;
+          let ev; try { ev = JSON.parse(ln); } catch(e){ continue; }
+          if (ev.type === "result") {
+            const sid = reqIdxToId[ev.idx];
+            if (!ev.ok) {
+              configuredFailedIdsRef.current.add(sid);
+              setConfiguredDeadCount(configuredFailedIdsRef.current.size);
+            }
+            setConfiguredProbeById(prev => ({
+              ...prev, [sid]: { ok:ev.ok, message:ev.message, latency_ms:ev.latency_ms },
+            }));
+            setConfiguredListProgress({
+              done:ev.done, total:ev.total,
+              ok:ev.ok_count||0, fail:ev.fail_count||0,
+            });
+          }
+          if (ev.type === "done") {
+            setConfiguredListProgress(p => ({...p, done:ev.total, ok:ev.ok, fail:ev.failed}));
+            setConfiguredDeadCount(ev.failed||0);
+          }
+        }
+      }
+      const dead = configuredFailedIdsRef.current.size;
+      if (dead) {
+        showToast("w","Bulk test done", `${dead} server${dead===1?"":"s"} failed — use Remove dead to drop them.`);
+      } else {
+        showToast("ok","All OK", `All ${snapshot.length} configured SMTP${snapshot.length===1?"":"s"} responded.`);
+      }
+    } catch(e) {
+      showToast("err","Validation error", e.message);
+    } finally {
+      setConfiguredListValidating(false);
+    }
+  }
+
+  function removeDeadFromConfigured() {
+    const failed = configuredFailedIdsRef.current;
+    const n = failed.size;
+    if (!n) {
+      showToast("i","Nothing to remove","Run Validate all first, or every server passed the last test.");
+      return;
+    }
+    setSmtpList(prev => prev.filter(s => !failed.has(s.id)));
+    failed.clear();
+    setConfiguredDeadCount(0);
+    setConfiguredProbeById({});
+    showToast("ok","Removed", `Removed ${n} dead SMTP${n===1?"":"s"} from Configured Servers.`);
   }
 
   function addWorkingToList(onlyOk) {
@@ -4272,6 +4364,18 @@ function TabMethod({
                     onClick={()=>addWorkingToList(true)}
                     title="Working SMTPs are added in your input order (sorted by line number)">
                     ➕ {bulkReplaceList ? "Replace" : "Append"} {bulkParsed.filter(p=>p._status==="ok"&&p._keep).length} working {bulkReplaceList ? "list" : ""}
+                  </button>
+                  <label className="row ac-center g6" style={{cursor:"pointer",fontSize:11,marginLeft:4}}
+                    title="After Parse lines, run Validate automatically (same as clicking Validate).">
+                    <input type="checkbox" checked={bulkAutoValidateAfterParse}
+                      onChange={e=>setBulkAutoValidateAfterParse(e.target.checked)}
+                      style={{width:14,height:14,margin:0,cursor:"pointer"}}/>
+                    <span className="dim2">Auto-validate after parse</span>
+                  </label>
+                  <button className="btn btn-d btn-sm" disabled={!bulkParsed.some(p=>p._status==="fail")}
+                    onClick={removeFailedBulkRows}
+                    title="Remove rows that failed the last bulk test from this list (does not change Configured Servers until you Append).">
+                    🧹 Remove dead rows
                   </button>
                   <label className="row ac-center g6" style={{cursor:"pointer",fontSize:11,marginLeft:4}}
                     title="When ON: working SMTPs become the entire Configured Servers list, in your paste order. When OFF: append after existing servers, deduped.">
@@ -4463,10 +4567,29 @@ function TabMethod({
 
           {smtpList.length>0 && (
             <div className="card">
-              <div className="row jb ac-center mb12">
+              <div className="row jb ac-center mb12" style={{flexWrap:"wrap",gap:8}}>
                 <span className="card-title" style={{marginBottom:0}}>Configured Servers ({smtpList.length})</span>
-                <button className="btn btn-d btn-xs" onClick={()=>{if(confirm("Remove all SMTP servers?"))setSmtpList([]);}}>Remove All</button>
+                <div className="row g8 ac-center" style={{flexWrap:"wrap"}}>
+                  <button className="btn btn-p btn-sm" onClick={validateConfiguredBulk}
+                    disabled={configuredListValidating}>
+                    {configuredListValidating
+                      ? `Testing ${configuredListProgress.done}/${configuredListProgress.total}…`
+                      : "🔬 Validate all"}
+                  </button>
+                  <button className="btn btn-d btn-sm" onClick={removeDeadFromConfigured}
+                    disabled={configuredListValidating || configuredDeadCount===0}
+                    title="Drop servers that failed the last Validate all run">
+                    🧹 Remove dead ({configuredDeadCount || 0})
+                  </button>
+                  <button className="btn btn-d btn-xs" onClick={()=>{if(confirm("Remove all SMTP servers?"))setSmtpList([]);}}>Remove All</button>
+                </div>
               </div>
+              {configuredListValidating && configuredListProgress.total>0 && (
+                <div className="mb10" style={{background:"var(--bg2)",borderRadius:6,overflow:"hidden",height:8}}>
+                  <div style={{height:"100%",width:`${(configuredListProgress.done/Math.max(1,configuredListProgress.total))*100}%`,
+                               background:"linear-gradient(90deg,#6366f1,#22c55e)",transition:"width .15s"}}/>
+                </div>
+              )}
               <div className="col g8">
                 {smtpList.map((s,i)=>(
                   <div key={s.id} style={{border:"1px solid var(--border)",borderRadius:8,overflow:"hidden"}}>
@@ -4475,11 +4598,21 @@ function TabMethod({
                         <div style={{fontFamily:"var(--font-mono)",fontSize:12,fontWeight:600}}>{s.host}:{s.port} {s.ssl?"(SSL)":"(STARTTLS)"}</div>
                         <div style={{fontSize:11,color:"var(--t2)",marginTop:2}}>{s.username||"no username"}</div>
                       </div>
-                      <button className="btn btn-g btn-xs" onClick={()=>testSmtp(s,i)} disabled={testL[i]}>
+                      <button className="btn btn-g btn-xs" onClick={()=>testSmtp(s,i)} disabled={testL[i] || configuredListValidating}>
                         {testL[i]?"Testing…":"Test"}
                       </button>
                       <button className="btn btn-d btn-xs" onClick={()=>setSmtpList(p=>p.filter((_,j)=>j!==i))}>✕ Delete</button>
                     </div>
+                    {configuredProbeById[s.id] && (
+                      <div style={{padding:"6px 14px",fontSize:10,
+                        background: configuredProbeById[s.id].ok ? "#0f2a1a33" : "#2a0f0f33",
+                        color: configuredProbeById[s.id].ok ? "#4ade80" : "#f87171",
+                        borderTop:"1px solid var(--border)"}}>
+                        Bulk test{configuredProbeById[s.id].latency_ms!=null?` · ${configuredProbeById[s.id].latency_ms}ms`:""}:{" "}
+                        {configuredProbeById[s.id].ok ? "✓ " : "✗ "}
+                        {configuredProbeById[s.id].message||""}
+                      </div>
+                    )}
                     {testR[i] && (
                       <div style={{padding:"8px 14px",fontSize:11,
                         background: testR[i].status==="ok" ? "#0f2a1a" : "#2a0f0f",
