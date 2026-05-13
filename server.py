@@ -6689,12 +6689,16 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                 reversed_ip = ".".join(reversed(parts))
                 listed = []
                 clean  = []
+                # Module-level `socket` is shadowed by an `import socket`
+                # earlier in _do_POST_inner — re-import locally with an
+                # alias so this branch always sees the module.
+                import socket as _ipbl_sock
                 for bl in dnsbls:
                     query = f"{reversed_ip}.{bl}"
                     try:
-                        socket.getaddrinfo(query, None)
+                        _ipbl_sock.getaddrinfo(query, None)
                         listed.append(bl)
-                    except socket.gaierror:
+                    except _ipbl_sock.gaierror:
                         clean.append(bl)
                     except Exception:
                         clean.append(bl)
