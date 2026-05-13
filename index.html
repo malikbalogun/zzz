@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-  <meta name="version" content="v5.35.20260510-popup-fix">
+  <meta name="version" content="v5.36.20260513-ui-fixes">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -2077,8 +2077,11 @@ function TabCampaign({
   newCampaign, clearHistory,
   bccEnabled, setBccEnabled, bccEmail, setBccEmail,
 }) {
-  const pct = stats.total>0 ? Math.round((stats.sent+stats.failed)/stats.total*100) : 0;
-  const successPct = stats.total>0 ? Math.round(stats.sent/stats.total*100) : 0;
+  // Clamp every percentage at 100 — the local-event handler and the
+  // server-poll mirror can momentarily disagree by 1-2 events while the
+  // counters re-converge, which was causing 101%+ flashes mid-campaign.
+  const pct        = stats.total>0 ? Math.min(100, Math.round((stats.sent+stats.failed)/stats.total*100)) : 0;
+  const successPct = stats.total>0 ? Math.min(100, Math.round(stats.sent/stats.total*100)) : 0;
   const sentEntries   = log.filter(e=>e.type==="ok");
   const failedEntries = log.filter(e=>e.type==="err");
 
@@ -2683,10 +2686,14 @@ function TabCompose({
         )}
       </div>
 
-      {/* EDITOR (split or normal) */}
+      {/* EDITOR (split or normal)
+           Layout: subject / tags / attachments / link-rotation cards
+           always render full-width.  When split-view is on, ONLY the
+           HTML Body card splits 50/50 with the live preview iframe so
+           the surrounding inputs aren't squished into a half column.
+      */}
       {subTab==="editor" && (
-      <div style={splitView && !isMobile ? {display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,alignItems:"start"} : {}}>
-        {/* LEFT/ONLY: editor content */}
+      <div>
         <div>
           {/* Subject - supports multiple for rotation */}
           <div className="card mb16">
@@ -2797,8 +2804,11 @@ function TabCompose({
             )}
           </div>
 
-          {/* HTML Body */}
-          <div className="card mb16">
+          {/* HTML Body  — split 50/50 with live preview when splitView=on */}
+          <div style={splitView && !isMobile
+            ? {display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,alignItems:"start",marginBottom:16}
+            : {marginBottom:0}}>
+          <div className="card" style={{marginBottom: splitView && !isMobile ? 0 : 16}}>
             <div className="row jb ac-center mb10">
               <label className="lbl" style={{marginBottom:0}}>HTML Body</label>
               <button className="btn btn-g btn-sm" onClick={()=>openTagModal(bodyRef)}>🏷 Insert Tag</button>
@@ -2860,6 +2870,66 @@ function TabCompose({
               style={{minHeight: splitView && !isMobile ? "calc(100vh - 280px)" : 260,
                       fontFamily:"var(--font-mono)",fontSize:12,lineHeight:1.6,
                       resize:"vertical"}}/>
+          </div>
+          {/* Live preview pane — only rendered when splitView is on. */}
+          {splitView && !isMobile && (
+            <div className="card" style={{marginBottom:0,padding:"12px 14px",position:"sticky",top:16,maxHeight:"calc(100vh - 32px)",overflow:"auto"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:6}}>
+                <span style={{fontWeight:600,fontSize:13}}>👁 Live Preview</span>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                  {[["html","HTML"],["plain","Plain"],["source","Source"]].map(([k,l])=>(
+                    <button key={k} className={`tb ${prevMode===k?"on":""}`} style={{fontSize:11,padding:"3px 8px"}} onClick={()=>setPrevMode(k)}>{l}</button>
+                  ))}
+                  <span style={{display:"inline-block",width:1,background:"var(--border)",margin:"0 4px"}}/>
+                  {[["desk","🖥"],["mob","📱"]].map(([k,ico])=>(
+                    <button key={k}
+                      className={`tb ${prevDevice===k?"on":""}`}
+                      style={{fontSize:11,padding:"3px 8px"}}
+                      title={k==="desk"?"Desktop preview":"Mobile preview"}
+                      onClick={()=>setPrevDevice(k)}>{ico}</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{fontSize:11,color:"var(--t3)",marginBottom:8,padding:"6px 10px",background:"var(--bg3)",borderRadius:6}}>
+                <strong style={{color:"var(--t2)"}}>To:</strong> {autoEmail} &nbsp;
+                <strong style={{color:"var(--t2)"}}>Subj:</strong> {previewSubject||subject||"(no subject)"}
+              </div>
+              {prevMode==="html" && (
+                <div style={{background:"#fff",borderRadius:6,overflow:"auto",
+                             border:"1px solid var(--border)",
+                             height:"calc(100vh - 240px)",minHeight:480,
+                             display:"flex",justifyContent:"center"}}>
+                  {htmlBody
+                    ? <iframe srcDoc={previewHtml}
+                              style={{width: prevDevice==="mob" ? 380 : "100%",
+                                      maxWidth:"100%",
+                                      height:"100%",
+                                      border:"none",
+                                      transition:"width .2s"}}
+                              sandbox="allow-same-origin"/>
+                    : <div style={{padding:30,color:"#aaa",textAlign:"center",fontSize:13,alignSelf:"center"}}>
+                        Write HTML body on the left to preview
+                      </div>}
+                </div>
+              )}
+              {prevMode==="plain" && (
+                <div className="code" style={{minHeight:200,whiteSpace:"pre-wrap",fontSize:12,
+                                              maxHeight:"calc(100vh - 240px)",overflow:"auto"}}>
+                  {resolveTags(plainBody||htmlBody.replace(/<[^>]+>/g,""), autoEmail, resolvedSenderEmail, subject, autoName, 1, sampleLead)||"(empty)"}
+                </div>
+              )}
+              {prevMode==="source" && (
+                <div className="code" style={{minHeight:200,fontSize:11,
+                                              maxHeight:"calc(100vh - 240px)",overflow:"auto"}}>{htmlBody||"(no HTML)"}</div>
+              )}
+              <div style={{marginTop:8,display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                <button className="btn btn-g btn-xs" onClick={()=>setSampleIdx(i=>(i+1)%SAMPLE_EMAILS.length)}>
+                  🔀 Next Sample
+                </button>
+                <span className="dim2 xs">{autoName} · {autoEmail}</span>
+              </div>
+            </div>
+          )}
           </div>
 
           {/* Plain text */}
@@ -3009,68 +3079,7 @@ function TabCompose({
           ))}
           <button className="btn btn-g btn-sm mt8" onClick={()=>setHtmlBodies([...htmlBodies,""])}>+ Add Letter</button>
         </div>
-        {/* RIGHT PANEL: live preview (split view only) */}
-        {splitView && (
-          <div style={{position:"sticky",top:16,maxHeight:"calc(100vh - 32px)",overflow:"auto"}}>
-            <div className="card" style={{padding:"12px 14px"}}>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:6}}>
-                <span style={{fontWeight:600,fontSize:13}}>👁 Live Preview</span>
-                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                  {[["html","HTML"],["plain","Plain"],["source","Source"]].map(([k,l])=>(
-                    <button key={k} className={`tb ${prevMode===k?"on":""}`} style={{fontSize:11,padding:"3px 8px"}} onClick={()=>setPrevMode(k)}>{l}</button>
-                  ))}
-                  <span style={{display:"inline-block",width:1,background:"var(--border)",margin:"0 4px"}}/>
-                  {[["desk","🖥"],["mob","📱"]].map(([k,ico])=>(
-                    <button key={k}
-                      className={`tb ${prevDevice===k?"on":""}`}
-                      style={{fontSize:11,padding:"3px 8px"}}
-                      title={k==="desk"?"Desktop preview":"Mobile preview"}
-                      onClick={()=>setPrevDevice(k)}>{ico}</button>
-                  ))}
-                </div>
-              </div>
-              <div style={{fontSize:11,color:"var(--t3)",marginBottom:8,padding:"6px 10px",background:"var(--bg3)",borderRadius:6}}>
-                <strong style={{color:"var(--t2)"}}>To:</strong> {autoEmail} &nbsp;
-                <strong style={{color:"var(--t2)"}}>Subj:</strong> {previewSubject||subject||"(no subject)"}
-              </div>
-              {prevMode==="html" && (
-                <div style={{background:"#fff",borderRadius:6,overflow:"auto",
-                             border:"1px solid var(--border)",
-                             height:"calc(100vh - 240px)",minHeight:480,
-                             display:"flex",justifyContent:"center"}}>
-                  {htmlBody
-                    ? <iframe srcDoc={previewHtml}
-                              style={{width: prevDevice==="mob" ? 380 : "100%",
-                                      maxWidth:"100%",
-                                      height:"100%",
-                                      border:"none",
-                                      transition:"width .2s"}}
-                              sandbox="allow-same-origin"/>
-                    : <div style={{padding:30,color:"#aaa",textAlign:"center",fontSize:13,alignSelf:"center"}}>
-                        Write HTML body on the left to preview
-                      </div>}
-                </div>
-              )}
-              {prevMode==="plain" && (
-                <div className="code" style={{minHeight:200,whiteSpace:"pre-wrap",fontSize:12,
-                                              maxHeight:"calc(100vh - 240px)",overflow:"auto"}}>
-                  {resolveTags(plainBody||htmlBody.replace(/<[^>]+>/g,""), autoEmail, resolvedSenderEmail, subject, autoName, 1, sampleLead)||"(empty)"}
-                </div>
-              )}
-              {prevMode==="source" && (
-                <div className="code" style={{minHeight:200,fontSize:11,
-                                              maxHeight:"calc(100vh - 240px)",overflow:"auto"}}>{htmlBody||"(no HTML)"}</div>
-              )}
-              <div style={{marginTop:8,display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-                <button className="btn btn-g btn-xs" onClick={()=>setSampleIdx(i=>(i+1)%SAMPLE_EMAILS.length)}>
-                  🔀 Next Sample
-                </button>
-                <span className="dim2 xs">{autoName} · {autoEmail}</span>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+        </div>
       )}
 
       {subTab==="preview" && (
@@ -9856,9 +9865,25 @@ function App() {
         }
       } catch(e) {}
     }
-    const iv = setInterval(poll, 1500);
-    poll();
-    return ()=>{ active=false; clearInterval(iv); };
+    // Adaptive polling: fast (500ms) while a campaign is actively
+    // running so the progress bar updates smoothly within ~half a
+    // second of each send; slow (3s) when idle.  Pre-fix the fixed
+    // 1.5s tick made the bar feel like it 'didn't start in time'.
+    let iv = null;
+    let interval = null;
+    function reschedule(target) {
+      if (interval === target) return;
+      interval = target;
+      if (iv) clearInterval(iv);
+      iv = setInterval(poll, target);
+    }
+    async function pollWrapped() {
+      await poll();
+      reschedule(remoteRunningRef.current ? 500 : 3000);
+    }
+    pollWrapped();
+    iv = setInterval(pollWrapped, 1500);   // initial cadence
+    return ()=>{ active=false; if (iv) clearInterval(iv); };
   },[token]);
 
   // ── Load files on login ──
@@ -10225,8 +10250,11 @@ function App() {
   function handleCampaignEvent(ev) {
         if(ev.type==="sent" || ev.type==="success") {
           setCampStats(s => {
-            const sent = (s.sent||0) + 1;
-            return {...s, sent, pending: Math.max(0, (s.total||0) - sent - (s.failed||0))};
+            // Clamp at total so we can never overshoot on retry / event
+            // double-fire / poll-mirror collisions.
+            const total = s.total || 0;
+            const sent  = Math.min(total || Infinity, (s.sent||0) + 1);
+            return {...s, sent, pending: Math.max(0, total - sent - (s.failed||0))};
           });
           const fromPart = ev.from ? ` ← ${ev.from}` : "";
           const v = ev.via||"";
@@ -10241,8 +10269,9 @@ function App() {
         }
         else if(ev.type==="error" || ev.type==="fail") {
           setCampStats(s => {
-            const failed = (s.failed||0) + 1;
-            return {...s, failed, pending: Math.max(0, (s.total||0) - (s.sent||0) - failed)};
+            const total  = s.total || 0;
+            const failed = Math.min(total || Infinity, (s.failed||0) + 1);
+            return {...s, failed, pending: Math.max(0, total - (s.sent||0) - failed)};
           });
           addLog(`✗ ${ev.email||""} — ${ev.msg||ev.error||""}`, "err", ev.email||"");
         }
