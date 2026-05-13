@@ -9269,7 +9269,8 @@ ${lrLog ? '    log.info("REDIRECT → %s", target)' : ''}
    TAB: ACCOUNT
 ════════════════════════════════════════ */
 function TabAccount({username, role, doLogout,
-                     updateInfo, updateApplying, updateAutoCheck, setUpdateAutoCheck,
+                     updateInfo, updateApplying, updateCheckLoading,
+                     updateAutoCheck, setUpdateAutoCheck,
                      updateAutoApply, setUpdateAutoApply,
                      checkForUpdate, applyUpdate}) {
   const [aTab, setATab] = useState(role==="superadmin"||role==="admin"||role==="moderator"?"admin":"security");
@@ -9877,6 +9878,9 @@ function TabAccount({username, role, doLogout,
                 ? <>SynthTel periodically checks <code>{(updateInfo&&updateInfo.owner)||"GitHub"}/
                     {(updateInfo&&updateInfo.repo)||"repo"}@{(updateInfo&&updateInfo.branch)||"main"}</code> for newer versions.</>
                 : <>SynthTel periodically checks for newer versions.</>}
+              <span className="dim2" style={{display:"block",marginTop:6}}>
+                This is under <strong>Account</strong> → <strong>Updates</strong>. You must stay logged in; expired sessions get no result until you re-login.
+              </span>
             </div>
 
             {!updateInfo && (
@@ -9892,10 +9896,14 @@ function TabAccount({username, role, doLogout,
                 </div>
               </div>
             )}
-            {updateInfo && !updateInfo.behind && updateInfo.current_sha && (
+            {updateInfo && !updateInfo.behind && !updateInfo.error && updateInfo.ok !== false && (updateInfo.current_sha || updateInfo.latest_sha) && (
               <div className="ib ib-ok mb12">
                 <span className="ib-ic">✓</span>
-                <span>Up to date — running {updateInfo.current_sha.slice(0,7)}</span>
+                <span>
+                  Up to date
+                  {updateInfo.current_sha ? ` — installed ${updateInfo.current_sha.slice(0,7)}` : ""}
+                  {!updateInfo.current_sha && updateInfo.latest_sha ? ` — matches ${updateInfo.latest_sha.slice(0,7)}` : ""}
+                </span>
               </div>
             )}
             {updateInfo && updateInfo.error && (
@@ -9903,8 +9911,9 @@ function TabAccount({username, role, doLogout,
             )}
 
             <div className="row g8 mb12">
-              <button className="btn btn-g btn-sm" onClick={()=>checkForUpdate({showError:true, skipPopup:true})}>
-                🔍 Check now
+              <button className="btn btn-g btn-sm" disabled={updateCheckLoading || updateApplying}
+                onClick={()=>checkForUpdate({showError:true, skipPopup:true})}>
+                {updateCheckLoading ? "Checking…" : "🔍 Check now"}
               </button>
               {(role==="admin"||role==="superadmin") && updateInfo && updateInfo.behind && (
                 <button className="btn btn-p btn-sm" onClick={()=>applyUpdate({})} disabled={updateApplying}>
@@ -10034,6 +10043,7 @@ function App() {
   // and auto-apply behaviour are stored in localStorage.
   const [updateInfo,    setUpdateInfo]    = useState(null);   // last /api/update/check response
   const [updateApplying, setUpdateApplying] = useState(false);
+  const [updateCheckLoading, setUpdateCheckLoading] = useState(false);
   const [updateBannerHidden, setUpdateBannerHidden] = useState(false);
   const [updateAutoCheck, setUpdateAutoCheck] = useState(
     (localStorage.getItem("st_update_auto_check")||"1") === "1");
@@ -10392,30 +10402,63 @@ function App() {
   useEffect(()=>{ if(token){ loadFiles(); loadHistory(); loadDraft(); } },[token]);
 
   // ── GitHub update check loop ──
-  // Runs every 30 minutes when auto-check is on, plus once right after
-  // login.  When an update is detected we surface a popup the FIRST
-  // time we see that SHA — subsequent polls update the banner only.
+  // Runs on an interval when auto-check is on, plus once after login.
   async function checkForUpdate(opts) {
     opts = opts || {};
+    setUpdateCheckLoading(true);
     try {
       const r = await apiCall("/api/update/check");
-      if(!r.ok) return null;
-      const d = await r.json();
-      if(!d || d.ok === false) {
-        if(opts.showError) addLog(`⚠ Update check failed: ${d && d.error || "unknown"}`,"wrn");
+      let d = null;
+      try { d = await r.json(); } catch (e) { d = null; }
+
+      if (!r.ok) {
+        const msg = (d && d.error) ? d.error : ("HTTP " + r.status + (r.status === 401 ? " — session expired, log in again" : ""));
+        setUpdateInfo(prev => ({
+          ...(prev || {}),
+          ok: false,
+          behind: false,
+          error: msg,
+        }));
+        if (opts.showError) {
+          addLog(`⚠ Update check failed: ${msg}`, "wrn");
+          showToast("w", "Update check", msg);
+        }
         return null;
       }
+
+      if (!d || d.ok === false) {
+        const err = (d && d.error) ? d.error : "Unknown error";
+        setUpdateInfo({
+          ...(d || {}),
+          ok: false,
+          behind: false,
+          error: err,
+        });
+        if (opts.showError) {
+          addLog(`⚠ Update check failed: ${err}`, "wrn");
+          showToast("w", "GitHub", err);
+        }
+        return null;
+      }
+
       setUpdateInfo(d);
-      if(d.behind) {
+      if (opts.showError) {
+        if (d.behind) {
+          showToast("i", "Update available", `${(d.short || (d.latest_sha || "").slice(0, 7))} on ${d.branch || "main"}`);
+        } else {
+          const tag = (d.current_sha && d.current_sha.slice(0, 7)) || (d.latest_sha && d.latest_sha.slice(0, 7)) || "current";
+          showToast("ok", "Up to date", `${d.branch || "main"} @ ${tag}`);
+        }
+      }
+      if (d.behind) {
         const sha = d.latest_sha || "";
-        const seenKey = "st_update_seen_" + sha.slice(0,7);
-        if(updateAutoApply && updatePopupSeen !== sha) {
-          // Auto-apply path: silently apply as long as user is admin.
+        const seenKey = "st_update_seen_" + sha.slice(0, 7);
+        if (updateAutoApply && updatePopupSeen !== sha) {
           setUpdatePopupSeen(sha);
-          if(role === "admin" || role === "superadmin") {
+          if (role === "admin" || role === "superadmin") {
             await applyUpdate({silent: true});
           }
-        } else if(localStorage.getItem(seenKey) !== "1" && updatePopupSeen !== sha && !opts.skipPopup) {
+        } else if (localStorage.getItem(seenKey) !== "1" && updatePopupSeen !== sha && !opts.skipPopup) {
           setUpdatePopupSeen(sha);
           localStorage.setItem(seenKey, "1");
           showUpdatePopup(d);
@@ -10423,9 +10466,21 @@ function App() {
         setUpdateBannerHidden(false);
       }
       return d;
-    } catch(e) {
-      if(opts.showError) addLog(`⚠ Update check error: ${e.message}`,"wrn");
+    } catch (e) {
+      const msg = e.message || String(e);
+      setUpdateInfo(prev => ({
+        ...(prev || {}),
+        ok: false,
+        behind: false,
+        error: msg,
+      }));
+      if (opts.showError) {
+        addLog(`⚠ Update check error: ${msg}`, "wrn");
+        showToast("w", "Update check", msg);
+      }
       return null;
+    } finally {
+      setUpdateCheckLoading(false);
     }
   }
 
@@ -11272,6 +11327,7 @@ function App() {
       case "redirects":   return <>{isMobile&&<MobTopBar/>}<TabRedirects setHtmlBody={setHtmlBody} setTab={setTab} addLog={addLog} showPopup={showPopup}/>{isMobile&&<MobSpacer/>}</>;
       case "account":     return <>{isMobile&&<MobTopBar/>}<TabAccount username={username} role={role} doLogout={doLogout}
                                           updateInfo={updateInfo} updateApplying={updateApplying}
+                                          updateCheckLoading={updateCheckLoading}
                                           updateAutoCheck={updateAutoCheck} setUpdateAutoCheck={setUpdateAutoCheck}
                                           updateAutoApply={updateAutoApply} setUpdateAutoApply={setUpdateAutoApply}
                                           checkForUpdate={checkForUpdate} applyUpdate={applyUpdate}/>{isMobile&&<MobSpacer/>}</>;
