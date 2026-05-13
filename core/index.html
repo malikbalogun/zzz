@@ -526,6 +526,9 @@ textarea { resize: vertical; min-height: 80px; }
 .mc-ic   { font-size: 22px; margin-bottom: 8px; }
 .mc-name { font-size: 13px; font-weight: 700; }
 .mc-desc { font-size: 11px; color: var(--t3); margin-top: 3px; flex: 1; }
+/* Active Sending Method grid — 4×2 on desktop, 2×4 on tablet, 1×8 on phone */
+@media (max-width: 900px) { .method-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }
+@media (max-width: 480px) { .method-grid { grid-template-columns: 1fr !important; } }
 
 /* ═══════════════ PROXY ITEM ═══════════════ */
 .pi { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); }
@@ -3845,6 +3848,214 @@ function SesCredGen({onApply, initialRegion}) {
 }
 
 /* ════════════════════════════════════════
+   OFFICE ADMIN TAB — full M365 inbound connector send method
+   Two paths:
+     1. Direct (this VPS's IP is on the M365 connector allow-list)
+     2. Via relay (SSH-tunnel through a port-25 RDP/VPS; that
+        relay's IP is the one allow-listed)
+════════════════════════════════════════ */
+function OfficeAdminTab({officeConfig, setOfficeConfig}) {
+  const cfg = officeConfig || {};
+  const set = (patch) => setOfficeConfig({...cfg, ...patch});
+  const [testing,    setTesting]    = React.useState(false);
+  const [testResult, setTestResult] = React.useState(null);
+  const [probeRes,   setProbeRes]   = React.useState(null);
+  const [probing,    setProbing]    = React.useState(false);
+
+  async function probeVps() {
+    setProbing(true); setProbeRes(null);
+    try {
+      const r = await apiCall("/api/tools/office-port25");
+      setProbeRes(await r.json());
+    } catch(e) { setProbeRes({ok:false,error:e.message}); }
+    setProbing(false);
+  }
+
+  async function testRelay() {
+    if (!cfg.relayHost) { showToast("err","Missing","Relay host required"); return; }
+    setTesting(true); setTestResult(null);
+    try {
+      const r = await apiCall("/api/tools/test-office-relay",{
+        method:"POST",
+        body: JSON.stringify({
+          host:    cfg.relayHost,
+          sshPort: parseInt(cfg.relaySshPort)||22,
+          sshUser: cfg.relaySshUser||"Administrator",
+          sshPass: cfg.relaySshPass||"",
+          connectorHost: cfg.connectorHost||"",
+        }),
+      });
+      setTestResult(await r.json());
+    } catch(e) { setTestResult({ok:false,error:e.message}); }
+    setTesting(false);
+  }
+
+  // Choose which IP belongs in the connector allow-list.
+  const connectorIp = cfg.useRelay ? (testResult && testResult.relay_ip) || "" :
+                                     (probeRes && probeRes.public_ip) || "";
+  const psSnippet = connectorIp
+    ? `# Run as Global Admin in Exchange Online PowerShell:\n` +
+      `Connect-ExchangeOnline\n` +
+      `New-InboundConnector \``+`\n` +
+      `  -Name 'SynthTel-Sender' \``+`\n` +
+      `  -ConnectorType OnPremises \``+`\n` +
+      `  -SenderDomains '*' \``+`\n` +
+      `  -SenderIPAddresses '${connectorIp}' \``+`\n` +
+      `  -RestrictDomainsToIPAddresses $true \``+`\n` +
+      `  -RequireTls $true`
+    : "";
+
+  return (
+    <div>
+      <Info type="i">
+        <strong>Office Admin / M365 Inbound Connector</strong> — sends through your tenant via an inbound connector that allows mail from a specific IP (this VPS, OR a port-25 RDP relay you point us at).  Highest deliverability for cold-mail because mail is signed by the tenant's DKIM and arrives from a Microsoft IP.
+      </Info>
+
+      {/* ── Step 1: connector hostname ── */}
+      <div className="card mt12 mb12" style={{borderLeft:"3px solid #0078d4"}}>
+        <div className="card-title">Step 1 — Connector hostname</div>
+        <div className="dim sm mb12">
+          The MX hostname for your tenant.  Find it in Microsoft 365 Admin Center → Settings → Domains → click your domain → DNS records → MX.  Looks like <code>yourtenant-com.mail.protection.outlook.com</code>.
+        </div>
+        <div className="g3">
+          <div style={{gridColumn:"span 2"}}>
+            <label className="lbl">Connector / MX hostname</label>
+            <input value={cfg.connectorHost||""} onChange={e=>set({connectorHost:e.target.value.trim()})}
+              placeholder="yourtenant-com.mail.protection.outlook.com"
+              style={{fontSize:14,padding:"10px 12px",fontFamily:"var(--font-mono)"}}/>
+          </div>
+          <div>
+            <label className="lbl">Port</label>
+            <input type="number" value={cfg.connectorPort||25} onChange={e=>set({connectorPort:parseInt(e.target.value)||25})}
+              style={{fontSize:14,padding:"10px 12px"}}/>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Step 2: sender path (this VPS vs relay) ── */}
+      <div className="card mb12" style={{borderLeft:"3px solid #0078d4"}}>
+        <div className="card-title">Step 2 — Where do emails egress from?</div>
+        <div className="dim sm mb12">
+          The IP that the M365 connector allow-lists is the IP that actually opens the SMTP connection to your tenant.  If THIS sender VPS has port 25 outbound, use it directly.  Otherwise, give us SSH access to a port-25-capable RDP/VPS — we'll tunnel through it so the connector sees the relay's IP.
+        </div>
+
+        <div className="row g8 mb12">
+          <button className={`btn btn-sm ${!cfg.useRelay?"btn-p":"btn-g"}`} onClick={()=>set({useRelay:false})}>
+            🌐 Use this VPS (direct)
+          </button>
+          <button className={`btn btn-sm ${cfg.useRelay?"btn-p":"btn-g"}`} onClick={()=>set({useRelay:true})}>
+            🔑 Route via RDP / relay (SSH tunnel)
+          </button>
+        </div>
+
+        {!cfg.useRelay && (
+          <div>
+            <button className="btn btn-g btn-sm mb12" onClick={probeVps} disabled={probing}>
+              {probing?"Probing…":"🔍 Check this VPS's port 25"}
+            </button>
+            {probeRes && probeRes.public_ip && (
+              <div className="ib ib-i mb8 sm"><span className="ib-ic">🌐</span><span>This VPS public IP: <code>{probeRes.public_ip}</code></span></div>
+            )}
+            {probeRes && typeof probeRes.port25_open === "boolean" && (
+              <div className={`ib ${probeRes.port25_open?"ib-ok":"ib-w"} mb8 sm`}>
+                <span className="ib-ic">{probeRes.port25_open?"✓":"⚠"}</span>
+                <span style={{whiteSpace:"pre-line"}}>{probeRes.advice}</span>
+              </div>
+            )}
+            {probeRes && probeRes.port25_open === false && (
+              <div className="ib ib-w mt8 sm">
+                <span className="ib-ic">💡</span>
+                <span>Port 25 is blocked on this VPS — switch to <strong>Route via RDP / relay</strong> above and provide an external box that has port 25.</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {cfg.useRelay && (
+          <div>
+            <div className="g2 mb10">
+              <div>
+                <label className="lbl">Relay host (IP or DNS)</label>
+                <input value={cfg.relayHost||""} onChange={e=>set({relayHost:e.target.value.trim()})}
+                  placeholder="123.45.67.89  or  rdp.example.com"
+                  style={{fontSize:14,padding:"10px 12px",fontFamily:"var(--font-mono)"}}/>
+              </div>
+              <div>
+                <label className="lbl">SSH port</label>
+                <input type="number" value={cfg.relaySshPort||22} onChange={e=>set({relaySshPort:parseInt(e.target.value)||22})}
+                  style={{fontSize:14,padding:"10px 12px"}}/>
+              </div>
+            </div>
+            <div className="g2 mb10">
+              <div>
+                <label className="lbl">SSH / RDP username</label>
+                <input value={cfg.relaySshUser||""} onChange={e=>set({relaySshUser:e.target.value.trim()})}
+                  placeholder="Administrator (Windows) or root (Linux)"
+                  style={{fontSize:14,padding:"10px 12px",fontFamily:"var(--font-mono)"}}/>
+              </div>
+              <div>
+                <label className="lbl">SSH password</label>
+                <input type="password" value={cfg.relaySshPass||""} onChange={e=>set({relaySshPass:e.target.value})}
+                  placeholder="…"
+                  style={{fontSize:14,padding:"10px 12px"}}/>
+              </div>
+            </div>
+            <div className="row g8">
+              <button className="btn btn-p btn-sm" onClick={testRelay} disabled={testing||!cfg.relayHost}>
+                {testing?"Testing…":"🔌 Test relay (SSH + port-25)"}
+              </button>
+              {testResult && testResult.relay_ip && (
+                <span className="bdg bdg-ok">Relay IP: {testResult.relay_ip}</span>
+              )}
+            </div>
+            {testResult && (
+              <div className={`ib ${testResult.ok?"ib-ok":"ib-e"} mt12 sm`}>
+                <span className="ib-ic">{testResult.ok?"✓":"✗"}</span>
+                <span style={{whiteSpace:"pre-line"}}>{testResult.message||testResult.error||""}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Step 3: PowerShell snippet ── */}
+      <div className="card mb12" style={{borderLeft:"3px solid #0078d4"}}>
+        <div className="card-title">Step 3 — Add the IP to your M365 connector</div>
+        <div className="dim sm mb12">
+          Run this in Exchange Online PowerShell as a Global Admin (one-time setup per IP):
+        </div>
+        {connectorIp ? (
+          <>
+            <pre className="code" style={{fontSize:11,whiteSpace:"pre-wrap",padding:"10px 12px",maxHeight:240,overflow:"auto"}}>
+{psSnippet}
+            </pre>
+            <div className="row g8 mt8">
+              <button className="btn btn-g btn-xs" onClick={()=>copyToClipboard(psSnippet)}>📋 Copy PowerShell</button>
+              <button className="btn btn-g btn-xs" onClick={()=>copyToClipboard(connectorIp)}>📋 Copy IP</button>
+            </div>
+          </>
+        ) : (
+          <Info type="w">Run the probe (Step 2) so we know which IP to put in the connector.</Info>
+        )}
+      </div>
+
+      {/* ── Step 4: ready ── */}
+      <div className="card" style={{borderLeft:"3px solid #22c55e"}}>
+        <div className="card-title">Step 4 — Ready to send</div>
+        <div className="sm">
+          When this method is the active one, every campaign send routes through your M365 connector.
+          {cfg.useRelay
+            ? " The SSH tunnel to the relay opens on each batch."
+            : " Mail egresses directly from this VPS on port 25."}
+          <br/>
+          Configure your senders in the <strong>Senders tab</strong> as usual — the From address must be on a domain your tenant owns (or a domain you've added to the connector with <code>SenderDomains</code>).
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════
    OFFICE CONNECTOR — port-25 detector + M365 connector helper
    Surfaced inside the SMTP method tab so users see it right where
    they're configuring senders.
@@ -3953,6 +4164,7 @@ function TabMethod({
   smtpAutoDisable, setSmtpAutoDisable,
   smtpFailThreshold, setSmtpFailThreshold,
   smtpCooldownSecs, setSmtpCooldownSecs,
+  officeConfig, setOfficeConfig,
 }) {
   const [mTab, setMTab] = useState("smtp");
   const [smtpPreset, setSmtpPreset] = useState("");
@@ -4161,10 +4373,10 @@ function TabMethod({
         <div className="ph-sub">Configure your sending infrastructure — settings are saved per account</div>
       </div>
 
-      {/* Active method selector */}
+      {/* Active method selector — 4 across, 2 rows */}
       <div className="card mb16">
         <div className="card-title">Active Sending Method</div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:12}}>
+        <div className="method-grid" style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:12}}>
           {[
             {id:"smtp",   ico:"📨", name:"SMTP Relay",      desc:"Your own SMTP servers"},
             {id:"api",    ico:"🔌", name:"API / ESP",       desc:"SendGrid, Mailchimp, etc."},
@@ -4196,28 +4408,8 @@ function TabMethod({
 
       {/* ── OFFICE ADMIN ── */}
       {mTab==="office" && (
-        <div>
-          <Info type="i">
-            <strong>Office Admin / M365 Inbound Connector</strong> route — sends through your Microsoft 365 tenant via an inbound connector that allows mail from THIS VPS's public IP.  Requires Global Admin access to the tenant once for setup.
-          </Info>
-          <div className="card mb12 mt12" style={{borderLeft:"3px solid #0078d4"}}>
-            <div className="card-title">Step 1 — Probe this VPS</div>
-            <div className="dim sm mb12">
-              We check if outbound port 25 is open and grab the public IP needed for the connector.
-            </div>
-            <OfficeConnectorPanel/>
-          </div>
-          <div className="card mb12">
-            <div className="card-title">Step 2 — Use as a sending method</div>
-            <Info type="w">
-              <strong>Pre-MVP:</strong> the actual send through the M365 connector reuses the SMTP path under the hood.
-              For now, configure your connector with the IP shown above, then add the connector hostname (e.g.
-              <code> yourtenant-com.mail.protection.outlook.com</code>) as a regular SMTP server in the SMTP tab on
-              port 25.  Future versions will fold this into a dedicated send path.
-            </Info>
-            <button className="btn btn-g btn-sm mt12" onClick={()=>setMTab("smtp")}>→ Open SMTP tab</button>
-          </div>
-        </div>
+        <OfficeAdminTab
+          officeConfig={officeConfig} setOfficeConfig={setOfficeConfig}/>
       )}
 
       {/* ── SMTP ── */}
@@ -10036,6 +10228,20 @@ function App() {
   const [smtpAutoDisable,   setSmtpAutoDisable]   = useState(_g("smtpAutoDisable", true));
   const [smtpFailThreshold, setSmtpFailThreshold] = useState(_g("smtpFailThreshold", 3));
   const [smtpCooldownSecs,  setSmtpCooldownSecs]  = useState(_g("smtpCooldownSecs", 60));
+  // ── Office Admin (M365 inbound connector) config ──
+  // useRelay=false → send direct from this VPS (port 25 must be open)
+  // useRelay=true  → SSH-tunnel through a port-25 RDP/relay box; that
+  //                  relay's IP gets added to the M365 connector
+  const [officeConfig, setOfficeConfig] = useState(_g("officeConfig",{
+    connectorHost: "",
+    connectorPort: 25,
+    useRelay:      false,
+    relayHost:     "",
+    relaySshPort:  22,
+    relaySshUser:  "Administrator",
+    relaySshPass:  "",
+    fromDomain:    "",
+  }));
   const [smtpDraft, setSmtpDraft]     = useState({host:"",port:587,username:"",password:"",ssl:false});
   const [apiList, setApiList]         = useState(_g("apiList",[]));
   const [apiDraft, setApiDraft]       = useState({provider:"sendgrid",key:"",secret:"",region:"us-east-1",mailgunDomain:"",mailgunRegion:"us",sparkpostRegion:"us"});
@@ -10135,7 +10341,7 @@ function App() {
       linkRot, linkRotDraft, linkRotMode,
       leadsRaw, allowDupes,
       sendersRaw, senderName, senderNames, senderReplyTo, rotMode,
-      activeMethod, smtpList, apiList, owaConfig, crmConfig, tunnelList,
+      activeMethod, smtpList, apiList, owaConfig, crmConfig, tunnelList, officeConfig,
       smtpRotation, smtpAutoDisable, smtpFailThreshold, smtpCooldownSecs,
       priority, batchSize, concurrent, cooldownEvery, cooldownSecs,
       batchPauseSecs, testEmail, testEveryN,
@@ -10160,7 +10366,7 @@ function App() {
     subject, extraSubjects, preheader, htmlBody, plainBody,
     linkRot, linkRotDraft, linkRotMode, leadsRaw, allowDupes,
     sendersRaw, senderName, senderNames, senderReplyTo, rotMode,
-    activeMethod, smtpList, apiList, owaConfig, crmConfig, tunnelList,
+    activeMethod, smtpList, apiList, owaConfig, crmConfig, tunnelList, officeConfig,
     smtpRotation, smtpAutoDisable, smtpFailThreshold, smtpCooldownSecs,
     priority, batchSize, concurrent, cooldownEvery, cooldownSecs,
     batchPauseSecs, testEmail, testEveryN,
@@ -10207,6 +10413,7 @@ function App() {
       _s("activeMethod",setActiveMethod); _s("smtpList",setSmtpList); _s("apiList",setApiList);
       _s("smtpRotation",setSmtpRotation); _s("smtpAutoDisable",setSmtpAutoDisable);
       _s("smtpFailThreshold",setSmtpFailThreshold); _s("smtpCooldownSecs",setSmtpCooldownSecs);
+      _s("officeConfig",setOfficeConfig);
       _s("owaConfig",setOwaConfig); _s("crmConfig",setCrmConfig);
       _s("tunnelList",setTunnelList);
       _s("priority",setPriority); _s("batchSize",setBatchSize); _s("concurrent",setConcurrent);
@@ -10636,6 +10843,9 @@ function App() {
       owa:owaConfig, crm:crmConfig, tunnels:effectiveTunnels,
       // Only include ispTunnels if actually using ISP method — prevents auto-switch to tunnel
       ...(effectiveMethod==="isp" ? {ispTunnels} : {}),
+      // Office Admin config — backend rewrites method=office into either
+      // method=smtp (direct to connector) or method=tunnel (via relay).
+      ...(effectiveMethod==="office" ? {office:officeConfig} : {}),
       proxies:proxies.map(p=>p.raw||p),
       batchSize:parseInt(batchSize), maxConnections:parseInt(concurrent)||1, delay:parseInt(delay), delayUnit,
       cooldownEvery:parseInt(cooldownEvery)||0, cooldownSecs:parseFloat(cooldownSecs)||60,
@@ -11219,7 +11429,8 @@ function App() {
                                           smtpRotation={smtpRotation} setSmtpRotation={setSmtpRotation}
                                           smtpAutoDisable={smtpAutoDisable} setSmtpAutoDisable={setSmtpAutoDisable}
                                           smtpFailThreshold={smtpFailThreshold} setSmtpFailThreshold={setSmtpFailThreshold}
-                                          smtpCooldownSecs={smtpCooldownSecs} setSmtpCooldownSecs={setSmtpCooldownSecs}/>{isMobile&&<MobSpacer/>}</>;
+                                          smtpCooldownSecs={smtpCooldownSecs} setSmtpCooldownSecs={setSmtpCooldownSecs}
+                                          officeConfig={officeConfig} setOfficeConfig={setOfficeConfig}/>{isMobile&&<MobSpacer/>}</>;
       case "proxies":     return <>{isMobile&&<MobTopBar/>}<TabProxies proxies={proxies} setProxies={setProxies} proxyDraft={proxyDraft} setProxyDraft={setProxyDraft} proxyType={proxyType} setProxyType={setProxyType}/>{isMobile&&<MobSpacer/>}</>;
       case "b2b":         return <>{isMobile&&<MobTopBar/>}<TabB2B setLeadsRaw={setLeadsRaw} setLeads={setLeads} setTab={setTab}/>{isMobile&&<MobSpacer/>}</>;
       case "attachments": return <>{isMobile&&<MobTopBar/>}<TabAttachments filesList={filesList} uploadFile={uploadFile} deleteFile={deleteFile} renameFile={renameFile} selectedType={selectedType} setSelectedType={setSelectedType} attachConfig={attachConfig} setAttachConfig={setAttachConfig}/>{isMobile&&<MobSpacer/>}</>;
