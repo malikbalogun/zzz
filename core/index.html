@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-  <meta name="version" content="v5.44.20260513-office">
+  <meta name="version" content="v5.45.20260513-mx-providers">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -1465,7 +1465,41 @@ const _LEAD_PROVIDER_BY_DOMAIN = {
 const _LEAD_PROVIDER_LABELS = {
   gmail:    {label:"Gmail",     color:"#ea4335"},
   outlook:  {label:"Outlook",   color:"#0078d4"},
-  o365:     {label:"O365",      color:"#0067b8"},
+  o365:                {label:"Office 365",        color:"#0067b8"},
+  "google-workspace":  {label:"Google Workspace",  color:"#4285f4"},
+  proofpoint:          {label:"Proofpoint",        color:"#0033a1"},
+  mimecast:            {label:"Mimecast",          color:"#e60028"},
+  barracuda:           {label:"Barracuda",         color:"#0066b3"},
+  "cisco-ironport":    {label:"Cisco Ironport",    color:"#1ba0d7"},
+  "trend-micro":       {label:"Trend Micro",       color:"#d71920"},
+  symantec:            {label:"Symantec",          color:"#fdb515"},
+  sophos:              {label:"Sophos",            color:"#0a3953"},
+  forcepoint:          {label:"Forcepoint",        color:"#5e2750"},
+  cofense:             {label:"Cofense",           color:"#00b6f1"},
+  agari:               {label:"Agari",             color:"#0d6efd"},
+  greathorn:           {label:"GreatHorn",         color:"#1f8efa"},
+  hornetsecurity:      {label:"Hornetsecurity",    color:"#003b5c"},
+  clearswift:          {label:"Clearswift",        color:"#00a8e1"},
+  avanan:              {label:"Avanan",            color:"#5c2d91"},
+  "yahoo-business":    {label:"Yahoo Business",    color:"#6001d2"},
+  rackspace:           {label:"Rackspace",         color:"#e63027"},
+  ses:                 {label:"AWS SES",           color:"#ff9900"},
+  sendgrid:            {label:"SendGrid",          color:"#1a82e2"},
+  sparkpost:           {label:"SparkPost",         color:"#fa6400"},
+  postmark:            {label:"Postmark",          color:"#ffde00"},
+  brevo:               {label:"Brevo",             color:"#0b996e"},
+  mailgun:             {label:"Mailgun",           color:"#f06b66"},
+  mailerlite:          {label:"MailerLite",        color:"#09c269"},
+  mailersend:          {label:"MailerSend",        color:"#5b9aff"},
+  godaddy:             {label:"GoDaddy",           color:"#1bdbdb"},
+  ionos:               {label:"IONOS / 1&1",       color:"#003d8f"},
+  namecheap:           {label:"Namecheap",         color:"#de3910"},
+  hostpapa:            {label:"HostPapa",          color:"#5fbf3c"},
+  siteground:          {label:"SiteGround",        color:"#f0571e"},
+  bluehost:            {label:"Bluehost",          color:"#0085c1"},
+  hostgator:           {label:"HostGator",         color:"#f7951c"},
+  dreamhost:           {label:"DreamHost",         color:"#172e92"},
+  "self-hosted":       {label:"Self-hosted",       color:"#10b981"},
   yahoo:    {label:"Yahoo",     color:"#6001d2"},
   aol:      {label:"AOL",       color:"#f25022"},
   icloud:   {label:"iCloud",    color:"#888"},
@@ -3277,6 +3311,61 @@ function TabLeads({leadsRaw, setLeadsRaw, leads, setLeads, filesList, allowDupes
   const rawLineCount = (leadsRaw||"").split(/\r?\n/).filter(l=>l.trim().includes("@")).length;
   const dupeCount = rawLineCount - leads.length;
 
+  // ── MX-based provider detection ──
+  // Domain heuristics in detectLeadProvider() handle the well-known
+  // free providers (gmail/yahoo/etc.).  Custom-domain leads come back
+  // as 'business' until we look up the actual MX records.  This effect
+  // watches the lead set, picks out the still-generic 'business'
+  // domains, batch-resolves them via /api/tools/detect-providers, and
+  // upgrades the in-memory lead objects with the real provider key
+  // (o365 / google-workspace / proofpoint / mimecast / barracuda /
+  // self-hosted / etc.).
+  const [mxResolving, setMxResolving] = useState(0);   // domains in flight
+  const _mxResolvedRef = useRef(new Set());            // domains already requested
+  useEffect(() => {
+    if (!leads.length) return;
+    // Find unique 'business'-tagged domains we haven't asked about yet.
+    const todo = [];
+    const seen = new Set();
+    for (const l of leads) {
+      if (l.provider !== "business") continue;
+      if (!l.domain) continue;
+      if (_mxResolvedRef.current.has(l.domain)) continue;
+      if (seen.has(l.domain)) continue;
+      seen.add(l.domain);
+      todo.push(l.domain);
+    }
+    if (!todo.length) return;
+    // Mark in-flight so we don't re-request between batches.
+    todo.forEach(d => _mxResolvedRef.current.add(d));
+    // Batch in chunks of 100 so very large lead lists still report progress.
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < todo.length && !cancelled; i += 100) {
+        const chunk = todo.slice(i, i+100);
+        setMxResolving(c => c + chunk.length);
+        try {
+          const r = await apiCall("/api/tools/detect-providers",{
+            method:"POST", body: JSON.stringify({domains: chunk})
+          });
+          const d = await r.json();
+          const map = (d && d.results) || {};
+          if (cancelled) return;
+          // Splice each resolved domain into every lead with that domain.
+          setLeads(prev => prev.map(l => {
+            if (l.domain && map[l.domain] && map[l.domain] !== "unknown") {
+              return {...l, provider: map[l.domain]};
+            }
+            return l;
+          }));
+        } catch (e) { /* silent — just keep 'business' tag */ }
+        setMxResolving(c => Math.max(0, c - chunk.length));
+      }
+    })();
+    return ()=>{ cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leads.length, leadsRaw]);
+
   function handleImport(file) {
     const reader = new FileReader();
     reader.onload = e => { setLeadsRaw(e.target.result); setLeads(parseLeads(e.target.result, allowDupes)); };
@@ -3375,6 +3464,11 @@ function TabLeads({leadsRaw, setLeadsRaw, leads, setLeads, filesList, allowDupes
           <div className="row jb ac-center mb12">
             <div className="row ac-center g10">
               <span className="card-title" style={{marginBottom:0}}>Parsed Leads ({leads.length})</span>
+              {mxResolving > 0 && (
+                <span className="bdg" style={{background:"var(--accent)22",color:"var(--accent)",border:"1px solid var(--accent)55",fontSize:10}}>
+                  ⏳ Resolving {mxResolving} domain{mxResolving===1?"":"s"} via MX
+                </span>
+              )}
               <input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="Filter..." style={{width:160,padding:"5px 10px",fontSize:12}}/>
             </div>
             <button className="btn btn-g btn-sm" onClick={()=>{

@@ -980,6 +980,146 @@ def _bootstrap_installed_sha():
 # DATABASE & AUTH
 # ═══════════════════════════════════════════════════════════════
 
+# ─── MX-based mail-provider detection ──────────────────────────
+# Process-wide cache of domain → provider_key.  Cheap (a few KB even
+# for thousands of domains) and avoids re-resolving the same MX on
+# every Leads-tab refresh.  Cleared on server restart.
+_MX_PROVIDER_CACHE: dict = {}
+_MX_PROVIDER_LOCK = Lock()
+
+# Pattern → provider key.  First match wins.  Patterns are substring
+# matches against the lowercase MX hostname (the part to the left of
+# the trailing dot).
+_MX_PROVIDER_PATTERNS = [
+    # ── Mail hosting / O365 / Google Workspace ──
+    ("mail.protection.outlook.com",      "o365"),
+    ("outlook.com",                       "o365"),
+    ("eo.outlook.com",                    "o365"),
+    ("aspmx.l.google.com",                "google-workspace"),
+    ("google.com",                        "google-workspace"),
+    ("googlemail.com",                    "google-workspace"),
+    # ── Inbound security gateways ──
+    ("pphosted.com",                      "proofpoint"),
+    ("ppe-hosted.com",                    "proofpoint"),
+    ("mimecast.com",                      "mimecast"),
+    ("mimecast-offshore.com",             "mimecast"),
+    ("barracudanetworks.com",             "barracuda"),
+    ("barracuda.com",                     "barracuda"),
+    ("ess.barracudanetworks.com",         "barracuda"),
+    ("iphmx.com",                         "cisco-ironport"),
+    ("ironport.com",                      "cisco-ironport"),
+    ("trendmicro.com",                    "trend-micro"),
+    ("tmes.trendmicro.com",               "trend-micro"),
+    ("symanteccloud.com",                 "symantec"),
+    ("messagelabs.com",                   "symantec"),
+    ("sophos.com",                        "sophos"),
+    ("forcepoint.com",                    "forcepoint"),
+    ("websense.com",                      "forcepoint"),
+    ("cofense.com",                       "cofense"),
+    ("agari.com",                         "agari"),
+    ("greathorn.com",                     "greathorn"),
+    ("hornetsecurity.com",                "hornetsecurity"),
+    ("clearswift.net",                    "clearswift"),
+    ("avanan.net",                        "avanan"),
+    # ── Other major mail providers ──
+    ("zoho.com",                          "zoho"),
+    ("zohomail.com",                      "zoho"),
+    ("yahoodns.net",                      "yahoo-business"),
+    ("mx.yandex.net",                     "yandex"),
+    ("rackspace.com",                     "rackspace"),
+    ("emailsrvr.com",                     "rackspace"),
+    ("mailgun.org",                       "mailgun"),
+    ("mailgun.com",                       "mailgun"),
+    ("amazonses.com",                     "ses"),
+    ("amazonaws.com",                     "ses"),
+    ("sendgrid.net",                      "sendgrid"),
+    ("sparkpostmail.com",                 "sparkpost"),
+    ("sparkpostmail1.com",                "sparkpost"),
+    ("postmarkapp.com",                   "postmark"),
+    ("mtasv.net",                         "postmark"),
+    ("brevo.com",                         "brevo"),
+    ("sendinblue.com",                    "brevo"),
+    ("mlsend.com",                        "mailerlite"),
+    ("mailersend.com",                    "mailersend"),
+    # ── Generic ESP ──
+    ("dreamhost.com",                     "dreamhost"),
+    ("hostgator.com",                     "hostgator"),
+    ("godaddy.com",                       "godaddy"),
+    ("secureserver.net",                  "godaddy"),
+    ("ionos.com",                         "ionos"),
+    ("1and1.com",                         "ionos"),
+    ("namecheaphosting.com",              "namecheap"),
+    ("privateemail.com",                  "namecheap"),
+    ("hostpapa.com",                      "hostpapa"),
+    ("siteground.net",                    "siteground"),
+    ("bluehost.com",                      "bluehost"),
+]
+
+def _detect_providers_by_mx(domains: list) -> dict:
+    """Resolve MX for each domain and classify.  Returns {domain → key}.
+    Uses dnspython if available; falls back to 'unknown' on any error.
+    """
+    out = {}
+    if not domains:
+        return out
+
+    # Pull cached entries first
+    fresh = []
+    with _MX_PROVIDER_LOCK:
+        for d in domains:
+            cached = _MX_PROVIDER_CACHE.get(d)
+            if cached is not None:
+                out[d] = cached
+            else:
+                fresh.append(d)
+    if not fresh:
+        return out
+
+    try:
+        import dns.resolver as _r
+        resolver = _r.Resolver()
+        resolver.lifetime = 4
+        resolver.timeout  = 4
+    except Exception:
+        # No dnspython at all → mark every domain unknown.  Cache so we
+        # don't keep retrying.
+        with _MX_PROVIDER_LOCK:
+            for d in fresh:
+                _MX_PROVIDER_CACHE[d] = "unknown"
+                out[d] = "unknown"
+        return out
+
+    # Fan out 16 lookups in parallel — DNS is light.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _classify(domain):
+        try:
+            ans = resolver.resolve(domain, "MX", lifetime=4)
+            mx_hosts = [str(rr.exchange).rstrip(".").lower() for rr in ans]
+        except Exception:
+            return domain, "unknown"
+        if not mx_hosts:
+            return domain, "unknown"
+        # First-match wins: scan known patterns in order, against any MX host.
+        for host in mx_hosts:
+            for pat, key in _MX_PROVIDER_PATTERNS:
+                if pat in host:
+                    return domain, key
+        # No pattern matched but MX exists → custom / self-hosted business mail
+        return domain, "self-hosted"
+
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        for dom, key in ex.map(_classify, fresh):
+            out[dom] = key
+
+    # Cache every result
+    with _MX_PROVIDER_LOCK:
+        for d, k in out.items():
+            if d in fresh:
+                _MX_PROVIDER_CACHE[d] = k
+    return out
+
+
 def _campaign_lead_file_retention(uid: int, keep: int = 5) -> None:
     """Trim per-user campaign lead files (sent_leads_*.txt + failed_leads_*.txt)
     so only the last `keep` campaigns' files survive.  Called from /api/send
@@ -6071,6 +6211,26 @@ ss -tlnp | grep -q ':{socks_port} ' && echo DEPLOY_OK || echo DEPLOY_FAIL
                     (rtype, dest, json.dumps(cfg), rid))
                 conn.commit(); conn.close()
             self._json(200, {"ok": True, "id": rid})
+
+        # ── Detect mail providers by MX (POST {domains:[...]}) ────────
+        # Resolves each domain's MX records, matches against known
+        # hosting providers (Office 365, Google Workspace, Proofpoint,
+        # Mimecast, Barracuda, Cisco Ironport, etc.), and returns
+        # {domain → provider_key}.  Used by the Leads tab to upgrade
+        # the heuristic 'business' classification to a precise host.
+        # In-memory cache keyed by domain; lasts for the server lifetime.
+        elif p == "/api/tools/detect-providers":
+            if not (sess := self._auth()): return
+            try:
+                data = self._read_body()
+            except Exception:
+                self._json(400, {"error": "Invalid JSON"}); return
+            domains = data.get("domains") or []
+            if not isinstance(domains, list):
+                self._json(400, {"error": "domains list required"}); return
+            domains = [str(d).strip().lower() for d in domains if d]
+            domains = list({d for d in domains if "." in d})[:500]
+            self._json(200, {"results": _detect_providers_by_mx(domains)})
 
         # ── Bulk SMTP validator ─────────────────────────────────
         # Test many SMTPs in parallel.  Streams one JSON line per
