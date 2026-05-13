@@ -660,6 +660,15 @@ class CampaignOptions:
             elif isinstance(l, str):
                 leads.append({"email": l, "name": "", "company": ""})
 
+        _smtp_n = len(smtps)
+        _pm_req = data.get("pairedMode")
+        if _pm_req is not None:
+            _paired_mode = bool(_pm_req)
+        else:
+            # Multiple SMTP relays: keep From address and SMTP server on the same
+            # rotation slot (unless client sends pairedMode: false).
+            _paired_mode = method == "smtp" and _smtp_n > 1
+
         return cls(
             method         = method,
             smtps          = smtps,
@@ -679,7 +688,7 @@ class CampaignOptions:
                 "smtp":   data.get("rotationMode", "random"),
                 "mx":     data.get("rotationMode", "random"),
             },
-            paired_mode    = bool(data.get("pairedMode", False)),
+            paired_mode    = _paired_mode,
             dlv            = data.get("deliverability") or {
                 "injectUnsub":  data.get("autoInjectUnsub", False),
                 "unsubUrl":     data.get("unsubUrl", ""),
@@ -1446,10 +1455,21 @@ def run_campaign(opts: CampaignOptions) -> Generator:
 
     pairs: Optional[list] = None
     if opts.paired_mode and opts.senders and servers:
+        _ns, _nv = len(opts.senders), len(servers)
+        # Same index j modulo each list → From[j] and SMTP[j] stay aligned even
+        # when one list is longer (cycle the shorter one in lockstep).
+        _nc = max(_ns, _nv)
         pairs = [
-            {"sender": opts.senders[j], "server": servers[j % len(servers)]}
-            for j in range(len(opts.senders))
+            {"sender": opts.senders[j % _ns], "server": servers[j % _nv]}
+            for j in range(_nc)
         ]
+        yield {
+            "type": "info",
+            "msg": (
+                f"✓ From ↔ SMTP paired: {len(pairs)} rotation slot(s) — "
+                f"{sender_rot} (Senders tab). Matching indices stay in sync."
+            ),
+        }
 
     # ── Tunnel preflight ─────────────────────────────────────
     if method == "tunnel":
